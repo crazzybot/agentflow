@@ -50,6 +50,9 @@ async def create_plan(
     )
 
     raw = response.content[0].text
+    # Clean up any ````json` fences if present
+    raw = raw.strip().strip("```").strip("json").strip()
+
     try:
         plan_data = json.loads(raw)
         subtasks = [

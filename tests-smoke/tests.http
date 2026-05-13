@@ -1,0 +1,36 @@
+@host = http://localhost:8001
+
+###
+
+GET {{host}}/health HTTP/1.1
+Accept: application/json
+
+###
+
+# @name submit_task
+POST {{host}}/api/run HTTP/1.1
+Content-Type: application/json
+
+{
+    "task": "What is the best approach implementing stock forecasting ML model?"
+}
+
+# {
+#     "task": "Create a simple REST API using FastAPI that returns a greeting message.",
+#     "context": {
+#         "language": "Python",
+#         "framework": "FastAPI",
+#         "response_format": "JSON",
+#         "dependency_management": "uv"
+#     }
+# }
+
+###
+
+@run_id = {{submit_task.response.body.run_id}}
+
+###
+
+GET {{host}}/api/run/{{run_id}}/stream HTTP/1.1 
+Accept: text/event-stream
+
