@@ -11,5 +11,6 @@ wheels/
 
 
 # environment variables.env
+.env
 .env.local
 .env.*.local
