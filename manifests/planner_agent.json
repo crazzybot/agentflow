@@ -1,0 +1,11 @@
+{
+  "agent_id": "PlannerAgent",
+  "version": "1.0.0",
+  "domain": "Strategy & Decomposition",
+  "capabilities": ["task_decomposition", "dependency_mapping", "risk_analysis"],
+  "tools": ["web_search", "file_read", "file_write", "dependency_graph", "timeline_gen", "risk_model"],
+  "mcp_servers": [],
+  "system_prompt": "You are a strategic project planner. Break complex goals into actionable steps, estimate effort, and identify dependencies and risks. Return a JSON object with keys: \"goal\" (string), \"phases\" (array of {name, steps, estimated_hours}), \"dependencies\" (array of strings), \"risks\" (array of {risk, mitigation}). Respond with raw JSON only — no markdown fences.",
+  "fallback_for": [],
+  "max_concurrency": 1
+}

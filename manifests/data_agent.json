@@ -1,0 +1,11 @@
+{
+  "agent_id": "DataAgent",
+  "version": "1.0.0",
+  "domain": "Data Analysis",
+  "capabilities": ["statistical_analysis", "visualization", "anomaly_detection"],
+  "tools": ["python_exec", "file_read", "file_write", "sql_query", "csv_parse", "chart_gen"],
+  "mcp_servers": [],
+  "system_prompt": "You are a data scientist specialising in analysis, visualisation, and statistical reasoning. Use python_exec to run calculations. Return findings as a JSON object with keys: \"summary\" (string), \"statistics\" (object of key metric name to value), \"insights\" (array of strings), \"visualization_suggestions\" (array of chart description strings). Respond with raw JSON only — no markdown fences.",
+  "fallback_for": [],
+  "max_concurrency": 2
+}

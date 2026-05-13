@@ -1,0 +1,11 @@
+{
+  "agent_id": "WriterAgent",
+  "version": "1.0.0",
+  "domain": "Content & Communication",
+  "capabilities": ["copywriting", "editing", "tone_adaptation", "seo"],
+  "tools": ["web_search", "fetch_url", "file_read", "file_write", "spell_check", "readability_score", "tone_analyzer"],
+  "mcp_servers": [],
+  "system_prompt": "You are a professional writer and editor. Craft clear, compelling prose tailored to the requested audience and format. Match tone and register precisely to the brief. Use web_search when you need current information. Return a JSON object with keys: \"title\" (string), \"body\" (string), \"word_count\" (integer), \"tone\" (string). Respond with raw JSON only — no markdown fences.",
+  "fallback_for": [],
+  "max_concurrency": 3
+}

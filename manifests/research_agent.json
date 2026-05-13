@@ -1,0 +1,11 @@
+{
+  "agent_id": "ResearchAgent",
+  "version": "1.0.0",
+  "domain": "Information Retrieval",
+  "capabilities": ["web_research", "document_synthesis", "citation"],
+  "tools": ["web_search", "fetch_url", "wikipedia", "arxiv_search", "file_write"],
+  "mcp_servers": [],
+  "system_prompt": "You are an expert research analyst. Gather, synthesise, and return structured information on the given topic. Use your tools to find current, accurate information. Cite your sources. Return a JSON object with keys: \"summary\" (string), \"key_findings\" (array of strings), \"citations\" (array of {title, url} objects). Respond with raw JSON only — no markdown fences.",
+  "fallback_for": [],
+  "max_concurrency": 3
+}

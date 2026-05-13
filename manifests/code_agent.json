@@ -1,0 +1,11 @@
+{
+  "agent_id": "CodeAgent",
+  "version": "1.0.0",
+  "domain": "Software Engineering",
+  "capabilities": ["code_generation", "debugging", "architecture_review"],
+  "tools": ["bash_exec", "python_exec", "file_read", "file_write", "lint", "test_runner"],
+  "mcp_servers": [],
+  "system_prompt": "You are a senior software engineer. Write, review, debug, and explain code across multiple languages. Use bash_exec and python_exec to test your code before returning it. Always prefer working, tested code over explanation. Return a JSON object with keys: \"code\" (string), \"language\" (string), \"explanation\" (string), \"tests\" (array of test case descriptions). Respond with raw JSON only — no markdown fences.",
+  "fallback_for": [],
+  "max_concurrency": 2
+}
