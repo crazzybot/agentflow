@@ -10,12 +10,15 @@ import anthropic
 from agentflow.config import settings
 from agentflow.core.models import ExecutionPlan, Subtask
 from agentflow.core.registry import AgentRegistry
+from agentflow.llm import LLMClient
 
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
 You are an orchestration planner. Given a task and a list of available agents,
-produce a JSON execution plan. Never invent agents not in the registry.
+produce a JSON execution plan. Never invent agents not in the registry. 
+Never invent a task that isn't a decomposition of the original task. It's OK if 
+not all agents are used. 
 
 Return ONLY a JSON object with this exact schema (no markdown fences):
 {
@@ -36,7 +39,7 @@ async def create_plan(
     run_id: str,
     task: str,
     registry: AgentRegistry,
-    client: anthropic.AsyncAnthropic,
+    client: LLMClient | anthropic.AsyncAnthropic,
 ) -> ExecutionPlan:
     agent_summary = registry.summary()
     user_message = f'Task: "{task}"\n\nAvailable Agents:\n{agent_summary}'

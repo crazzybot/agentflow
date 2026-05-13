@@ -20,6 +20,7 @@ import anthropic
 
 from agentflow.config import settings
 from agentflow.core.models import AgentManifest, AgentOutput, AgentResult, AgentStatus, TaskEnvelope
+from agentflow.llm import LLMClient
 from agentflow.tools import tool_registry
 from agentflow.tools.mcp_tools import mcp_session
 
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 class Agent:
     """Stateless, manifest-driven agent.  One class handles all agent types."""
 
-    def __init__(self, manifest: AgentManifest, client: anthropic.AsyncAnthropic) -> None:
+    def __init__(self, manifest: AgentManifest, client: LLMClient | anthropic.AsyncAnthropic) -> None:
         self.manifest = manifest
         self.client = client
 

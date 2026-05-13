@@ -6,9 +6,8 @@ import logging
 import time
 from typing import Any
 
-import anthropic
-
 from agentflow.config import settings
+from agentflow.llm import LLMClient
 from agentflow.core.bus import task_bus
 from agentflow.core.context import RunContext, context_store
 from agentflow.core.models import (
@@ -31,7 +30,10 @@ logger = logging.getLogger(__name__)
 class OrchestratorEngine:
     def __init__(self, registry: AgentRegistry) -> None:
         self.registry = registry
-        self._client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        self._client = LLMClient(
+            api_key=settings.anthropic_api_key,
+            enable_prompt_caching=settings.enable_prompt_caching,
+        )
         self._agent_instances: dict[str, Any] = {}
         self._build_agents()
 
@@ -68,13 +70,20 @@ class OrchestratorEngine:
 
             # Step 07: completion
             all_results = await ctx.all_results()
-            assembled = {tid: r.output.model_dump() for tid, r in all_results.items()}
-            emitter.emit(SSEEventType.run_complete, message="All subtasks complete", data=assembled)
+            succeeded = {tid: r.output.model_dump() for tid, r in all_results.items() if r.status == AgentStatus.success}
+            failures = {tid: r.error for tid, r in all_results.items() if r.status != AgentStatus.success}
+            if failures and not succeeded:
+                emitter.emit(SSEEventType.run_error, message=f"All subtasks failed: {list(failures)}", data=failures)
+            elif failures:
+                emitter.emit(SSEEventType.run_complete, message=f"Run complete with {len(failures)} failed subtask(s)", data={"results": succeeded, "failed": failures})
+            else:
+                emitter.emit(SSEEventType.run_complete, message="All subtasks complete", data=succeeded)
 
         except Exception as exc:
             logger.exception("[%s] Orchestrator error", run_id)
             emitter.emit(SSEEventType.run_error, message=str(exc))
         finally:
+            self._client.stats.log_summary()
             emitter.close()
             task_bus.close_run(run_id)
             context_store.remove(run_id)
@@ -92,13 +101,14 @@ class OrchestratorEngine:
     ) -> None:
         graph = DependencyGraph(plan)
         completed: set[str] = set()
-        in_flight: dict[str, asyncio.Task[None]] = {}
+        failed: set[str] = set()
+        in_flight: dict[str, asyncio.Task[bool]] = {}
 
-        while len(completed) < len(plan.subtasks):
+        while len(completed) + len(failed) < len(plan.subtasks):
             ready = [
                 st
-                for st in graph.ready(completed)
-                if st.id not in in_flight and st.id not in completed
+                for st in graph.ready(completed, failed)
+                if st.id not in in_flight
             ]
 
             for subtask in ready:
@@ -107,7 +117,17 @@ class OrchestratorEngine:
                 )
 
             if not in_flight:
-                break  # nothing to wait for — guard against planning errors
+                # Nothing running and nothing dispatchable — cancel blocked remainders
+                for st in plan.subtasks:
+                    if st.id not in completed and st.id not in failed:
+                        failed.add(st.id)
+                        emitter.emit(
+                            SSEEventType.task_failed,
+                            agent_id=st.agent_id,
+                            message=f"Subtask {st.id} cancelled: upstream dependency failed",
+                            data={"subtask_id": st.id},
+                        )
+                break
 
             done, _ = await asyncio.wait(
                 in_flight.values(), return_when=asyncio.FIRST_COMPLETED
@@ -116,7 +136,14 @@ class OrchestratorEngine:
             for task in done:
                 subtask_id = next(k for k, v in in_flight.items() if v is task)
                 in_flight.pop(subtask_id)
-                completed.add(subtask_id)
+                try:
+                    succeeded: bool = task.result()
+                except Exception:
+                    succeeded = False
+                if succeeded:
+                    completed.add(subtask_id)
+                else:
+                    failed.add(subtask_id)
 
     # ------------------------------------------------------------------
     # Single subtask dispatch with retry
@@ -128,7 +155,8 @@ class OrchestratorEngine:
         subtask: Subtask,
         ctx: RunContext,
         emitter: StreamEmitter,
-    ) -> None:
+    ) -> bool:
+        """Dispatch a subtask with retry logic. Returns True on success, False on failure."""
         agent = self._agent_instances.get(subtask.agent_id)
         if agent is None:
             logger.error("[%s] No agent found for %s", run_id, subtask.agent_id)
@@ -137,7 +165,7 @@ class OrchestratorEngine:
                 agent_id=subtask.agent_id,
                 message=f"Unknown agent: {subtask.agent_id}",
             )
-            return
+            return False
 
         prior_results = ctx.build_prior_results(subtask.depends_on)
         envelope = TaskEnvelope(
@@ -190,6 +218,7 @@ class OrchestratorEngine:
                             message=f"Subtask {subtask.id} complete via fallback",
                             data={"subtask_id": subtask.id},
                         )
+                        return fallback_result.status == AgentStatus.success
                     else:
                         emitter.emit(
                             SSEEventType.task_failed,
@@ -197,6 +226,7 @@ class OrchestratorEngine:
                             message=f"Subtask {subtask.id} failed: {result.error}",
                             data={"subtask_id": subtask.id},
                         )
+                        return False
                 else:
                     emitter.emit(
                         SSEEventType.task_complete,
@@ -204,13 +234,21 @@ class OrchestratorEngine:
                         message=f"Subtask {subtask.id} complete",
                         data={"subtask_id": subtask.id},
                     )
-                return
+                    return True
 
             except asyncio.TimeoutError:
-                logger.warning("[%s] Subtask %s timed out (attempt %d)", run_id, subtask.id, attempt)
-                if attempt == settings.task_max_retries:
+                logger.warning("[%s] Subtask %s timed out (attempt %d/%d)", run_id, subtask.id, attempt, settings.task_max_retries)
+                if attempt < settings.task_max_retries:
+                    delay = 2 ** attempt
+                    logger.warning(
+                        "[%s] Retrying subtask %s in %ds",
+                        run_id, subtask.id, delay,
+                    )
+                    await asyncio.sleep(delay)
+                else:
                     emitter.emit(
                         SSEEventType.task_failed,
                         agent_id=subtask.agent_id,
                         message=f"Subtask {subtask.id} timed out after {settings.task_max_retries} attempts",
                     )
+                    return False

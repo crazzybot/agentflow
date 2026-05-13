@@ -28,13 +28,19 @@ class DependencyGraph:
         if not nx.is_directed_acyclic_graph(self._graph):
             raise ValueError("Execution plan contains a dependency cycle")
 
-    def ready(self, completed: set[str]) -> list[Subtask]:
-        """Return subtasks whose dependencies are all in *completed*."""
+    def ready(self, completed: set[str], failed: set[str] = frozenset()) -> list[Subtask]:
+        """Return subtasks whose dependencies all succeeded.
+
+        A task is skipped (never returned) if any dependency is in *failed*;
+        the caller is responsible for propagating that skip as a cancellation.
+        """
         result = []
         for node_id in self._graph.nodes:
-            if node_id in completed:
+            if node_id in completed or node_id in failed:
                 continue
             deps = set(self._graph.predecessors(node_id))
+            if deps & failed:
+                continue  # at least one dependency failed — do not dispatch
             if deps.issubset(completed):
                 result.append(self._subtasks[node_id])
         return result

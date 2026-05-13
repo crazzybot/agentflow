@@ -8,13 +8,15 @@ class Settings(BaseSettings):
     planner_model: str = "claude-sonnet-4-6"
     agent_model: str = "claude-sonnet-4-6"
 
-    task_timeout_ms: int = 30_000
+    task_timeout_ms: int = 120_000
     task_max_retries: int = 3
     task_max_tokens: int = 4096
 
     manifests_dir: str = "manifests"
     workspace_dir: str = "workspace"
     agent_max_iterations: int = 10
+
+    enable_prompt_caching: bool = True
 
 
 settings = Settings()
