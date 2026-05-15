@@ -7,19 +7,13 @@ import time
 from typing import Any
 
 from agentflow.config import settings
-from agentflow.llm import LLMClient
 from agentflow.core.bus import task_bus
 from agentflow.core.context import RunContext, context_store
-from agentflow.core.models import (
-    AgentStatus,
-    ExecutionPlan,
-    SSEEventType,
-    Subtask,
-    TaskConstraints,
-    TaskContext,
-    TaskEnvelope,
-)
+from agentflow.core.models import (AgentStatus, ExecutionPlan, SSEEventType,
+                                   Subtask, TaskConstraints, TaskContext,
+                                   TaskEnvelope)
 from agentflow.core.registry import AgentRegistry
+from agentflow.llm import LLMClient
 from agentflow.orchestrator.planner import create_plan
 from agentflow.orchestrator.scheduler import DependencyGraph
 from agentflow.orchestrator.stream import StreamEmitter, stream_registry
@@ -29,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 class OrchestratorEngine:
     def __init__(self, registry: AgentRegistry) -> None:
+        logger.info("Initializing OrchestratorEngine with %d agents", len(registry.all()))
+        logger.info("Settings: task_max_retries=%d, task_timeout_ms=%d, planner_model=%s", settings.task_max_retries, settings.task_timeout_ms, settings.planner_model )
         self.registry = registry
         self._client = LLMClient(
             api_key=settings.anthropic_api_key,

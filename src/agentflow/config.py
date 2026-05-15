@@ -8,8 +8,8 @@ class Settings(BaseSettings):
     planner_model: str = "claude-sonnet-4-6"
     agent_model: str = "claude-sonnet-4-6"
 
-    task_timeout_ms: int = 120_000
-    task_max_retries: int = 3
+    task_timeout_ms: int = 300_000
+    task_max_retries: int = 1
     task_max_tokens: int = 4096
 
     manifests_dir: str = "manifests"
