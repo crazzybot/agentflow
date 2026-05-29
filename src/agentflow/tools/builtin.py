@@ -253,10 +253,24 @@ tool_registry.register(ToolDefinition(
 # python_exec
 # ---------------------------------------------------------------------------
 
+def _sandbox_python() -> str:
+    """Return the Python interpreter for python_exec, falling back to python3."""
+    configured = settings.sandbox_python.strip()
+    if not configured:
+        return "python3"
+    p = Path(configured)
+    if not p.is_absolute():
+        p = Path.cwd() / p
+    if p.exists():
+        return str(p)
+    logger.warning("sandbox_python %r not found, falling back to python3", configured)
+    return "python3"
+
+
 async def _python_exec(code: str, timeout_seconds: int = 30) -> str:
     try:
         proc = await asyncio.create_subprocess_exec(
-            "python3", "-c", code,
+            _sandbox_python(), "-c", code,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(_workspace()),

@@ -1,0 +1,20 @@
+# Core scientific stack (DataAgent + FinancialAnalystAgent)
+numpy
+pandas
+scipy
+matplotlib
+seaborn
+
+# Machine learning (DataAgent)
+scikit-learn
+statsmodels
+
+# Financial data (FinancialAnalystAgent)
+yfinance
+pandas-datareader
+ta
+
+# Web / parsing (FinancialAnalystAgent — supplement fetch_url)
+requests
+beautifulsoup4
+lxml

@@ -14,6 +14,7 @@ class Settings(BaseSettings):
 
     manifests_dir: str = "manifests"
     workspace_dir: str = "workspace"
+    sandbox_python: str = "sandbox/.venv/bin/python"
     agent_max_iterations: int = 10
 
     enable_prompt_caching: bool = True
