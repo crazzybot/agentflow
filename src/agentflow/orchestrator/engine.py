@@ -15,6 +15,7 @@ from agentflow.core.models import (AgentStatus, ExecutionPlan, SSEEventType,
 from agentflow.core.registry import AgentRegistry
 from agentflow.llm import LLMClient
 from agentflow.orchestrator.planner import create_plan
+from agentflow.orchestrator.reporter import compile_report
 from agentflow.orchestrator.scheduler import DependencyGraph
 from agentflow.orchestrator.stream import StreamEmitter, stream_registry
 
@@ -68,12 +69,16 @@ class OrchestratorEngine:
             all_results = await ctx.all_results()
             succeeded = {tid: r.output.model_dump() for tid, r in all_results.items() if r.status == AgentStatus.success}
             failures = {tid: r.error for tid, r in all_results.items() if r.status != AgentStatus.success}
+
+            # Compile and save the final report
+            report_path = await compile_report(run_id, task, plan, all_results, self._client)
+
             if failures and not succeeded:
                 emitter.emit(SSEEventType.run_error, message=f"All subtasks failed: {list(failures)}", data=failures)
             elif failures:
-                emitter.emit(SSEEventType.run_complete, message=f"Run complete with {len(failures)} failed subtask(s)", data={"results": succeeded, "failed": failures})
+                emitter.emit(SSEEventType.run_complete, message=f"Run complete with {len(failures)} failed subtask(s)", data={"results": succeeded, "failed": failures, "report": report_path})
             else:
-                emitter.emit(SSEEventType.run_complete, message="All subtasks complete", data=succeeded)
+                emitter.emit(SSEEventType.run_complete, message="All subtasks complete", data={"results": succeeded, "report": report_path})
 
         except Exception as exc:
             logger.exception("[%s] Orchestrator error", run_id)

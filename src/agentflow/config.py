@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     planner_model: str = "claude-sonnet-4-6"
     agent_model: str = "claude-sonnet-4-6"
+    reporter_model: str = "claude-haiku-4-5-20251001"
 
     task_timeout_ms: int = 300_000
     task_max_retries: int = 1

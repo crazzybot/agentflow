@@ -13,6 +13,11 @@ import asyncio
 import json
 import logging
 import time
+
+# Web pages and large tool outputs can be arbitrarily long. Capping them here
+# prevents a single fetch_url call from dominating every subsequent loop iteration
+# (the full messages array is re-sent on each turn).
+_MAX_TOOL_RESULT_CHARS = 8_000
 from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any
 
@@ -104,7 +109,7 @@ class Agent:
         if envelope.context.prior_results:
             user_content += (
                 "\n\n<context>\n"
-                + json.dumps(envelope.context.prior_results, indent=2)
+                + json.dumps(envelope.context.prior_results, separators=(",", ":"))
                 + "\n</context>"
             )
 
@@ -198,6 +203,9 @@ class Agent:
                 else await tool_def.handler(**block.input)
         else:
             result_text = f"Tool {block.name!r} is not available for this agent."
+
+        if len(result_text) > _MAX_TOOL_RESULT_CHARS:
+            result_text = result_text[:_MAX_TOOL_RESULT_CHARS] + "\n… [truncated]"
 
         logger.debug("[%s] Tool %r → %s…", self.agent_id, block.name, result_text[:80])
         return {

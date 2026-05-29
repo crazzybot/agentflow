@@ -26,9 +26,15 @@ class RunContext:
             return dict(self._results)
 
     def build_prior_results(self, dep_ids: list[str]) -> dict[str, Any]:
-        """Return structured outputs from completed dependencies."""
+        """Return text output from completed dependencies.
+
+        Sends only the text representation to avoid duplicating data: AgentOutput
+        stores both `text` (raw string) and `structured` (json.loads of that same
+        string), so model_dump() would transmit the same payload twice.
+        """
         return {
-            dep_id: self._results[dep_id].output.model_dump()
+            dep_id: self._results[dep_id].output.text
+            or str(self._results[dep_id].output.structured)
             for dep_id in dep_ids
             if dep_id in self._results
         }
