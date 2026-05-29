@@ -1,0 +1,116 @@
+{
+  "summary": "The Model Context Protocol (MCP) is an open standard introduced by Anthropic in November 2024 that defines how AI systems — particularly Large Language Models (LLMs) — communicate with external tools, data sources, and services in a standardized, secure, and interoperable way. Often described as the 'USB-C port for AI applications', MCP decouples the concern of providing context from the concern of LLM inference, enabling any compliant host (Claude Desktop, IDEs, agent runtimes) to connect to any compliant server without custom integration code. The protocol is built on JSON-RPC 2.0 as its wire format and follows a client-server architecture with a mandatory capability-negotiation handshake. Servers expose three core primitives — Resources (read-only data), Tools (executable functions), and Prompts (reusable templates) — and communicate over standard transports including stdio and HTTP/SSE. The current stable spec revision is 2025-11-25. Official SDKs exist for Python and TypeScript, with C# and other SDKs also available.",
+  "key_findings": [
+    "ORIGIN & GOVERNANCE: MCP was created by David Soria Parra and Justin Spahr-Summers at Anthropic and open-sourced in November 2024. It has since been adopted by OpenAI, Google DeepMind, and many IDE/agent tool vendors. The specification, schema, and reference documentation all live at github.com/modelcontextprotocol/specification under the MIT license.",
+
+    "ARCHITECTURE — THREE ROLES: The protocol defines three distinct roles: (1) Hosts — applications such as Claude Desktop or an IDE that initiate connections and expose an MCP Client internally; (2) MCP Clients — protocol-level clients that maintain a 1:1 connection with one MCP Server; (3) MCP Servers — lightweight, independently deployed programs that expose capabilities (resources, tools, prompts) to clients. A host typically connects to multiple servers simultaneously.",
+
+    "WIRE FORMAT — JSON-RPC 2.0: All MCP messages are JSON-RPC 2.0 objects. There are three message subtypes: (a) Requests — { jsonrpc: '2.0', id: string|number, method: string, params?: object } — which expect a response; (b) Responses — { jsonrpc: '2.0', id: string|number, result?: object, error?: {code, message, data} } — which carry the result or a standard error; (c) Notifications — { jsonrpc: '2.0', method: string, params?: object } — one-way fire-and-forget messages with no id and no expected response. The latest protocol version string is '2025-11-25' and the jsonrpc version is always '2.0'.",
+
+    "CONNECTION LIFECYCLE — MANDATORY INITIALIZATION HANDSHAKE: Every MCP session begins with a three-step initialization sequence before any capability can be used: Step 1 — Client sends an 'initialize' request containing its protocolVersion, clientInfo ({name, version}), and a ClientCapabilities object declaring what the client supports. Step 2 — Server responds with its own protocolVersion, serverInfo ({name, version}), a ServerCapabilities object, and an optional 'instructions' string. Step 3 — Client sends an 'initialized' notification to acknowledge readiness. After this, bidirectional message exchange begins. Either side may terminate with a 'notifications/cancelled' notification or by closing the transport.",
+
+    "CAPABILITY NEGOTIATION: Both sides declare capability flags during initialization. Key server capability keys include: 'resources' (exposes resources/list and resources/read), 'tools' (exposes tools/list and tools/call), 'prompts' (exposes prompts/list and prompts/get), 'logging' (server can emit log notifications), and 'sampling' (server can request LLM completions from the client). Client capability keys include 'roots' (client can supply workspace root URIs), 'sampling' (client can fulfill sampling/createMessage requests), and 'experimental'. Servers MUST NOT offer capabilities they cannot fulfill, and clients MUST NOT call methods the server has not advertised.",
+
+    "CORE PRIMITIVE 1 — TOOLS: Tools are model-controlled executable functions that the LLM (with user approval) can invoke to take actions or retrieve computed data. Each Tool definition contains: { name: string, description?: string, inputSchema: { type: 'object', properties: {...} } }. Clients discover tools via 'tools/list' and invoke them via 'tools/call' passing { name, arguments }. The server returns { content: [ {type: 'text'|'image'|'audio'|'resource', ...} ], isError?: boolean }. Servers signal tool list changes with a 'notifications/tools/list_changed' notification. Tool errors should be reported inside the result object (isError: true) rather than as JSON-RPC protocol errors, allowing the LLM to handle them.",
+
+    "CORE PRIMITIVE 2 — RESOURCES: Resources are application-controlled, read-only data objects identified by URIs of the form [protocol]://[host]/[path]. They can carry text (UTF-8) or binary (base64) content. Servers expose resources via 'resources/list' returning { uri, name, description?, mimeType? } objects, and serve content via 'resources/read' returning { contents: [{uri, mimeType?, text?|blob?}] }. Servers may also expose URI templates (RFC 6570) for dynamic resources. Real-time updates use a subscribe/notify pattern: clients subscribe with 'resources/subscribe', and servers push 'notifications/resources/updated' when content changes.",
+
+    "CORE PRIMITIVE 3 — PROMPTS: Prompts are user-controlled, reusable interaction templates. Each prompt has { name, description?, arguments?: [{name, description?, required?}] }. Clients list prompts via 'prompts/list' and retrieve a filled template via 'prompts/get' passing { name, arguments }. The response contains { description?, messages: [{role: 'user'|'assistant', content: {type, text|data|resource}}] } — a ready-to-use message array that can be injected directly into an LLM conversation. Prompts can embed embedded resource context, multi-turn conversation scaffolds, or complex workflow templates.",
+
+    "CORE PRIMITIVE 4 — SAMPLING: Sampling allows an MCP Server to request an LLM completion from the Client (the reverse of the usual direction), enabling fully agentic, server-driven workflows. The server sends 'sampling/createMessage' with { messages, systemPrompt?, includeContext?, modelPreferences?, temperature?, maxTokens, stopSequences?, metadata? }. The client reviews and may modify the request, calls an LLM, reviews the result, then returns { model, role, content, stopReason? }. This human-in-the-loop design is intentional — users see and can approve both the prompt sent and the completion received.",
+
+    "TRANSPORT LAYER: MCP defines two standard transports. (1) stdio — the server reads JSON-RPC messages from stdin and writes responses to stdout, delimited by newlines; ideal for local subprocess-based servers. (2) HTTP with SSE (legacy) — clients POST messages to a server endpoint, and receive server-to-client messages via a long-lived Server-Sent Events stream. A newer Streamable HTTP transport (used by FastMCP) uses a single endpoint that can respond with either a direct JSON response or a streaming SSE body, supporting both stateless and stateful operation. All transports must deliver newline-delimited JSON-RPC 2.0 messages. Custom transports can be implemented by conforming to the Transport interface: { start(), send(JSONRPCMessage), close(), onmessage?, onerror?, onclose? }.",
+
+    "ADDITIONAL FEATURES — ROOTS: Clients that support the 'roots' capability can pass a list of root URIs (file paths, HTTP base URLs) to the server during initialization. Roots define the operational scope the server should respect — e.g., file:///home/user/project or https://api.example.com/v1. Servers should prioritize operations within declared roots. Root changes are signaled via 'notifications/roots/list_changed'.",
+
+    "ADDITIONAL FEATURES — PROGRESS, CANCELLATION, LOGGING & PAGINATION: Progress notifications allow long-running requests to emit incremental updates using 'notifications/progress' keyed by a progressToken in the original request's _meta. Cancellation sends 'notifications/cancelled' with the request's id. Servers can stream log messages via 'notifications/message' (levels: debug, info, notice, warning, error, critical, alert, emergency). List endpoints (tools/list, resources/list, prompts/list) support cursor-based pagination via a nextCursor field.",
+
+    "TASK AUGMENTATION (2025-11-25): The latest spec revision adds optional task-augmented execution. A caller may include a 'task' field in request params to request asynchronous execution; the server immediately returns a CreateTaskResult (with a task ID), and the actual result can be retrieved later via 'tasks/result'. Tasks can be cancelled via 'tasks/cancel'. Servers must declare task-augmentation support per request type in their capabilities.",
+
+    "ERROR CODES: Standard JSON-RPC error codes are reused: ParseError (-32700), InvalidRequest (-32600), MethodNotFound (-32601), InvalidParams (-32602), InternalError (-32603). A special MCP-defined code URL_ELICITATION_REQUIRED (-32042) signals that the server needs the client to gather additional information. Implementation-specific codes MUST be in the range [-32000, -32099].",
+
+    "OFFICIAL SDKs & REFERENCE IMPLEMENTATIONS: Anthropic provides first-party SDKs for Python (pip install 'mcp[cli]') and TypeScript/JavaScript (npm install @modelcontextprotocol/sdk). The Python SDK's high-level FastMCP class auto-generates tool schemas from Python type hints and docstrings. The TypeScript SDK v2 (pre-alpha) splits into @modelcontextprotocol/server and @modelcontextprotocol/client packages. A C# SDK also exists. The MCP Inspector (npx @modelcontextprotocol/inspector) is an interactive browser-based debugging tool for testing servers. Reference example servers include a weather server (NWS API), filesystem server, GitHub server, PostgreSQL server, and others in the modelcontextprotocol/servers GitHub org.",
+
+    "HELLO-WORLD PYTHON EXAMPLE (FastMCP): Install with 'uv add mcp[cli]'. A minimal server: from mcp.server.fastmcp import FastMCP; mcp = FastMCP('MyServer'); @mcp.tool() def greet(name: str) -> str: 'Greet a user'; return f'Hello {name}!'; mcp.run(transport='stdio'). This single file, when registered in Claude Desktop's claude_desktop_config.json under 'mcpServers', makes the greet tool available to Claude.",
+
+    "HELLO-WORLD TYPESCRIPT EXAMPLE (v2 SDK): import { McpServer } from '@modelcontextprotocol/server'; import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'; import * as z from 'zod/v4'; const server = new McpServer({ name: 'greeting-server', version: '1.0.0' }); server.registerTool('greet', { description: 'Greet someone by name', inputSchema: z.object({ name: z.string() }) }, async ({ name }) => ({ content: [{ type: 'text', text: 'Hello, ' + name + '!' }] })); const transport = new StdioServerTransport(); await server.connect(transport);",
+
+    "SECURITY CONSIDERATIONS: Servers should validate all inputs against declared JSON Schemas, sanitize file paths (prevent directory traversal), implement access controls and rate limits, not expose internal error details in responses, use appropriate authentication for remote transports (OAuth 2.0 is supported in HTTP transport), and log tool/resource usage for auditing. The sampling flow is intentionally human-in-the-loop so users can review and reject LLM requests initiated by servers.",
+
+    "VERSIONING & EVOLUTION: The protocol uses date-based version strings (e.g. '2025-03-26', '2025-11-25'). Clients advertise the latest version they support; servers respond with the version they will use. If the client cannot support the server's chosen version it MUST disconnect. The specification, schema (TypeScript-first, JSON Schema exported), and docs all live in the modelcontextprotocol GitHub organization."
+  ],
+  "citations": [
+    {
+      "title": "Model Context Protocol — Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Model_Context_Protocol"
+    },
+    {
+      "title": "MCP Introduction — Official Documentation (modelcontextprotocol.io)",
+      "url": "https://modelcontextprotocol.io/introduction"
+    },
+    {
+      "title": "MCP Specification — Latest (2025-11-25)",
+      "url": "https://modelcontextprotocol.io/specification/2025-11-25"
+    },
+    {
+      "title": "MCP Specification GitHub Repository (schema, docs, TypeScript schema source)",
+      "url": "https://github.com/modelcontextprotocol/specification"
+    },
+    {
+      "title": "MCP TypeScript Schema (canonical schema.ts) — 2025-11-25",
+      "url": "https://raw.githubusercontent.com/modelcontextprotocol/specification/main/schema/2025-11-25/schema.ts"
+    },
+    {
+      "title": "MCP JSON Schema — 2025-11-25",
+      "url": "https://raw.githubusercontent.com/modelcontextprotocol/specification/main/schema/2025-11-25/schema.json"
+    },
+    {
+      "title": "MCP Docs — Core Architecture",
+      "url": "https://raw.githubusercontent.com/modelcontextprotocol/docs/main/docs/concepts/architecture.mdx"
+    },
+    {
+      "title": "MCP Docs — Transports",
+      "url": "https://raw.githubusercontent.com/modelcontextprotocol/docs/main/docs/concepts/transports.mdx"
+    },
+    {
+      "title": "MCP Docs — Tools",
+      "url": "https://raw.githubusercontent.com/modelcontextprotocol/docs/main/docs/concepts/tools.mdx"
+    },
+    {
+      "title": "MCP Docs — Resources",
+      "url": "https://raw.githubusercontent.com/modelcontextprotocol/docs/main/docs/concepts/resources.mdx"
+    },
+    {
+      "title": "MCP Docs — Prompts",
+      "url": "https://raw.githubusercontent.com/modelcontextprotocol/docs/main/docs/concepts/prompts.mdx"
+    },
+    {
+      "title": "MCP Docs — Sampling",
+      "url": "https://raw.githubusercontent.com/modelcontextprotocol/docs/main/docs/concepts/sampling.mdx"
+    },
+    {
+      "title": "MCP Docs — Roots",
+      "url": "https://raw.githubusercontent.com/modelcontextprotocol/docs/main/docs/concepts/roots.mdx"
+    },
+    {
+      "title": "MCP Quickstart — Build an MCP Server (Python weather example)",
+      "url": "https://modelcontextprotocol.io/quickstart/server"
+    },
+    {
+      "title": "MCP Python SDK — GitHub README",
+      "url": "https://raw.githubusercontent.com/modelcontextprotocol/python-sdk/main/README.md"
+    },
+    {
+      "title": "MCP TypeScript SDK — GitHub README (v2, main branch)",
+      "url": "https://raw.githubusercontent.com/modelcontextprotocol/typescript-sdk/main/README.md"
+    },
+    {
+      "title": "MCP Python SDK — PyPI",
+      "url": "https://pypi.org/project/mcp/"
+    },
+    {
+      "title": "MCP TypeScript SDK — NPM (@modelcontextprotocol/sdk)",
+      "url": "https://www.npmjs.com/package/@modelcontextprotocol/sdk"
+    }
+  ]
+}

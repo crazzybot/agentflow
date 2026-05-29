@@ -9,18 +9,21 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "anthropic>=0.101.0",
+    "click>=8.1.0",
     "fastapi>=0.136.1",
+    "httpx>=0.28.1",
     "mcp>=1.27.1",
     "networkx>=3.6.1",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.1",
     "python-dotenv>=1.2.2",
+    "rich>=13.0.0",
     "sse-starlette>=3.4.4",
     "uvicorn>=0.46.0",
 ]
 
 [project.scripts]
-agentflow = "agentflow.main:app"
+agentflow = "agentflow.cli:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -31,7 +34,6 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28.1",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
 ]

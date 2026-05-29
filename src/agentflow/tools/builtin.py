@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 
 from agentflow.config import settings
-from agentflow.tools.registry import ToolDefinition, tool_registry
+from agentflow.tools.registry import ToolDefinition, ToolImpact, tool_registry
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,7 @@ tool_registry.register(ToolDefinition(
         "required": ["url"],
     },
     handler=_fetch_url,
+    impact=ToolImpact.read_only,
 ))
 
 
@@ -119,6 +120,7 @@ tool_registry.register(ToolDefinition(
         "required": ["query"],
     },
     handler=_web_search,
+    impact=ToolImpact.read_only,
 ))
 
 
@@ -150,6 +152,7 @@ tool_registry.register(ToolDefinition(
         "required": ["topic"],
     },
     handler=_wikipedia,
+    impact=ToolImpact.read_only,
 ))
 
 
@@ -190,6 +193,7 @@ tool_registry.register(ToolDefinition(
         "required": ["path"],
     },
     handler=_file_read,
+    impact=ToolImpact.read_only,
 ))
 
 tool_registry.register(ToolDefinition(
@@ -204,6 +208,7 @@ tool_registry.register(ToolDefinition(
         "required": ["path", "content"],
     },
     handler=_file_write,
+    impact=ToolImpact.write,
 ))
 
 
@@ -240,6 +245,7 @@ tool_registry.register(ToolDefinition(
         "required": ["command"],
     },
     handler=_bash_exec,
+    impact=ToolImpact.execute,
 ))
 
 
@@ -276,6 +282,7 @@ tool_registry.register(ToolDefinition(
         "required": ["code"],
     },
     handler=_python_exec,
+    impact=ToolImpact.execute,
 ))
 
 
@@ -283,7 +290,7 @@ tool_registry.register(ToolDefinition(
 # Stub tools — placeholders for tools that require external integrations
 # ---------------------------------------------------------------------------
 
-def _make_stub(tool_name: str, description: str, required_params: list[str]) -> ToolDefinition:
+def _make_stub(tool_name: str, description: str, required_params: list[str], impact: ToolImpact) -> ToolDefinition:
     async def stub_handler(**kwargs: Any) -> str:
         return (
             f"Tool '{tool_name}' is not yet integrated. "
@@ -297,23 +304,24 @@ def _make_stub(tool_name: str, description: str, required_params: list[str]) -> 
         description=description,
         input_schema={"type": "object", "properties": props, "required": required_params},
         handler=stub_handler,
+        impact=impact,
     )
 
 
-_STUBS = [
-    ("arxiv_search", "Search academic papers on arXiv", ["query"]),
-    ("sql_query", "Execute a SQL query against a configured database", ["query"]),
-    ("chart_gen", "Generate a chart from data and return a file path", ["data", "chart_type"]),
-    ("csv_parse", "Parse a CSV file and return structured data", ["path"]),
-    ("spell_check", "Check spelling and grammar in a text passage", ["text"]),
-    ("readability_score", "Compute readability metrics for a passage", ["text"]),
-    ("tone_analyzer", "Analyze the tone and sentiment of a passage", ["text"]),
-    ("dependency_graph", "Build a dependency graph from a task list", ["tasks"]),
-    ("timeline_gen", "Generate a project timeline from phases", ["phases"]),
-    ("risk_model", "Produce a risk matrix for a set of risks", ["risks"]),
-    ("lint", "Run a linter on source code", ["code", "language"]),
-    ("test_runner", "Run a test suite and return results", ["test_path"]),
+_STUBS: list[tuple[str, str, list[str], ToolImpact]] = [
+    ("arxiv_search",     "Search academic papers on arXiv",                        ["query"],               ToolImpact.read_only),
+    ("sql_query",        "Execute a SQL query against a configured database",       ["query"],               ToolImpact.execute),
+    ("chart_gen",        "Generate a chart from data and return a file path",       ["data", "chart_type"],  ToolImpact.write),
+    ("csv_parse",        "Parse a CSV file and return structured data",             ["path"],                ToolImpact.read_only),
+    ("spell_check",      "Check spelling and grammar in a text passage",            ["text"],                ToolImpact.read_only),
+    ("readability_score","Compute readability metrics for a passage",               ["text"],                ToolImpact.read_only),
+    ("tone_analyzer",    "Analyze the tone and sentiment of a passage",             ["text"],                ToolImpact.read_only),
+    ("dependency_graph", "Build a dependency graph from a task list",               ["tasks"],               ToolImpact.read_only),
+    ("timeline_gen",     "Generate a project timeline from phases",                 ["phases"],              ToolImpact.write),
+    ("risk_model",       "Produce a risk matrix for a set of risks",                ["risks"],               ToolImpact.read_only),
+    ("lint",             "Run a linter on source code",                             ["code", "language"],    ToolImpact.read_only),
+    ("test_runner",      "Run a test suite and return results",                     ["test_path"],           ToolImpact.execute),
 ]
 
-for _name, _desc, _params in _STUBS:
-    tool_registry.register(_make_stub(_name, _desc, _params))
+for _name, _desc, _params, _impact in _STUBS:
+    tool_registry.register(_make_stub(_name, _desc, _params, _impact))

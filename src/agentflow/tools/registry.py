@@ -3,9 +3,16 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
+
+
+class ToolImpact(str, Enum):
+    read_only = "read_only"  # no side effects; reads data from network or workspace
+    write     = "write"      # creates or modifies files in the workspace
+    execute   = "execute"    # runs arbitrary code or queries; broadest side-effect surface
 
 
 @dataclass
@@ -14,6 +21,7 @@ class ToolDefinition:
     description: str
     input_schema: dict[str, Any]
     handler: Callable[..., Awaitable[str]]
+    impact: ToolImpact = ToolImpact.read_only
 
     def to_anthropic_param(self) -> dict[str, Any]:
         return {
