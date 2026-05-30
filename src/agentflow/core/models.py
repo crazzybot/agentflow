@@ -26,6 +26,7 @@ class AgentManifest(BaseModel):
     domain: str
     capabilities: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
     system_prompt: str
     fallback_for: list[str] = Field(default_factory=list)

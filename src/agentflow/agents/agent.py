@@ -77,11 +77,19 @@ class Agent:
     # ------------------------------------------------------------------
 
     async def _execute(self, envelope: TaskEnvelope, emitter: "StreamEmitter") -> AgentResult:
+        from agentflow.core.skill_loader import skill_loader
+
         async with AsyncExitStack() as stack:
             # 1. Gather tool definitions from the global registry (filtered by manifest)
             local_tools = tool_registry.get_many(self.manifest.tools)
 
-            # 2. Connect to each MCP server and collect their tools
+            # 2. Auto-inject read_skill whenever the manifest declares skills.
+            if self.manifest.skills:
+                read_skill = tool_registry.get("read_skill")
+                if read_skill and read_skill not in local_tools:
+                    local_tools = local_tools + [read_skill]
+
+            # 3. Connect to each MCP server and collect their tools
             mcp_tools: list = []
             for server_config in self.manifest.mcp_servers:
                 server_tool_defs = await stack.enter_async_context(mcp_session(server_config))
@@ -89,8 +97,13 @@ class Agent:
 
             all_tools = local_tools + mcp_tools
 
-            # 3. Run the agentic loop
-            return await self._agentic_loop(envelope, all_tools, emitter)
+            # 4. Build per-run system prompt: base prompt + skills preamble (if any)
+            system_prompt = self.manifest.system_prompt
+            if self.manifest.skills:
+                system_prompt += skill_loader.preamble(self.manifest.skills)
+
+            # 5. Run the agentic loop
+            return await self._agentic_loop(envelope, all_tools, system_prompt, emitter)
 
     # ------------------------------------------------------------------
     # Agentic loop with tool execution
@@ -100,6 +113,7 @@ class Agent:
         self,
         envelope: TaskEnvelope,
         tools: list,
+        system_prompt: str,
         emitter: "StreamEmitter",
     ) -> AgentResult:
         from agentflow.core.models import SSEEventType
@@ -122,7 +136,7 @@ class Agent:
             create_kwargs: dict[str, Any] = {
                 "model": settings.agent_model,
                 "max_tokens": envelope.constraints.max_tokens,
-                "system": self.manifest.system_prompt,
+                "system": system_prompt,
                 "messages": messages,
             }
             if anthropic_tools:

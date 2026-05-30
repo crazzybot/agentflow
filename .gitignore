@@ -15,3 +15,6 @@ sandbox/.venv
 .env
 .env.local
 .env.*.local
+
+# Workspace
+workspace/
