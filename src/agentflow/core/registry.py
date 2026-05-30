@@ -68,6 +68,6 @@ class AgentRegistry:
         lines = []
         for agent in self._agents.values():
             lines.append(
-                f"- {agent.agent_id} (domain: {agent.domain}): capabilities={agent.capabilities}, tools={agent.tools}"
+                f"- {agent.agent_id} (domain: {agent.domain}): capabilities={agent.capabilities}, tools={agent.tools}, skills={agent.skills}"
             )
         return "\n".join(lines) if lines else "(no agents registered)"
