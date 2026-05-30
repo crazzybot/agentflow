@@ -47,7 +47,12 @@ class OrchestratorEngine:
     # ------------------------------------------------------------------
 
     async def run(self, run_id: str, task: str, user_context: dict[str, Any]) -> None:
-        emitter = stream_registry.create(run_id)
+        events_file = (
+            f"{settings.workspace_dir}/runs/{run_id}/events.jsonl"
+            if settings.capture_events
+            else None
+        )
+        emitter = stream_registry.create(run_id, events_file=events_file)
         ctx = context_store.create(run_id)
         task_bus.create_run(run_id)
 

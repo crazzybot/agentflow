@@ -1,15 +1,21 @@
 """AgentFlow — FastAPI application entry point."""
 from __future__ import annotations
 
+import os
 import logging
 
 from fastapi import FastAPI
 
 from agentflow.config import settings
 from agentflow.core.registry import AgentRegistry
+from agentflow.logging_config import setup_logging
 from agentflow.orchestrator.engine import OrchestratorEngine
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+setup_logging(
+    level=os.getenv("LOG_LEVEL", "INFO"), 
+    json_format=os.getenv("LOG_JSON", "false").lower() == "true",
+    log_file=os.getenv("LOG_FILE", None)
+)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------

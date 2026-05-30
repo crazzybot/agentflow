@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     agent_max_iterations: int = 10
 
     enable_prompt_caching: bool = True
+    capture_events: bool = False
 
 
 settings = Settings()

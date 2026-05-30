@@ -4,13 +4,14 @@ import logging
 import sys
 
 
-def setup_logging(level: str = "INFO", json_format: bool = False) -> None:
+def setup_logging(level: str = "INFO", json_format: bool = False, log_file: str | None = None) -> None:
     """
     Configure application-wide logging.
 
     Args:
         level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         json_format: Whether to output logs in JSON format (useful for production)
+        log_file: Optional path to write DEBUG logs to a file (all levels captured)
     """
     log_level = getattr(logging, level.upper(), logging.INFO)
 
@@ -31,7 +32,7 @@ def setup_logging(level: str = "INFO", json_format: bool = False) -> None:
 
     # Configure root logger
     root_logger = logging.getLogger()
-    root_logger.setLevel(log_level)
+    root_logger.setLevel(logging.DEBUG if log_file else log_level)
 
     # Remove existing handlers
     root_logger.handlers.clear()
@@ -41,6 +42,12 @@ def setup_logging(level: str = "INFO", json_format: bool = False) -> None:
     console_handler.setLevel(log_level)
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
+
+    if log_file:
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
 
     # Reduce noise from third-party libraries
     logging.getLogger("urllib3").setLevel(logging.WARNING)

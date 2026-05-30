@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any, AsyncIterator
 
 from agentflow.core.models import SSEEvent, SSEEventType, SSEPayload
@@ -14,10 +15,13 @@ logger = logging.getLogger(__name__)
 class StreamEmitter:
     """Buffers SSE events for a single run and exposes an async generator."""
 
-    def __init__(self, run_id: str) -> None:
+    def __init__(self, run_id: str, events_file: str | None = None) -> None:
         self.run_id = run_id
         self._queue: asyncio.Queue[SSEEvent | None] = asyncio.Queue()
         self._seq = 0
+        self._events_file = events_file
+        if events_file:
+            os.makedirs(os.path.dirname(events_file), exist_ok=True)
 
     def _next_seq(self) -> int:
         self._seq += 1
@@ -39,6 +43,9 @@ class StreamEmitter:
             payload=SSEPayload(message=message, data=data),
         )
         self._queue.put_nowait(event)
+        if self._events_file:
+            with open(self._events_file, "a") as f:
+                f.write(json.dumps(event.model_dump(mode="json")) + "\n")
         logger.debug("[%s] emit %s %s", self.run_id, event_type, message)
 
     def close(self) -> None:
@@ -56,8 +63,8 @@ class StreamRegistry:
     def __init__(self) -> None:
         self._emitters: dict[str, StreamEmitter] = {}
 
-    def create(self, run_id: str) -> StreamEmitter:
-        emitter = StreamEmitter(run_id)
+    def create(self, run_id: str, events_file: str | None = None) -> StreamEmitter:
+        emitter = StreamEmitter(run_id, events_file=events_file)
         self._emitters[run_id] = emitter
         return emitter
 

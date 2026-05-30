@@ -12,7 +12,10 @@ POST {{host}}/api/run HTTP/1.1
 Content-Type: application/json
 
 {
-    "task": "Are there any recent news (today is May 29, 2026) that may affect todays INTC stock price?"
+    "task": "Implement a python project that will collect and analyze stock prices from available public API.",
+    "context": {
+        "language": "Python"
+    }
 }
 
 ###
