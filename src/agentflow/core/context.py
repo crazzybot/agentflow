@@ -2,20 +2,29 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from typing import Any
 
 from agentflow.core.models import AgentResult
 
 
 class RunContext:
-    def __init__(self, run_id: str) -> None:
+    def __init__(self, run_id: str, results_file: str | None = None) -> None:
         self.run_id = run_id
         self._results: dict[str, AgentResult] = {}
         self._lock = asyncio.Lock()
+        self._results_file = results_file
+        if results_file:
+            os.makedirs(os.path.dirname(results_file), exist_ok=True)
 
     async def store_result(self, subtask_id: str, result: AgentResult) -> None:
         async with self._lock:
             self._results[subtask_id] = result
+            if self._results_file:
+                entry = {"subtask_id": subtask_id, **result.model_dump(mode="json")}
+                with open(self._results_file, "a") as f:
+                    f.write(json.dumps(entry) + "\n")
 
     async def get_result(self, subtask_id: str) -> AgentResult | None:
         async with self._lock:
@@ -46,8 +55,8 @@ class ContextStore:
     def __init__(self) -> None:
         self._runs: dict[str, RunContext] = {}
 
-    def create(self, run_id: str) -> RunContext:
-        ctx = RunContext(run_id)
+    def create(self, run_id: str, results_file: str | None = None) -> RunContext:
+        ctx = RunContext(run_id, results_file=results_file)
         self._runs[run_id] = ctx
         return ctx
 

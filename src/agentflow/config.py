@@ -21,6 +21,7 @@ class Settings(BaseSettings):
 
     enable_prompt_caching: bool = True
     capture_events: bool = False
+    capture_results: bool = False
 
 
 settings = Settings()

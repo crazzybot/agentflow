@@ -52,8 +52,13 @@ class OrchestratorEngine:
             if settings.capture_events
             else None
         )
+        results_file = (
+            f"{settings.workspace_dir}/runs/{run_id}/results.jsonl"
+            if settings.capture_results
+            else None
+        )
         emitter = stream_registry.create(run_id, events_file=events_file)
-        ctx = context_store.create(run_id)
+        ctx = context_store.create(run_id, results_file=results_file)
         task_bus.create_run(run_id)
 
         emitter.emit(SSEEventType.run_started, message=f"Run {run_id} started")
