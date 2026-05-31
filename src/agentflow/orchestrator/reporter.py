@@ -23,7 +23,10 @@ write a clear, concise, human-readable report in Markdown.
 
 Structure:
 - Start with a short executive summary (2-4 sentences).
-- Include a section per agent result, with a heading derived from the agent's role.
+- Include a section per completed agent result, with a heading derived from the agent's role.
+- If there is an "Incomplete Work" section in the input, include a corresponding section in
+  the report that describes what was partially done and what remains — do not omit or hide it.
+- If there is a "Failed Tasks" section in the input, include a brief note on what failed.
 - End with a conclusion / key takeaways section.
 
 Use proper Markdown formatting (headings, bullet points, tables where helpful).
@@ -67,7 +70,8 @@ async def compile_report(
         for tid, r in all_results.items()
         if tid in leaf_ids and r.status == AgentStatus.success
     }
-    failed = {tid: r for tid, r in all_results.items() if r.status != AgentStatus.success}
+    partials = {tid: r for tid, r in all_results.items() if r.status == AgentStatus.partial}
+    failed = {tid: r for tid, r in all_results.items() if r.status == AgentStatus.failed}
 
     # If no leaf succeeded, fall back to all successful results.
     if not synthesis_results:
@@ -77,8 +81,17 @@ async def compile_report(
     for result in synthesis_results.values():
         parts.append(f"## {result.agent_id}\n\n{_result_text(result)}\n")
 
+    if partials:
+        parts.append("## Incomplete Work")
+        parts.append(
+            "The following subtasks hit their iteration limit and may have produced "
+            "only partial output. What was completed is shown below.\n"
+        )
+        for result in partials.values():
+            parts.append(f"### {result.agent_id} (incomplete)\n\n{_result_text(result)}\n")
+
     if failed:
-        parts.append("## Failed subtasks")
+        parts.append("## Failed Tasks")
         for result in failed.values():
             parts.append(f"- {result.agent_id}: {result.error or 'unknown error'}")
 
