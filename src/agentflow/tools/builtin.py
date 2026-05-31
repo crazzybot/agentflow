@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -160,36 +161,164 @@ tool_registry.register(ToolDefinition(
 # file_read / file_write  (workspace-sandboxed)
 # ---------------------------------------------------------------------------
 
-async def _file_read(path: str) -> str:
+def _numbered(lines: list[str], offset: int) -> str:
+    """Format lines with 1-indexed line numbers starting at offset+1."""
+    return "".join(f"{offset + i + 1:4}: {line}" for i, line in enumerate(lines))
+
+
+async def _file_read(
+    path: str,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    pattern: str | None = None,
+    context_lines: int = 5,
+) -> str:
     target = _safe_path(path)
     if target is None:
         return "Error: path traversal outside workspace is not allowed"
     try:
-        return target.read_text(encoding="utf-8")
+        text = target.read_text(encoding="utf-8")
     except FileNotFoundError:
         return f"File not found: {path}"
     except Exception as exc:
         return f"Read error: {exc}"
 
+    # Plain read — backward-compatible, no line numbers
+    if pattern is None and start_line is None and end_line is None:
+        return _truncate(text, label=path)
 
-async def _file_write(path: str, content: str) -> str:
+    lines = text.splitlines(keepends=True)
+    total = len(lines)
+
+    if pattern is not None:
+        blocks: list[str] = []
+        seen: set[int] = set()
+        for i, line in enumerate(lines):
+            if re.search(pattern, line):
+                lo = max(0, i - context_lines)
+                hi = min(total, i + context_lines + 1)
+                indices = range(lo, hi)
+                new = [j for j in indices if j not in seen]
+                if not new:
+                    continue
+                seen.update(new)
+                blocks.append(f"--- match at line {i + 1} ---\n" + _numbered(lines[lo:hi], lo))
+        if not blocks:
+            return f"No matches for pattern {pattern!r} in {path}"
+        return _truncate("\n".join(blocks), label=path)
+
+    lo = max(0, (start_line - 1) if start_line is not None else 0)
+    hi = min(total, end_line if end_line is not None else total)
+    selected = lines[lo:hi]
+    header = f"[Lines {lo + 1}-{lo + len(selected)} of {total}]\n"
+    return _truncate(header + _numbered(selected, lo), label=path)
+
+
+async def _file_write(
+    path: str,
+    content: str,
+    mode: str = "overwrite",
+    line: int | None = None,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    pattern: str | None = None,
+    start_pattern: str | None = None,
+    end_pattern: str | None = None,
+) -> str:
     target = _safe_path(path)
     if target is None:
         return "Error: path traversal outside workspace is not allowed"
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        return f"Wrote {len(content)} chars to {path}"
+
+        if mode == "overwrite":
+            target.write_text(content, encoding="utf-8")
+            return f"Wrote {len(content)} chars to {path}"
+
+        if mode == "append":
+            with target.open("a", encoding="utf-8") as f:
+                f.write(content)
+            return f"Appended {len(content)} chars to {path}"
+
+        # Remaining modes require an existing file
+        try:
+            existing = target.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return f"File not found: {path} (mode={mode!r} requires an existing file)"
+
+        lines = existing.splitlines(keepends=True)
+        total = len(lines)
+
+        if mode == "insert_at_line":
+            if line is None:
+                return "Error: 'line' parameter required for insert_at_line mode"
+            block = content if content.endswith("\n") else content + "\n"
+            idx = max(0, min(line - 1, total))
+            lines.insert(idx, block)
+            target.write_text("".join(lines), encoding="utf-8")
+            return f"Inserted {len(content)} chars before line {line} in {path}"
+
+        if mode == "replace_lines":
+            if start_line is None or end_line is None:
+                return "Error: 'start_line' and 'end_line' required for replace_lines mode"
+            lo = max(0, start_line - 1)
+            hi = min(total, end_line)
+            block = (content if content.endswith("\n") else content + "\n") if content else ""
+            lines[lo:hi] = [block] if block else []
+            target.write_text("".join(lines), encoding="utf-8")
+            return f"Replaced lines {start_line}-{end_line} in {path}"
+
+        if mode == "replace_pattern":
+            if pattern is None:
+                return "Error: 'pattern' parameter required for replace_pattern mode"
+            new_text, count = re.subn(pattern, content, existing)
+            if count == 0:
+                return f"No matches for pattern {pattern!r} in {path}"
+            target.write_text(new_text, encoding="utf-8")
+            return f"Replaced {count} occurrence(s) of {pattern!r} in {path}"
+
+        if mode == "replace_between":
+            if start_pattern is None or end_pattern is None:
+                return "Error: 'start_pattern' and 'end_pattern' required for replace_between mode"
+            start_idx = end_idx = None
+            for i, ln in enumerate(lines):
+                if start_idx is None and re.search(start_pattern, ln):
+                    start_idx = i
+                elif start_idx is not None and re.search(end_pattern, ln):
+                    end_idx = i
+                    break
+            if start_idx is None:
+                return f"Start pattern {start_pattern!r} not found in {path}"
+            if end_idx is None:
+                return f"End pattern {end_pattern!r} not found after line {start_idx + 1} in {path}"
+            block = (content if content.endswith("\n") else content + "\n") if content else ""
+            lines[start_idx + 1:end_idx] = [block] if block else []
+            target.write_text("".join(lines), encoding="utf-8")
+            return f"Replaced content between lines {start_idx + 1} and {end_idx + 1} in {path}"
+
+        return f"Error: unknown mode {mode!r}"
+
     except Exception as exc:
         return f"Write error: {exc}"
 
 
 tool_registry.register(ToolDefinition(
     name="file_read",
-    description="Read a file from the agent workspace. Path is relative to the workspace root.",
+    description=(
+        "Read a file from the agent workspace. Path is relative to the workspace root. "
+        "With no extra parameters returns the full file. "
+        "Use start_line/end_line to read a specific line range (1-indexed, inclusive). "
+        "Use pattern (regex) to return matching lines plus context_lines of surrounding context."
+    ),
     input_schema={
         "type": "object",
-        "properties": {"path": {"type": "string", "description": "Relative file path"}},
+        "properties": {
+            "path": {"type": "string", "description": "Relative file path"},
+            "start_line": {"type": "integer", "description": "First line to read, 1-indexed inclusive (omit for beginning of file)"},
+            "end_line": {"type": "integer", "description": "Last line to read, 1-indexed inclusive (omit for end of file)"},
+            "pattern": {"type": "string", "description": "Regex to search for; returns each matching line with surrounding context"},
+            "context_lines": {"type": "integer", "description": "Lines of context before/after each pattern match (default 5)", "default": 5},
+        },
         "required": ["path"],
     },
     handler=_file_read,
@@ -198,12 +327,32 @@ tool_registry.register(ToolDefinition(
 
 tool_registry.register(ToolDefinition(
     name="file_write",
-    description="Write content to a file in the agent workspace. Creates parent directories automatically.",
+    description=(
+        "Write content to a file in the agent workspace. Creates parent directories automatically. "
+        "mode='overwrite' (default): replace entire file. "
+        "mode='append': add content at end of file. "
+        "mode='insert_at_line': insert content before the given line number (requires line). "
+        "mode='replace_lines': replace a range of lines (requires start_line and end_line). "
+        "mode='replace_pattern': find-and-replace using a regex (requires pattern; replaces all occurrences). "
+        "mode='replace_between': replace text between two regex markers, keeping the marker lines (requires start_pattern and end_pattern)."
+    ),
     input_schema={
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Relative file path"},
-            "content": {"type": "string", "description": "Content to write"},
+            "content": {"type": "string", "description": "Content to write / insert / use as replacement"},
+            "mode": {
+                "type": "string",
+                "enum": ["overwrite", "append", "insert_at_line", "replace_lines", "replace_pattern", "replace_between"],
+                "description": "Write mode (default: overwrite)",
+                "default": "overwrite",
+            },
+            "line": {"type": "integer", "description": "insert_at_line: insert before this 1-indexed line"},
+            "start_line": {"type": "integer", "description": "replace_lines: first line to replace, 1-indexed inclusive"},
+            "end_line": {"type": "integer", "description": "replace_lines: last line to replace, 1-indexed inclusive"},
+            "pattern": {"type": "string", "description": "replace_pattern: regex pattern to find and replace"},
+            "start_pattern": {"type": "string", "description": "replace_between: regex marking the start boundary line (kept)"},
+            "end_pattern": {"type": "string", "description": "replace_between: regex marking the end boundary line (kept)"},
         },
         "required": ["path", "content"],
     },
