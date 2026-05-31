@@ -10,13 +10,32 @@ from agentflow.core.models import AgentResult
 
 
 class RunContext:
-    def __init__(self, run_id: str, results_file: str | None = None) -> None:
+    def __init__(
+        self,
+        run_id: str,
+        results_file: str | None = None,
+        budget_usd: float | None = None,
+    ) -> None:
         self.run_id = run_id
+        self.budget_usd = budget_usd
         self._results: dict[str, AgentResult] = {}
         self._lock = asyncio.Lock()
         self._results_file = results_file
+        self._total_cost_usd: float = 0.0
         if results_file:
             os.makedirs(os.path.dirname(results_file), exist_ok=True)
+
+    def add_result_cost(self, result: AgentResult) -> None:
+        self._total_cost_usd += result.cost_usd
+
+    def total_cost_usd(self) -> float:
+        return self._total_cost_usd
+
+    def within_budget(self) -> bool:
+        """True if no budget is set, or if cost so far is below the limit."""
+        if self.budget_usd is None:
+            return True
+        return self._total_cost_usd < self.budget_usd
 
     async def store_result(self, subtask_id: str, result: AgentResult) -> None:
         async with self._lock:
@@ -55,8 +74,13 @@ class ContextStore:
     def __init__(self) -> None:
         self._runs: dict[str, RunContext] = {}
 
-    def create(self, run_id: str, results_file: str | None = None) -> RunContext:
-        ctx = RunContext(run_id, results_file=results_file)
+    def create(
+        self,
+        run_id: str,
+        results_file: str | None = None,
+        budget_usd: float | None = None,
+    ) -> RunContext:
+        ctx = RunContext(run_id, results_file=results_file, budget_usd=budget_usd)
         self._runs[run_id] = ctx
         return ctx
 

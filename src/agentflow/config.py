@@ -23,5 +23,14 @@ class Settings(BaseSettings):
     capture_events: bool = False
     capture_results: bool = False
 
+    # Pricing (USD per 1M tokens) — defaults match claude-sonnet-4-6
+    cost_per_1m_input_tokens: float = 3.0
+    cost_per_1m_output_tokens: float = 15.0
+    cost_per_1m_cache_write_tokens: float = 3.75
+    cost_per_1m_cache_read_tokens: float = 0.30
+
+    # Max times a partial result triggers a continuation before accepting it
+    max_continuations: int = 3
+
 
 settings = Settings()

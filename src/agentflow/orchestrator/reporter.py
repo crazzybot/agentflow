@@ -5,6 +5,8 @@ import logging
 import os
 from datetime import datetime, timezone
 
+from typing import Any
+
 from agentflow.config import settings
 from agentflow.core.models import AgentResult, AgentStatus, ExecutionPlan
 from agentflow.llm import LLMClient
@@ -53,6 +55,7 @@ async def compile_report(
     plan: ExecutionPlan,
     all_results: dict[str, AgentResult],
     client: LLMClient,
+    cost_summary: dict[str, Any] | None = None,
 ) -> str:
     """Synthesise results, write the report to disk, and return the file path."""
     leaf_ids = _leaf_subtask_ids(plan)
@@ -96,7 +99,25 @@ async def compile_report(
     ).strip()
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    header = f"# Run Report\n\n**Task:** {task}  \n**Generated:** {ts}  \n**Run ID:** {run_id}\n\n---\n\n"
+    cost_line = ""
+    if cost_summary:
+        cache_note = ""
+        if cost_summary.get("cache_read_tokens"):
+            cache_note = f", {cost_summary['cache_read_tokens']:,} cache-read"
+        cost_line = (
+            f"**Cost:** ${cost_summary['cost_usd']:.4f} "
+            f"({cost_summary['input_tokens']:,} input"
+            f" + {cost_summary['output_tokens']:,} output"
+            f"{cache_note} tokens)  \n"
+        )
+    header = (
+        f"# Run Report\n\n"
+        f"**Task:** {task}  \n"
+        f"**Generated:** {ts}  \n"
+        f"**Run ID:** {run_id}  \n"
+        f"{cost_line}"
+        f"\n---\n\n"
+    )
     full_report = header + report_body
 
     run_dir = os.path.join(settings.workspace_dir, "runs", run_id)

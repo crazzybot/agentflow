@@ -80,7 +80,12 @@ class AgentResult(BaseModel):
     status: AgentStatus
     output: AgentOutput = Field(default_factory=AgentOutput)
     error: str | None = None
-    tokens_used: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cache_read_tokens: int = 0
+    tokens_used: int = 0  # kept for backward compat; equals sum of all token types
+    cost_usd: float = 0.0
     duration_ms: int = 0
 
 
@@ -130,8 +135,10 @@ class SSEEventType(str, Enum):
     task_complete = "task:complete"
     task_partial = "task:partial"
     task_failed = "task:failed"
+    task_continuing = "task:continuing"
     run_complete = "run:complete"
     run_error = "run:error"
+    run_budget_exceeded = "run:budget_exceeded"
 
 
 class SSEPayload(BaseModel):
@@ -157,6 +164,7 @@ class SSEEvent(BaseModel):
 class RunRequest(BaseModel):
     task: str
     context: dict[str, Any] = Field(default_factory=dict)
+    budget_usd: float | None = None
 
 
 class RunResponse(BaseModel):

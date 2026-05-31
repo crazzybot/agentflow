@@ -24,7 +24,7 @@ async def start_run(request: RunRequest, background_tasks: BackgroundTasks):
     engine = _get_engine()
 
     # Run orchestration in the background so we can return the run_id immediately
-    background_tasks.add_task(engine.run, run_id, request.task, request.context)
+    background_tasks.add_task(engine.run, run_id, request.task, request.context, request.budget_usd)
 
     # Wait briefly for the emitter to be created before client can connect
     for _ in range(20):

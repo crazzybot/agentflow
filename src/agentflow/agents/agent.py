@@ -130,7 +130,11 @@ class Agent:
 
         messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
         anthropic_tools = [t.to_anthropic_param() for t in tools]
-        total_tokens = 0
+        total_input_tokens = 0
+        total_output_tokens = 0
+        total_cache_creation_tokens = 0
+        total_cache_read_tokens = 0
+        total_cost_usd = 0.0
         final_text = ""
         hit_limit = False
 
@@ -147,7 +151,19 @@ class Agent:
                 create_kwargs["tools"] = anthropic_tools
 
             response = await self.client.messages.create(**create_kwargs)
-            total_tokens += response.usage.input_tokens + response.usage.output_tokens
+            u = response.usage
+            call_cache_write = u.cache_creation_input_tokens or 0
+            call_cache_read = u.cache_read_input_tokens or 0
+            total_input_tokens += u.input_tokens
+            total_output_tokens += u.output_tokens
+            total_cache_creation_tokens += call_cache_write
+            total_cache_read_tokens += call_cache_read
+            total_cost_usd += (
+                u.input_tokens * settings.cost_per_1m_input_tokens
+                + u.output_tokens * settings.cost_per_1m_output_tokens
+                + call_cache_write * settings.cost_per_1m_cache_write_tokens
+                + call_cache_read * settings.cost_per_1m_cache_read_tokens
+            ) / 1_000_000
 
             # Append the assistant's full response (preserves tool_use blocks)
             messages.append({"role": "assistant", "content": response.content})
@@ -191,7 +207,12 @@ class Agent:
             agent_id=self.agent_id,
             status=AgentStatus.partial if hit_limit else AgentStatus.success,
             output=AgentOutput(structured=structured, text=final_text),
-            tokens_used=total_tokens,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
+            cache_creation_tokens=total_cache_creation_tokens,
+            cache_read_tokens=total_cache_read_tokens,
+            tokens_used=total_input_tokens + total_output_tokens + total_cache_creation_tokens + total_cache_read_tokens,
+            cost_usd=total_cost_usd,
         )
 
     # ------------------------------------------------------------------
