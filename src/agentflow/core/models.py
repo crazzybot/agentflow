@@ -31,6 +31,7 @@ class AgentManifest(BaseModel):
     system_prompt: str
     fallback_for: list[str] = Field(default_factory=list)
     max_concurrency: int = 3
+    max_iterations: int | None = None  # None → fall back to settings.agent_max_iterations
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +128,7 @@ class SSEEventType(str, Enum):
     agent_progress = "agent:progress"
     agent_query = "agent:query"
     task_complete = "task:complete"
+    task_partial = "task:partial"
     task_failed = "task:failed"
     run_complete = "run:complete"
     run_error = "run:error"

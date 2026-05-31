@@ -22,6 +22,7 @@ from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any
 
 import anthropic
+from anthropic.types import TextBlock
 
 from agentflow.config import settings
 from agentflow.core.models import AgentManifest, AgentOutput, AgentResult, AgentStatus, TaskEnvelope
@@ -131,8 +132,11 @@ class Agent:
         anthropic_tools = [t.to_anthropic_param() for t in tools]
         total_tokens = 0
         final_text = ""
+        hit_limit = False
 
-        for iteration in range(settings.agent_max_iterations):
+        max_iterations = self.manifest.max_iterations or settings.agent_max_iterations
+
+        for iteration in range(max_iterations):
             create_kwargs: dict[str, Any] = {
                 "model": settings.agent_model,
                 "max_tokens": envelope.constraints.max_tokens,
@@ -150,8 +154,8 @@ class Agent:
 
             # Collect any text the model produced this turn
             for block in response.content:
-                if hasattr(block, "text"):
-                    final_text = block.text  # keep the last text seen
+                if isinstance(block, TextBlock):
+                    final_text = block.text
 
             if response.stop_reason == "end_turn":
                 break
@@ -172,7 +176,8 @@ class Agent:
             messages.append({"role": "user", "content": list(tool_results)})
 
         else:
-            logger.warning("[%s] Hit max iterations (%d)", self.agent_id, settings.agent_max_iterations)
+            hit_limit = True
+            logger.warning("[%s] Hit max iterations (%d) — returning partial result", self.agent_id, max_iterations)
 
         # Try to parse final text as JSON (many system prompts ask for JSON output)
         structured: dict[str, Any] = {}
@@ -184,7 +189,7 @@ class Agent:
         return AgentResult(
             task_id=envelope.task_id,
             agent_id=self.agent_id,
-            status=AgentStatus.success,
+            status=AgentStatus.partial if hit_limit else AgentStatus.success,
             output=AgentOutput(structured=structured, text=final_text),
             tokens_used=total_tokens,
         )

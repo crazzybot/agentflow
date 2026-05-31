@@ -78,15 +78,20 @@ class OrchestratorEngine:
             # Step 07: completion
             all_results = await ctx.all_results()
             succeeded = {tid: r.output.model_dump() for tid, r in all_results.items() if r.status == AgentStatus.success}
-            failures = {tid: r.error for tid, r in all_results.items() if r.status != AgentStatus.success}
+            partials  = {tid: r.output.model_dump() for tid, r in all_results.items() if r.status == AgentStatus.partial}
+            failures  = {tid: r.error for tid, r in all_results.items() if r.status == AgentStatus.failed}
 
             # Compile and save the final report
             report_path = await compile_report(run_id, task, plan, all_results, self._client)
 
-            if failures and not succeeded:
+            if failures and not succeeded and not partials:
                 emitter.emit(SSEEventType.run_error, message=f"All subtasks failed: {list(failures)}", data=failures)
-            elif failures:
-                emitter.emit(SSEEventType.run_complete, message=f"Run complete with {len(failures)} failed subtask(s)", data={"results": succeeded, "failed": failures, "report": report_path})
+            elif failures or partials:
+                emitter.emit(
+                    SSEEventType.run_complete,
+                    message=f"Run complete — {len(succeeded)} succeeded, {len(partials)} partial, {len(failures)} failed",
+                    data={"results": succeeded, "partial": partials, "failed": failures, "report": report_path},
+                )
             else:
                 emitter.emit(SSEEventType.run_complete, message="All subtasks complete", data={"results": succeeded, "report": report_path})
 
@@ -238,6 +243,15 @@ class OrchestratorEngine:
                             data={"subtask_id": subtask.id},
                         )
                         return False
+                elif result.status == AgentStatus.partial:
+                    # Partial output is usable by downstream tasks but flagged distinctly.
+                    emitter.emit(
+                        SSEEventType.task_partial,
+                        agent_id=subtask.agent_id,
+                        message=f"Subtask {subtask.id} hit iteration limit — output may be incomplete",
+                        data={"subtask_id": subtask.id},
+                    )
+                    return True
                 else:
                     emitter.emit(
                         SSEEventType.task_complete,

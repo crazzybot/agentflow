@@ -35,6 +35,9 @@ Return ONLY a JSON object with this exact schema (no markdown fences):
 }
 
 Domain routing rules — always apply when selecting agents:
+- Frontend UI tasks (React components, SPA pages, CSS/Tailwind styling, TypeScript
+  frontend code, client-side routing) → assign to FrontendAgent; instruct it to call
+  read_skill(skill="frontend-web") at the start of the task.
 - Technical analysis tasks (computing SMA, EMA, RSI, MACD, Bollinger Bands, ATR, or
   any price-derived indicator from OHLCV data) → assign to CodeAgent; instruct it to
   call read_skill(skill="technical-analysis") at the start of the task.
@@ -47,6 +50,13 @@ Domain routing rules — always apply when selecting agents:
   loading instruction.
 - Project structure planning, dependency mapping, or risk analysis → assign to PlannerAgent;
   instruct it to use its domain knowledge and not search for established best practices.
+
+Task scope rules — apply when assigning file-producing tasks:
+- A single CodeAgent or FrontendAgent subtask must produce at most 3 files. If a task
+  requires more, split it into separate subtasks by logical module or page (e.g.
+  "Write the authentication module", "Write the Dashboard page component").
+- Link split subtasks in dependency order only when a later module genuinely imports
+  from an earlier one; otherwise let them run in parallel.
 
 Parallelism rules — minimise wall-clock time:
 - Set dependsOn: [] for any subtask that does not genuinely need data produced by another
