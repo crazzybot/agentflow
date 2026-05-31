@@ -212,11 +212,12 @@ class OrchestratorEngine:
             return False
 
         prior_results = ctx.build_prior_results(subtask.depends_on)
+        prior_messages = ctx.build_prior_messages(subtask.depends_on)
         envelope = TaskEnvelope(
             parent_run_id=run_id,
             agent_id=subtask.agent_id,
             instruction=subtask.instruction,
-            context=TaskContext(prior_results=prior_results),
+            context=TaskContext(prior_results=prior_results, prior_messages=prior_messages),
             constraints=TaskConstraints(
                 max_tokens=settings.task_max_tokens,
                 timeout_ms=settings.task_timeout_ms,
@@ -341,21 +342,11 @@ class OrchestratorEngine:
                 data={"subtask_id": subtask.id, "continuation": cont},
             )
 
-            cont_envelope = TaskEnvelope(
-                parent_run_id=envelope.parent_run_id,
-                agent_id=envelope.agent_id,
-                instruction=(
-                    f"Continue the following task that was only partially completed.\n\n"
-                    f"Original task:\n{subtask.instruction}\n\n"
-                    f"Work completed so far (do NOT repeat or redo this):\n{result.output.text}"
-                ),
-                context=envelope.context,
-                constraints=envelope.constraints,
-            )
-
             try:
                 next_result = await asyncio.wait_for(
-                    agent.run(cont_envelope, emitter),
+                    # Fix 3: resume the existing message thread rather than rebuilding
+                    # from a text summary — no re-reading, no lost tool context.
+                    agent.run(envelope, emitter, resume_messages=result.messages),
                     timeout=settings.task_timeout_ms / 1000,
                 )
             except asyncio.TimeoutError:

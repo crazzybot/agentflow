@@ -32,5 +32,11 @@ class Settings(BaseSettings):
     # Max times a partial result triggers a continuation before accepting it
     max_continuations: int = 3
 
+    # Max lines file_read returns in a single call (prevents context flooding)
+    file_read_max_lines: int = 200
+
+    # Max iterations the agentic planner may use for workspace exploration
+    planner_max_iterations: int = 15
+
 
 settings = Settings()

@@ -1,9 +1,10 @@
-"""LLM-based task decomposition — produces a structured execution plan."""
+"""LLM-based task planning — agentic ReAct loop that explores the workspace
+before committing to an execution plan."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import uuid
 
 import anthropic
 from anthropic.types import TextBlock
@@ -12,16 +13,30 @@ from agentflow.config import settings
 from agentflow.core.models import ExecutionPlan, Subtask
 from agentflow.core.registry import AgentRegistry
 from agentflow.llm import LLMClient
+from agentflow.tools import tool_registry
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """\
-You are an orchestration planner. Given a task and a list of available agents,
-produce a JSON execution plan. Never invent agents not in the registry.
-Never invent a task that isn't a decomposition of the original task. It's OK if
-not all agents are used.
+# Tools the planner is allowed to call during its exploration phase.
+_PLANNER_TOOLS = ["file_read", "bash_exec", "web_search", "fetch_url"]
 
-Return ONLY a JSON object with this exact schema (no markdown fences):
+# Planner tool results are capped at this many chars to keep the context manageable.
+_MAX_TOOL_RESULT_CHARS = 8_000
+
+SYSTEM_PROMPT = """\
+You are an orchestration planner. You have read-only tools to explore the workspace
+before you commit to a plan.
+
+EXPLORATION PHASE
+Use file_read and bash_exec (find, ls, grep — no writes) to understand the workspace:
+- Actual file structure and counts relevant to the task
+- Technologies, frameworks, and complexity present
+- Whether the task is small (one agent pass) or large (multiple subtasks)
+Limit yourself to 5-8 tool calls; stop as soon as you have enough context.
+
+PLANNING PHASE
+Once you have sufficient context, output your execution plan as the final message.
+Use ONLY a JSON object — no markdown fences, no prose before or after:
 {
   "subtasks": [
     {
@@ -42,31 +57,49 @@ Agent selection — derive routing entirely from the agent list provided:
   'Start by calling read_skill(skill="<name>") to load the relevant guidance.'
   Only include this line when the agent has skills and the task falls within a skill's domain.
 
-Task scope rules — apply to every file-producing subtask:
-- A single file-producing subtask must output at most 3 files. If more are needed,
-  split into separate subtasks by logical module or page.
-- Link split subtasks in dependency order only when a later module genuinely imports
-  from an earlier one; otherwise let them run in parallel.
+Task scope rules — calibrate to actual workspace complexity (from your exploration):
+- A single subtask must output at most 3 files. If more are needed, split by logical module.
+- If the entire task can be completed in ≤15 tool calls by one agent, use ONE subtask.
+- Only split into multiple subtasks when the work genuinely spans distinct phases or agents.
+- Link split subtasks in dependency order only when a later subtask genuinely imports or
+  consumes output from an earlier one; otherwise let them run in parallel.
 
 Parallelism rules — minimise wall-clock time:
-- Set dependsOn: [] for any subtask that does not genuinely need data produced by another
-  subtask. Two subtasks that both depend on the same earlier task may — and should — run
-  in parallel with each other.
-- Only add a dependency when a subtask actually consumes output produced by the prior
-  subtask (e.g. reads a file it wrote, or needs its structured result).
-- Minimise the critical path length: prefer breadth over depth in the dependency graph.
+- Set dependsOn: [] for any subtask that does not need output from another.
+- Only add a dependency when a subtask actually consumes output produced by the prior one.
+- Minimise critical path length: prefer breadth over depth.
 
-Completeness verification — apply after every file-generating subtask:
-- After any subtask that asks an agent to produce N named output files, add a follow-up
-  verification subtask assigned to the same agent with this instruction pattern:
-  "Verify that all required files from [prior subtask id] exist: [list every filename].
+Completeness verification:
+- After any file-generating subtask, add a verification subtask assigned to the same agent:
+  "Verify that all required files from [prior id] exist: [list files].
    For each missing file, write it now. Return JSON with files_written and files_missing."
-- The verification subtask must depend on the generation subtask and must complete before
-  any testing or debugging subtask starts.
-- Only use the phrase "fix bugs" in an instruction when all required files already exist
-  and the problem is incorrect behaviour. If files are missing, say "write the missing
-  files" instead.
+- The verification subtask must depend on the generation subtask.
+- Only add "fix bugs" when all required files already exist and the problem is behaviour.
+  If files are missing, say "write the missing files" instead.
 """
+
+
+async def _call_planner_tool(block: anthropic.types.ToolUseBlock, tools: list) -> dict:
+    tool_def = next((t for t in tools if t.name == block.name), None)
+    if tool_def is None:
+        result_text = f"Tool {block.name!r} is not available to the planner."
+    else:
+        try:
+            if block.name in {t.name for t in tool_registry.all()}:
+                result_text = await tool_registry.execute(block.name, block.input)
+            else:
+                result_text = await tool_def.handler(**block.input)
+        except Exception as exc:
+            result_text = f"Tool error: {exc}"
+
+    if len(result_text) > _MAX_TOOL_RESULT_CHARS:
+        result_text = result_text[:_MAX_TOOL_RESULT_CHARS] + "\n… [truncated]"
+
+    return {
+        "type": "tool_result",
+        "tool_use_id": block.id,
+        "content": result_text,
+    }
 
 
 async def create_plan(
@@ -76,19 +109,54 @@ async def create_plan(
     client: LLMClient | anthropic.AsyncAnthropic,
 ) -> ExecutionPlan:
     agent_summary = registry.summary()
-    user_message = f'Task: "{task}"\n\nAvailable Agents:\n{agent_summary}'
+    planner_tools = tool_registry.get_many(_PLANNER_TOOLS)
+    anthropic_tools = [t.to_anthropic_param() for t in planner_tools]
 
-    logger.info("[%s] Calling planner LLM", run_id)
-    response = await client.messages.create(
-        model=settings.planner_model,
-        max_tokens=2048,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}],
-    )
+    messages: list[dict] = [
+        {"role": "user", "content": f'Task: "{task}"\n\nAvailable Agents:\n{agent_summary}'}
+    ]
+    last_response = None
 
-    block = response.content[0]
-    raw = block.text if isinstance(block, TextBlock) else ""
-    # Clean up any ````json` fences if present
+    logger.info("[%s] Starting agentic planner (max %d iterations)", run_id, settings.planner_max_iterations)
+
+    for iteration in range(settings.planner_max_iterations):
+        response = await client.messages.create(
+            model=settings.planner_model,
+            max_tokens=4096,
+            system=SYSTEM_PROMPT,
+            messages=messages,
+            tools=anthropic_tools,
+        )
+        last_response = response
+        messages.append({"role": "assistant", "content": response.content})
+
+        if response.stop_reason == "end_turn":
+            logger.info("[%s] Planner finished after %d iteration(s)", run_id, iteration + 1)
+            break
+
+        if response.stop_reason != "tool_use":
+            logger.warning("[%s] Planner unexpected stop_reason %r", run_id, response.stop_reason)
+            break
+
+        tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
+        logger.info("[%s] Planner iteration %d: %d tool call(s): %s",
+                    run_id, iteration + 1, len(tool_use_blocks),
+                    [b.name for b in tool_use_blocks])
+
+        tool_results = await asyncio.gather(
+            *[_call_planner_tool(b, planner_tools) for b in tool_use_blocks]
+        )
+        messages.append({"role": "user", "content": list(tool_results)})
+    else:
+        logger.warning("[%s] Planner hit iteration limit (%d)", run_id, settings.planner_max_iterations)
+
+    # Extract the JSON plan from the final assistant text block
+    raw = ""
+    if last_response is not None:
+        for block in last_response.content:
+            if isinstance(block, TextBlock):
+                raw = block.text
+                break
     raw = raw.strip().strip("```").strip("json").strip()
 
     try:

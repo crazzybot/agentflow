@@ -172,6 +172,8 @@ async def _file_read(
     end_line: int | None = None,
     pattern: str | None = None,
     context_lines: int = 5,
+    max_lines: int | None = None,
+    include_line_numbers: bool = True,
 ) -> str:
     target = _safe_path(path)
     if target is None:
@@ -183,12 +185,9 @@ async def _file_read(
     except Exception as exc:
         return f"Read error: {exc}"
 
-    # Plain read — backward-compatible, no line numbers
-    if pattern is None and start_line is None and end_line is None:
-        return _truncate(text, label=path)
-
     lines = text.splitlines(keepends=True)
-    total = len(lines)
+    total_lines = len(lines)
+    limit = max_lines if max_lines is not None else settings.file_read_max_lines
 
     if pattern is not None:
         blocks: list[str] = []
@@ -196,22 +195,36 @@ async def _file_read(
         for i, line in enumerate(lines):
             if re.search(pattern, line):
                 lo = max(0, i - context_lines)
-                hi = min(total, i + context_lines + 1)
-                indices = range(lo, hi)
-                new = [j for j in indices if j not in seen]
-                if not new:
+                hi = min(total_lines, i + context_lines + 1)
+                new_indices = [j for j in range(lo, hi) if j not in seen]
+                if not new_indices:
                     continue
-                seen.update(new)
-                blocks.append(f"--- match at line {i + 1} ---\n" + _numbered(lines[lo:hi], lo))
+                seen.update(new_indices)
+                block_lines = lines[lo:hi]
+                rendered = _numbered(block_lines, lo) if include_line_numbers else "".join(block_lines)
+                blocks.append(f"--- match at line {i + 1} ---\n{rendered}")
         if not blocks:
-            return f"No matches for pattern {pattern!r} in {path}"
-        return _truncate("\n".join(blocks), label=path)
+            return f"[total_lines={total_lines}]\nNo matches for pattern {pattern!r} in {path}"
+        return f"[total_lines={total_lines}]\n" + "\n".join(blocks)
 
     lo = max(0, (start_line - 1) if start_line is not None else 0)
-    hi = min(total, end_line if end_line is not None else total)
+    hi = min(total_lines, end_line if end_line is not None else total_lines)
+
+    # Apply max_lines cap
+    if hi - lo > limit:
+        hi = lo + limit
+
     selected = lines[lo:hi]
-    header = f"[Lines {lo + 1}-{lo + len(selected)} of {total}]\n"
-    return _truncate(header + _numbered(selected, lo), label=path)
+    from_line = lo + 1
+    to_line = lo + len(selected)
+    has_more = to_line < total_lines
+
+    meta = f"[from_line={from_line}, to_line={to_line}, total_lines={total_lines}]"
+    if has_more:
+        meta += f"  ← use start_line={to_line + 1} to read more"
+
+    content = _numbered(selected, lo) if include_line_numbers else "".join(selected)
+    return meta + "\n" + content
 
 
 async def _file_write(
@@ -306,9 +319,13 @@ tool_registry.register(ToolDefinition(
     name="file_read",
     description=(
         "Read a file from the agent workspace. Path is relative to the workspace root. "
-        "With no extra parameters returns the full file. "
-        "Use start_line/end_line to read a specific line range (1-indexed, inclusive). "
-        "Use pattern (regex) to return matching lines plus context_lines of surrounding context."
+        "Always returns a metadata header '[from_line=X, to_line=Y, total_lines=Z]' followed "
+        "by the file content with line numbers (use include_line_numbers=false to omit them). "
+        "At most max_lines lines are returned per call (default from settings, typically 200); "
+        "if the file is larger the header says 'use start_line=N to read more'. "
+        "Use start_line/end_line to read a specific range (1-indexed, inclusive). "
+        "Use pattern (regex) to return matching lines plus context_lines of surrounding context. "
+        "Prefer this tool over bash cat/head/tail for reading files."
     ),
     input_schema={
         "type": "object",
@@ -318,6 +335,8 @@ tool_registry.register(ToolDefinition(
             "end_line": {"type": "integer", "description": "Last line to read, 1-indexed inclusive (omit for end of file)"},
             "pattern": {"type": "string", "description": "Regex to search for; returns each matching line with surrounding context"},
             "context_lines": {"type": "integer", "description": "Lines of context before/after each pattern match (default 5)", "default": 5},
+            "max_lines": {"type": "integer", "description": "Maximum lines to return in this call (overrides the default limit)"},
+            "include_line_numbers": {"type": "boolean", "description": "Prefix each line with its line number (default true)", "default": True},
         },
         "required": ["path"],
     },

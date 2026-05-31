@@ -51,7 +51,12 @@ class Agent:
     # Public entry point (called by the orchestration engine)
     # ------------------------------------------------------------------
 
-    async def run(self, envelope: TaskEnvelope, emitter: "StreamEmitter") -> AgentResult:
+    async def run(
+        self,
+        envelope: TaskEnvelope,
+        emitter: "StreamEmitter",
+        resume_messages: list | None = None,
+    ) -> AgentResult:
         from agentflow.core.models import SSEEventType
 
         start_ms = int(time.time() * 1000)
@@ -61,7 +66,7 @@ class Agent:
             message=f"Starting: {envelope.instruction[:80]}",
         )
         try:
-            result = await self._execute(envelope, emitter)
+            result = await self._execute(envelope, emitter, resume_messages=resume_messages)
         except Exception as exc:
             logger.exception("[%s] Agent %s raised an unhandled error", envelope.parent_run_id, self.agent_id)
             result = AgentResult(
@@ -77,7 +82,12 @@ class Agent:
     # Core execution: build tools, open MCP sessions, run agentic loop
     # ------------------------------------------------------------------
 
-    async def _execute(self, envelope: TaskEnvelope, emitter: "StreamEmitter") -> AgentResult:
+    async def _execute(
+        self,
+        envelope: TaskEnvelope,
+        emitter: "StreamEmitter",
+        resume_messages: list | None = None,
+    ) -> AgentResult:
         from agentflow.core.skill_loader import skill_loader
 
         async with AsyncExitStack() as stack:
@@ -104,7 +114,7 @@ class Agent:
                 system_prompt += skill_loader.preamble(self.manifest.skills)
 
             # 5. Run the agentic loop
-            return await self._agentic_loop(envelope, all_tools, system_prompt, emitter)
+            return await self._agentic_loop(envelope, all_tools, system_prompt, emitter, resume_messages=resume_messages)
 
     # ------------------------------------------------------------------
     # Agentic loop with tool execution
@@ -116,19 +126,37 @@ class Agent:
         tools: list,
         system_prompt: str,
         emitter: "StreamEmitter",
+        resume_messages: list | None = None,
     ) -> AgentResult:
         from agentflow.core.models import SSEEventType
 
-        # Build the initial user message, injecting prior results as context
-        user_content = envelope.instruction
-        if envelope.context.prior_results:
-            user_content += (
-                "\n\n<context>\n"
-                + json.dumps(envelope.context.prior_results, separators=(",", ":"))
-                + "\n</context>"
-            )
-
-        messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
+        if resume_messages is not None:
+            # Fix 3: resume a partial run — continue from the existing message thread.
+            messages: list[dict[str, Any]] = list(resume_messages)
+            # If the last message is from the assistant the model paused mid-thought;
+            # add a user prompt to continue.  If it is a user message (tool results)
+            # the model will naturally process them on the next iteration.
+            if messages and messages[-1].get("role") == "assistant":
+                messages.append({
+                    "role": "user",
+                    "content": "You reached the iteration limit. Continue your work from where you left off — do not repeat completed steps.",
+                })
+        elif envelope.context.prior_messages:
+            # Fix 2: single-dependency chain — inherit the prior subtask's full
+            # conversation so the agent already has all file contents in context.
+            messages = list(envelope.context.prior_messages)
+            user_content = envelope.instruction
+            messages.append({"role": "user", "content": user_content})
+        else:
+            # Standard path: build the initial user message with optional text context.
+            user_content = envelope.instruction
+            if envelope.context.prior_results:
+                user_content += (
+                    "\n\n<context>\n"
+                    + json.dumps(envelope.context.prior_results, separators=(",", ":"))
+                    + "\n</context>"
+                )
+            messages = [{"role": "user", "content": user_content}]
         anthropic_tools = [t.to_anthropic_param() for t in tools]
         total_input_tokens = 0
         total_output_tokens = 0
@@ -213,6 +241,7 @@ class Agent:
             cache_read_tokens=total_cache_read_tokens,
             tokens_used=total_input_tokens + total_output_tokens + total_cache_creation_tokens + total_cache_read_tokens,
             cost_usd=total_cost_usd,
+            messages=messages,
         )
 
     # ------------------------------------------------------------------

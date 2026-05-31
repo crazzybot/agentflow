@@ -2,6 +2,8 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from anthropic.types import TextBlock
+
 from agentflow.agents.agent import Agent
 from agentflow.core.models import AgentManifest, AgentStatus, TaskConstraints, TaskContext, TaskEnvelope
 
@@ -28,15 +30,15 @@ def _make_envelope(run_id: str = "run-1") -> TaskEnvelope:
 
 
 def _mock_response(stop_reason: str = "end_turn", text: str = '{"result": "done"}'):
-    block = MagicMock()
-    block.type = "text"
-    block.text = text
+    block = TextBlock(type="text", text=text)
 
     response = MagicMock()
     response.stop_reason = stop_reason
     response.content = [block]
     response.usage.input_tokens = 100
     response.usage.output_tokens = 50
+    response.usage.cache_creation_input_tokens = 0
+    response.usage.cache_read_input_tokens = 0
     return response
 
 
