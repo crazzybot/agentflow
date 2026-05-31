@@ -65,9 +65,20 @@ class AgentRegistry:
     # ------------------------------------------------------------------
 
     def summary(self) -> str:
-        lines = []
+        """Return a structured agent roster for the LLM planner.
+
+        Each entry surfaces the fields the planner needs to make routing and
+        skill-loading decisions without any hardcoded agent names in the prompt.
+        """
+        if not self._agents:
+            return "(no agents registered)"
+        blocks = []
         for agent in self._agents.values():
-            lines.append(
-                f"- {agent.agent_id} (domain: {agent.domain}): capabilities={agent.capabilities}, tools={agent.tools}, skills={agent.skills}"
-            )
-        return "\n".join(lines) if lines else "(no agents registered)"
+            parts = [f"## {agent.agent_id}"]
+            parts.append(f"  domain: {agent.domain}")
+            parts.append(f"  capabilities: {', '.join(agent.capabilities) or 'none'}")
+            parts.append(f"  tools: {', '.join(agent.tools) or 'none'}")
+            if agent.skills:
+                parts.append(f"  skills: {', '.join(agent.skills)}")
+            blocks.append("\n".join(parts))
+        return "\n\n".join(blocks)

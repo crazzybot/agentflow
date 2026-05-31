@@ -26,7 +26,7 @@ Return ONLY a JSON object with this exact schema (no markdown fences):
   "subtasks": [
     {
       "id": "st_1",
-      "agentId": "ResearchAgent",
+      "agentId": "AgentId",
       "instruction": "...",
       "dependsOn": [],
       "expectedOutput": "..."
@@ -34,27 +34,17 @@ Return ONLY a JSON object with this exact schema (no markdown fences):
   ]
 }
 
-Domain routing rules — always apply when selecting agents:
-- Frontend UI tasks (React components, SPA pages, CSS/Tailwind styling, TypeScript
-  frontend code, client-side routing) → assign to FrontendAgent; instruct it to call
-  read_skill(skill="frontend-web") at the start of the task.
-- Technical analysis tasks (computing SMA, EMA, RSI, MACD, Bollinger Bands, ATR, or
-  any price-derived indicator from OHLCV data) → assign to CodeAgent; instruct it to
-  call read_skill(skill="technical-analysis") at the start of the task.
-- Fundamental analysis tasks (DCF modelling, ratio analysis P/E EV/EBITDA ROE, earnings
-  quality, valuation multiples) → assign to FinancialAnalystAgent.
-- Equity research tasks (sourcing SEC filings, earnings transcripts, analyst estimates,
-  investment thesis construction) → assign to ResearchAgent; instruct it to call
-  read_skill(skill="equity-research") at the start of the task.
-- General API or library documentation research → assign to ResearchAgent with no skill
-  loading instruction.
-- Project structure planning, dependency mapping, or risk analysis → assign to PlannerAgent;
-  instruct it to use its domain knowledge and not search for established best practices.
+Agent selection — derive routing entirely from the agent list provided:
+- Match each subtask to the agent whose domain and capabilities best fit the work.
+- Prefer a specialist agent over a generalist when both could handle the task.
+- If the selected agent lists one or more skills, identify which skill is most relevant
+  to the subtask and begin the instruction with:
+  'Start by calling read_skill(skill="<name>") to load the relevant guidance.'
+  Only include this line when the agent has skills and the task falls within a skill's domain.
 
-Task scope rules — apply when assigning file-producing tasks:
-- A single CodeAgent or FrontendAgent subtask must produce at most 3 files. If a task
-  requires more, split it into separate subtasks by logical module or page (e.g.
-  "Write the authentication module", "Write the Dashboard page component").
+Task scope rules — apply to every file-producing subtask:
+- A single file-producing subtask must output at most 3 files. If more are needed,
+  split into separate subtasks by logical module or page.
 - Link split subtasks in dependency order only when a later module genuinely imports
   from an earlier one; otherwise let them run in parallel.
 
@@ -66,9 +56,9 @@ Parallelism rules — minimise wall-clock time:
   subtask (e.g. reads a file it wrote, or needs its structured result).
 - Minimise the critical path length: prefer breadth over depth in the dependency graph.
 
-Completeness verification — apply after every CodeAgent file-generation subtask:
-- After any subtask that asks CodeAgent to produce N named output files, add a follow-up
-  verification subtask (also assigned to CodeAgent) with this instruction pattern:
+Completeness verification — apply after every file-generating subtask:
+- After any subtask that asks an agent to produce N named output files, add a follow-up
+  verification subtask assigned to the same agent with this instruction pattern:
   "Verify that all required files from [prior subtask id] exist: [list every filename].
    For each missing file, write it now. Return JSON with files_written and files_missing."
 - The verification subtask must depend on the generation subtask and must complete before
