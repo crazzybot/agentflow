@@ -12,14 +12,15 @@ POST {{host}}/api/run HTTP/1.1
 Content-Type: application/json
 
 {
-    "task": "Implement web app project that will visualize the events trace for the agentflow runs, examples of the runs can be found in the agentflow workspace/run folder, the app should be able to display the events in a timeline view, and allow filtering by event type and time range.",
+    "task": "Include event specific rendering to the event details panel, currently it shows only common metadata and complete JSON content, add message specific controls, e.g. for tool call add a section that shows inoput arguments, also for bash_exec tool instead of generic argument rendering render bash command as a code block.",
     "context": {
+        "project": "agentflow-trace-viewer",
         "language": "Typescript",
         "tooling": "vite",
         "framework": "react",
         "type": "web, spa"
     },
-    "budget_usd": 5.0
+    "budget_usd": 3.0
 }
 
 ###

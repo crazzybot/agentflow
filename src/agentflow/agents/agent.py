@@ -209,6 +209,8 @@ class Agent:
                     "[%s] Unexpected stop_reason %r at iteration %d",
                     self.agent_id, response.stop_reason, iteration,
                 )
+                if response.stop_reason == "max_tokens":
+                    hit_limit = True
                 break
 
             # Execute all tool calls concurrently, then feed results back
