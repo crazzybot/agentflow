@@ -68,6 +68,7 @@ async def decompose_coding_subtask(
             return [subtask]
 
         micro: list[Subtask] = []
+        micro_fraction = (subtask.budget_fraction / len(items)) if subtask.budget_fraction else None
         for item in items:
             # Carry over the original subtask's depends_on only on the first micro-subtask
             base_deps = subtask.depends_on if not micro else [micro[-1].id]
@@ -78,6 +79,7 @@ async def decompose_coding_subtask(
                     instruction=item["instruction"],
                     depends_on=item.get("dependsOn", base_deps),
                     expected_output=item.get("expectedOutput", ""),
+                    budget_fraction=micro_fraction,
                 )
             )
         logger.info("[decomposer] Expanded %s → %d micro-subtasks", subtask.id, len(micro))

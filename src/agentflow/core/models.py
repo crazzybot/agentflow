@@ -40,8 +40,8 @@ class AgentManifest(BaseModel):
 
 
 class TaskConstraints(BaseModel):
-    max_tokens: int = 4096
-    timeout_ms: int = 30_000
+    budget_usd: float | None = None  # per-task budget; None → use token/iteration fallbacks
+    timeout_ms: int = 300_000
 
 
 class TaskContext(BaseModel):
@@ -120,6 +120,7 @@ class Subtask(BaseModel):
     instruction: str
     depends_on: list[str] = Field(default_factory=list)
     expected_output: str = ""
+    budget_fraction: float | None = None  # share of the total run budget for this subtask
 
 
 class ExecutionPlan(BaseModel):

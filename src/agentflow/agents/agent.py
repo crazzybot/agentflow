@@ -18,6 +18,7 @@ import time
 # prevents a single fetch_url call from dominating every subsequent loop iteration
 # (the full messages array is re-sent on each turn).
 _MAX_TOOL_RESULT_CHARS = 8_000
+
 from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +35,22 @@ if TYPE_CHECKING:
     from agentflow.orchestrator.stream import StreamEmitter
 
 logger = logging.getLogger(__name__)
+
+
+def _budget_to_max_tokens(remaining_budget: float, last_input_tokens: int) -> int:
+    """Compute how many output tokens we can afford with *remaining_budget*.
+
+    We subtract an estimate of the next call's input cost (based on the previous
+    call's input token count) to leave room for it, then convert the remainder to
+    output tokens using the configured output token price.
+    """
+    estimated_input_cost = last_input_tokens * settings.cost_per_1m_input_tokens / 1_000_000
+    output_budget = remaining_budget - estimated_input_cost
+    if output_budget <= 0:
+        return 256  # minimum to at least elicit an end_turn
+    tokens = int(output_budget / (settings.cost_per_1m_output_tokens / 1_000_000))
+    return max(256, min(16_384, tokens))
+
 
 
 class Agent:
@@ -166,12 +183,36 @@ class Agent:
         final_text = ""
         hit_limit = False
 
+        task_budget = envelope.constraints.budget_usd
         max_iterations = self.manifest.max_iterations or settings.agent_max_iterations
+        last_input_tokens = 0
+        iteration = 0
 
-        for iteration in range(max_iterations):
+        while True:
+            # --- Determine max_tokens for this iteration ---
+            if task_budget is not None:
+                remaining = task_budget - total_cost_usd
+                if remaining <= settings.agent_min_iteration_budget_usd:
+                    hit_limit = True
+                    logger.warning(
+                        "[%s] Task budget $%.4f exhausted after %d iteration(s) — returning partial result",
+                        self.agent_id, task_budget, iteration,
+                    )
+                    break
+                max_tokens = _budget_to_max_tokens(remaining, last_input_tokens)
+            else:
+                if iteration >= max_iterations:
+                    hit_limit = True
+                    logger.warning(
+                        "[%s] Hit max iterations (%d) — returning partial result",
+                        self.agent_id, max_iterations,
+                    )
+                    break
+                max_tokens = settings.agent_max_tokens_fallback
+
             create_kwargs: dict[str, Any] = {
                 "model": settings.agent_model,
-                "max_tokens": envelope.constraints.max_tokens,
+                "max_tokens": max_tokens,
                 "system": system_prompt,
                 "messages": messages,
             }
@@ -182,6 +223,7 @@ class Agent:
             u = response.usage
             call_cache_write = u.cache_creation_input_tokens or 0
             call_cache_read = u.cache_read_input_tokens or 0
+            last_input_tokens = u.input_tokens
             total_input_tokens += u.input_tokens
             total_output_tokens += u.output_tokens
             total_cache_creation_tokens += call_cache_write
@@ -192,6 +234,7 @@ class Agent:
                 + call_cache_write * settings.cost_per_1m_cache_write_tokens
                 + call_cache_read * settings.cost_per_1m_cache_read_tokens
             ) / 1_000_000
+            iteration += 1
 
             # Append the assistant's full response (preserves tool_use blocks)
             messages.append({"role": "assistant", "content": response.content})
@@ -220,10 +263,6 @@ class Agent:
             )
 
             messages.append({"role": "user", "content": list(tool_results)})
-
-        else:
-            hit_limit = True
-            logger.warning("[%s] Hit max iterations (%d) — returning partial result", self.agent_id, max_iterations)
 
         # Try to parse final text as JSON (many system prompts ask for JSON output)
         structured: dict[str, Any] = {}

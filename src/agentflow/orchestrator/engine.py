@@ -23,6 +23,37 @@ from agentflow.orchestrator.stream import StreamEmitter, stream_registry
 logger = logging.getLogger(__name__)
 
 
+def _compute_subtask_budget(
+    subtask: Subtask,
+    plan: ExecutionPlan,
+    completed: set[str],
+    failed: set[str],
+    in_flight: dict[str, Any],
+    ctx: RunContext,
+) -> float | None:
+    """Compute a concrete USD budget for *subtask* from the run's remaining budget.
+
+    The fraction assigned by the planner is relative to the pool of all not-yet-started
+    subtasks (including this one), so savings from earlier tasks automatically flow to
+    later ones.  Returns None when no run budget was set or the subtask has no fraction.
+    """
+    if ctx.budget_usd is None or subtask.budget_fraction is None:
+        return None
+
+    remaining = ctx.remaining_budget_usd() or 0.0
+
+    # Pending = not completed, not failed, not already in flight (they were budgeted earlier)
+    pending = [
+        st for st in plan.subtasks
+        if st.id not in completed and st.id not in failed and st.id not in in_flight
+    ]
+    total_pending_fraction = sum(st.budget_fraction or 0.0 for st in pending)
+    if total_pending_fraction <= 0:
+        return remaining
+
+    return remaining * (subtask.budget_fraction / total_pending_fraction)
+
+
 class OrchestratorEngine:
     def __init__(self, registry: AgentRegistry) -> None:
         logger.info("Initializing OrchestratorEngine with %d agents", len(registry.all()))
@@ -72,7 +103,7 @@ class OrchestratorEngine:
 
         try:
             # Step 02: LLM planning pass
-            plan = await create_plan(run_id, task, self.registry, self._client)
+            plan = await create_plan(run_id, task, self.registry, self._client, budget_usd=budget_usd)
 
             # Step 02b: expand coding subtasks into micro-subtasks
             coding_agent_ids = {
@@ -156,8 +187,9 @@ class OrchestratorEngine:
             ]
 
             for subtask in ready:
+                task_budget = _compute_subtask_budget(subtask, plan, completed, failed, in_flight, ctx)
                 in_flight[subtask.id] = asyncio.create_task(
-                    self._dispatch_subtask(run_id, subtask, ctx, emitter)
+                    self._dispatch_subtask(run_id, subtask, ctx, emitter, task_budget)
                 )
 
             if not in_flight:
@@ -199,6 +231,7 @@ class OrchestratorEngine:
         subtask: Subtask,
         ctx: RunContext,
         emitter: StreamEmitter,
+        task_budget_usd: float | None = None,
     ) -> bool:
         """Dispatch a subtask with retry and continuation logic. Returns True on success/partial."""
         agent = self._agent_instances.get(subtask.agent_id)
@@ -219,7 +252,7 @@ class OrchestratorEngine:
             instruction=subtask.instruction,
             context=TaskContext(prior_results=prior_results, prior_messages=prior_messages),
             constraints=TaskConstraints(
-                max_tokens=settings.task_max_tokens,
+                budget_usd=task_budget_usd,
                 timeout_ms=settings.task_timeout_ms,
             ),
         )
@@ -284,7 +317,9 @@ class OrchestratorEngine:
                     )
                     return False
 
-            if result.status == AgentStatus.partial:
+            if result.status == AgentStatus.partial and envelope.constraints.budget_usd is None:
+                # Only continue when there was no task budget — with a budget the agent
+                # already ran until exhausted, so continuation would immediately stop again.
                 result = await self._continue_partial(run_id, subtask, envelope, result, ctx, emitter)
 
             await ctx.store_result(subtask.id, result)

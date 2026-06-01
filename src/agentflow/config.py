@@ -9,15 +9,19 @@ class Settings(BaseSettings):
     agent_model: str = "claude-sonnet-4-6"
     reporter_model: str = "claude-haiku-4-5-20251001"
 
-    task_timeout_ms: int = 300_000
+    task_timeout_ms: int = 3_600_000  # 1 hour — budget exhaustion is the real limiter
     task_max_retries: int = 1
-    task_max_tokens: int = 4096
 
     manifests_dir: str = "manifests"
     workspace_dir: str = "workspace"
     skills_dir: str = "skills"
     sandbox_python: str = "sandbox/.venv/bin/python"
-    agent_max_iterations: int = 10
+    agent_max_iterations: int = 10  # fallback when no budget is set
+    agent_max_tokens_fallback: int = 8_192  # max_tokens per call when no budget is set
+    # Minimum remaining budget (USD) required to attempt another agent iteration.
+    # Below this threshold the agent stops and returns partial rather than starting
+    # a call that is almost certain to be cut short by max_tokens.
+    agent_min_iteration_budget_usd: float = 0.002
 
     enable_prompt_caching: bool = True
     capture_events: bool = False

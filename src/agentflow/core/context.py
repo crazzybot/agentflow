@@ -31,6 +31,12 @@ class RunContext:
     def total_cost_usd(self) -> float:
         return self._total_cost_usd
 
+    def remaining_budget_usd(self) -> float | None:
+        """Remaining run budget in USD, or None if no budget was set."""
+        if self.budget_usd is None:
+            return None
+        return max(0.0, self.budget_usd - self._total_cost_usd)
+
     def within_budget(self) -> bool:
         """True if no budget is set, or if cost so far is below the limit."""
         if self.budget_usd is None:

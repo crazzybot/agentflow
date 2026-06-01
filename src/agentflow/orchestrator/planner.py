@@ -23,7 +23,7 @@ _PLANNER_TOOLS = ["file_read", "bash_exec", "web_search", "fetch_url"]
 # Planner tool results are capped at this many chars to keep the context manageable.
 _MAX_TOOL_RESULT_CHARS = 8_000
 
-SYSTEM_PROMPT = """\
+_SYSTEM_PROMPT_BASE = """\
 You are an orchestration planner. You have read-only tools to explore the workspace
 before you commit to a plan.
 
@@ -78,6 +78,30 @@ Completeness verification:
   If files are missing, say "write the missing files" instead.
 """
 
+_BUDGET_ALLOCATION_INSTRUCTIONS = """
+Budget allocation:
+A total run budget in USD has been allocated for this task. Each subtask must include a
+"budgetFraction" field: a float between 0 and 1 representing that subtask's share of the
+total budget. All fractions across all subtasks must sum to exactly 1.0.
+Allocation guidance:
+- Give more budget to subtasks that require many tool calls, large file reads, or complex
+  code generation (expect more input + output tokens).
+- Give less budget to lightweight subtasks (single-file reads, short verifications).
+- The JSON schema with budgetFraction:
+{
+  "subtasks": [
+    {
+      "id": "st_1",
+      "agentId": "AgentId",
+      "instruction": "...",
+      "dependsOn": [],
+      "expectedOutput": "...",
+      "budgetFraction": 0.7
+    }
+  ]
+}
+"""
+
 
 async def _call_planner_tool(block: anthropic.types.ToolUseBlock, tools: list) -> dict:
     tool_def = next((t for t in tools if t.name == block.name), None)
@@ -107,13 +131,19 @@ async def create_plan(
     task: str,
     registry: AgentRegistry,
     client: LLMClient | anthropic.AsyncAnthropic,
+    budget_usd: float | None = None,
 ) -> ExecutionPlan:
     agent_summary = registry.summary()
     planner_tools = tool_registry.get_many(_PLANNER_TOOLS)
     anthropic_tools = [t.to_anthropic_param() for t in planner_tools]
 
+    system_prompt = _SYSTEM_PROMPT_BASE
+    if budget_usd is not None:
+        system_prompt = system_prompt + _BUDGET_ALLOCATION_INSTRUCTIONS
+
+    budget_note = f" (budget: ${budget_usd:.4f})" if budget_usd is not None else ""
     messages: list[dict] = [
-        {"role": "user", "content": f'Task: "{task}"\n\nAvailable Agents:\n{agent_summary}'}
+        {"role": "user", "content": f'Task: "{task}"{budget_note}\n\nAvailable Agents:\n{agent_summary}'}
     ]
     last_response = None
 
@@ -123,7 +153,7 @@ async def create_plan(
         response = await client.messages.create(
             model=settings.planner_model,
             max_tokens=4096,
-            system=SYSTEM_PROMPT,
+            system=system_prompt,
             messages=messages,
             tools=anthropic_tools,
         )
@@ -168,6 +198,7 @@ async def create_plan(
                 instruction=st["instruction"],
                 depends_on=st.get("dependsOn", []),
                 expected_output=st.get("expectedOutput", ""),
+                budget_fraction=st.get("budgetFraction"),
             )
             for st in plan_data["subtasks"]
         ]
@@ -180,7 +211,23 @@ async def create_plan(
                 instruction=task,
                 depends_on=[],
                 expected_output="task result",
+                budget_fraction=1.0 if budget_usd is not None else None,
             )
         ]
+
+    # Ensure fractions are set and sum to 1.0 whenever a run budget is provided.
+    # The model may omit budgetFraction or return values that don't sum to 1.0.
+    if budget_usd is not None and subtasks:
+        n = len(subtasks)
+        total = sum(st.budget_fraction or 0.0 for st in subtasks)
+        if total < 0.01:
+            # Model omitted fractions entirely — distribute equally.
+            subtasks = [st.model_copy(update={"budget_fraction": 1.0 / n}) for st in subtasks]
+        elif abs(total - 1.0) > 0.01:
+            # Renormalize so fractions sum to exactly 1.0.
+            subtasks = [
+                st.model_copy(update={"budget_fraction": (st.budget_fraction or 0.0) / total})
+                for st in subtasks
+            ]
 
     return ExecutionPlan(run_id=run_id, subtasks=subtasks)
