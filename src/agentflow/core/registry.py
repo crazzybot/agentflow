@@ -5,9 +5,18 @@ import json
 import logging
 from pathlib import Path
 
+import yaml
+
 from agentflow.core.models import AgentManifest
 
 logger = logging.getLogger(__name__)
+
+
+def _load_manifest_file(path: Path) -> dict:
+    text = path.read_text()
+    if path.suffix in {".yaml", ".yml"}:
+        return yaml.safe_load(text)
+    return json.loads(text)
 
 
 class AgentRegistry:
@@ -31,13 +40,20 @@ class AgentRegistry:
         if not dir_path.exists():
             logger.warning("Manifests directory %s does not exist — skipping", dir_path)
             return
-        for manifest_file in dir_path.glob("*.json"):
-            try:
-                data = json.loads(manifest_file.read_text())
-                manifest = AgentManifest(**data)
-                self.register(manifest)
-            except Exception as exc:
-                logger.error("Failed to load manifest %s: %s", manifest_file, exc)
+        patterns = ("*.json", "*.yaml", "*.yml")
+        seen: set[str] = set()
+        for pattern in patterns:
+            for manifest_file in sorted(dir_path.glob(pattern)):
+                if manifest_file.stem in seen:
+                    logger.warning("Skipping duplicate manifest %s (already loaded)", manifest_file)
+                    continue
+                try:
+                    data = _load_manifest_file(manifest_file)
+                    manifest = AgentManifest(**data)
+                    self.register(manifest)
+                    seen.add(manifest_file.stem)
+                except Exception as exc:
+                    logger.error("Failed to load manifest %s: %s", manifest_file, exc)
 
     # ------------------------------------------------------------------
     # Lookup
