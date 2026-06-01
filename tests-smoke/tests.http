@@ -12,9 +12,9 @@ POST {{host}}/api/run HTTP/1.1
 Content-Type: application/json
 
 {
-    "task": "Make the event records in the run list look nicer and more human-friendly, e.g. the event content is displayed as a plain text line after the event timeline which does not look good.",
+    "task": "Complete the implementation of the tic-tac-toe project. The current implementation state is in the `implementation-state.md` document.",
     "context": {
-        "project": "agentflow-trace-viewer",
+        "project": "tic-tac-toe",
         "language": "Typescript",
         "tooling": "vite",
         "framework": "react",

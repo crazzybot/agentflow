@@ -384,7 +384,7 @@ tool_registry.register(ToolDefinition(
 # bash_exec
 # ---------------------------------------------------------------------------
 
-async def _bash_exec(command: str, timeout_seconds: int = 30) -> str:
+async def _bash_exec(command: str, purpose: str, timeout_seconds: int = 30) -> str:
     try:
         proc = await asyncio.create_subprocess_shell(
             command,
@@ -408,9 +408,10 @@ tool_registry.register(ToolDefinition(
         "type": "object",
         "properties": {
             "command": {"type": "string", "description": "Shell command to run"},
+            "purpose": {"type": "string", "description": "Short explanation of why this command is being run"},
             "timeout_seconds": {"type": "integer", "description": "Timeout in seconds (default 30)", "default": 30},
         },
-        "required": ["command"],
+        "required": ["command", "purpose"],
     },
     handler=_bash_exec,
     impact=ToolImpact.execute,
@@ -435,7 +436,7 @@ def _sandbox_python() -> str:
     return "python3"
 
 
-async def _python_exec(code: str, timeout_seconds: int = 30) -> str:
+async def _python_exec(code: str, purpose: str, timeout_seconds: int = 30) -> str:
     try:
         proc = await asyncio.create_subprocess_exec(
             _sandbox_python(), "-c", code,
@@ -459,9 +460,10 @@ tool_registry.register(ToolDefinition(
         "type": "object",
         "properties": {
             "code": {"type": "string", "description": "Python code to execute"},
+            "purpose": {"type": "string", "description": "Short explanation of why this code is being run"},
             "timeout_seconds": {"type": "integer", "description": "Timeout in seconds (default 30)", "default": 30},
         },
-        "required": ["code"],
+        "required": ["code", "purpose"],
     },
     handler=_python_exec,
     impact=ToolImpact.execute,
