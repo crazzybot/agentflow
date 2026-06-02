@@ -106,7 +106,7 @@ class OrchestratorEngine:
             plan = await create_plan(run_id, task, self.registry, self._client, budget_usd=budget_usd)
 
             # Step 02b: expand subtasks for agents that declare a decomposition_prompt
-            plan = await expand_plan(plan, self.registry, self._client)
+            plan = await expand_plan(plan, self.registry, self._client, emitter)
 
             emitter.emit(
                 SSEEventType.plan_created,

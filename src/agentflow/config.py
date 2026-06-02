@@ -43,5 +43,8 @@ class Settings(BaseSettings):
     # Max iterations the agentic planner may use for workspace exploration
     planner_max_iterations: int = 15
 
+    # Max iterations for the per-subtask decomposer ReAct loop
+    decomposer_max_iterations: int = 5
+
 
 settings = Settings()
