@@ -1,12 +1,13 @@
 """Task decomposer — expands subtasks using per-manifest decomposition prompts.
 
-Each decomposition runs a full ReAct loop with the same tools as the target agent,
-so the decomposer can explore the workspace before deciding how to split the task.
+Each decomposition runs a ReAct loop with read-only tools so the decomposer can
+explore the workspace before deciding how to split the task.
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from agentflow.config import settings
@@ -20,6 +21,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# Tools the decomposer is allowed to use — read-only so it can inspect the
+# workspace without accidentally executing or writing anything.
+_DECOMPOSER_TOOLS = frozenset({"file_read", "bash_exec"})
+
+
+def _extract_json_array(text: str) -> str:
+    """Return the first JSON array found in *text*, stripping any surrounding prose or fences."""
+    # Strip a leading ```[language] fence and trailing ``` if present
+    fenced = re.search(r"```(?:\w+)?\s*([\s\S]*?)```", text)
+    if fenced:
+        text = fenced.group(1)
+
+    # Find the outermost [...] span
+    start = text.find("[")
+    end = text.rfind("]")
+    if start != -1 and end > start:
+        return text[start : end + 1]
+
+    return text.strip()
+
+
 async def decompose_subtask(
     subtask: Subtask,
     manifest: AgentManifest,
@@ -27,17 +49,21 @@ async def decompose_subtask(
     client: LLMClient,
     emitter: "StreamEmitter",
 ) -> list[Subtask]:
-    """Run a ReAct loop to decompose *subtask* using the agent's own tools.
+    """Run a ReAct loop to decompose *subtask* using read-only tools.
 
     Returns the expanded list of micro-subtasks, or [subtask] if the task is
     already small enough or if the decomposition loop fails.
     """
     from agentflow.agents.agent import Agent
 
+    # Intersect with the read-only allowlist so the decomposer can explore the
+    # workspace but cannot execute code or write files.
+    allowed_tools = [t for t in manifest.tools if t in _DECOMPOSER_TOOLS]
+
     decomposer_manifest = AgentManifest(
         agent_id=f"{manifest.agent_id}.decomposer",
         domain=manifest.domain,
-        tools=manifest.tools,
+        tools=allowed_tools,
         mcp_servers=manifest.mcp_servers,
         system_prompt=manifest.decomposition_prompt or "",  # guaranteed non-None at call site
         max_iterations=settings.decomposer_max_iterations,
@@ -60,7 +86,7 @@ async def decompose_subtask(
         logger.warning("[decomposer] Decomposition loop failed for %s — keeping original", subtask.id)
         return [subtask]
 
-    raw = result.output.text.strip().strip("```").strip("json").strip()
+    raw = _extract_json_array(result.output.text)
     try:
         items = json.loads(raw)
         if not isinstance(items, list) or len(items) <= 1:
@@ -83,7 +109,10 @@ async def decompose_subtask(
         logger.info("[decomposer] Expanded %s → %d micro-subtasks", subtask.id, len(micro))
         return micro
     except (json.JSONDecodeError, KeyError) as exc:
-        logger.warning("[decomposer] Could not parse decomposition for %s: %s — keeping original", subtask.id, exc)
+        logger.warning(
+            "[decomposer] Could not parse decomposition for %s: %s — keeping original.\nRaw output was:\n%s",
+            subtask.id, exc, result.output.text[:500],
+        )
         return [subtask]
 
 
