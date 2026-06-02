@@ -48,6 +48,7 @@ class TaskConstraints(BaseModel):
 class TaskContext(BaseModel):
     prior_results: dict[str, Any] = Field(default_factory=dict)
     shared_memory: dict[str, Any] = Field(default_factory=dict)
+    user_context: dict[str, Any] = Field(default_factory=dict)
     # Full message history from a single dependency — injected when there is exactly one
     # upstream subtask so the agent inherits prior tool results without re-reading files.
     prior_messages: list[Any] = Field(default_factory=list, exclude=True)

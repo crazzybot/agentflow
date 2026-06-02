@@ -96,14 +96,14 @@ class OrchestratorEngine:
             else None
         )
         emitter = stream_registry.create(run_id, events_file=events_file)
-        ctx = context_store.create(run_id, results_file=results_file, budget_usd=budget_usd)
+        ctx = context_store.create(run_id, results_file=results_file, budget_usd=budget_usd, user_context=user_context)
         task_bus.create_run(run_id)
 
         emitter.emit(SSEEventType.run_started, message=f"Run {run_id} started")
 
         try:
             # Step 02: LLM planning pass
-            plan = await create_plan(run_id, task, self.registry, self._client, budget_usd=budget_usd)
+            plan = await create_plan(run_id, task, self.registry, self._client, budget_usd=budget_usd, user_context=user_context)
 
             # Step 02b: expand subtasks for agents that declare a decomposition_prompt
             plan = await expand_plan(plan, self.registry, self._client, emitter)
@@ -246,7 +246,7 @@ class OrchestratorEngine:
             parent_run_id=run_id,
             agent_id=subtask.agent_id,
             instruction=subtask.instruction,
-            context=TaskContext(prior_results=prior_results, prior_messages=prior_messages),
+            context=TaskContext(prior_results=prior_results, prior_messages=prior_messages, user_context=ctx.user_context),
             constraints=TaskConstraints(
                 budget_usd=task_budget_usd,
                 timeout_ms=settings.task_timeout_ms,

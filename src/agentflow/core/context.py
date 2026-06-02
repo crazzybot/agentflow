@@ -15,9 +15,11 @@ class RunContext:
         run_id: str,
         results_file: str | None = None,
         budget_usd: float | None = None,
+        user_context: dict | None = None,
     ) -> None:
         self.run_id = run_id
         self.budget_usd = budget_usd
+        self.user_context: dict = user_context or {}
         self._results: dict[str, AgentResult] = {}
         self._lock = asyncio.Lock()
         self._results_file = results_file
@@ -100,8 +102,9 @@ class ContextStore:
         run_id: str,
         results_file: str | None = None,
         budget_usd: float | None = None,
+        user_context: dict | None = None,
     ) -> RunContext:
-        ctx = RunContext(run_id, results_file=results_file, budget_usd=budget_usd)
+        ctx = RunContext(run_id, results_file=results_file, budget_usd=budget_usd, user_context=user_context)
         self._runs[run_id] = ctx
         return ctx
 

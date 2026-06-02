@@ -132,6 +132,7 @@ async def create_plan(
     registry: AgentRegistry,
     client: LLMClient | anthropic.AsyncAnthropic,
     budget_usd: float | None = None,
+    user_context: dict | None = None,
 ) -> ExecutionPlan:
     agent_summary = registry.summary()
     planner_tools = tool_registry.get_many(_PLANNER_TOOLS)
@@ -142,8 +143,11 @@ async def create_plan(
         system_prompt = system_prompt + _BUDGET_ALLOCATION_INSTRUCTIONS
 
     budget_note = f" (budget: ${budget_usd:.4f})" if budget_usd is not None else ""
+    context_note = (
+        f"\n\nUser Context:\n{json.dumps(user_context, indent=2)}" if user_context else ""
+    )
     messages: list[dict] = [
-        {"role": "user", "content": f'Task: "{task}"{budget_note}\n\nAvailable Agents:\n{agent_summary}'}
+        {"role": "user", "content": f'Task: "{task}"{budget_note}{context_note}\n\nAvailable Agents:\n{agent_summary}'}
     ]
     last_response = None
 

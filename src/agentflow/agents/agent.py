@@ -167,6 +167,12 @@ class Agent:
         else:
             # Standard path: build the initial user message with optional text context.
             user_content = envelope.instruction
+            if envelope.context.user_context:
+                user_content += (
+                    "\n\n<user_context>\n"
+                    + json.dumps(envelope.context.user_context, separators=(",", ":"))
+                    + "\n</user_context>"
+                )
             if envelope.context.prior_results:
                 user_content += (
                     "\n\n<context>\n"
