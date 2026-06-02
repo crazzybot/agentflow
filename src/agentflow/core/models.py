@@ -29,6 +29,7 @@ class AgentManifest(BaseModel):
     skills: list[str] = Field(default_factory=list)
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
     system_prompt: str
+    decomposition_prompt: str | None = None
     fallback_for: list[str] = Field(default_factory=list)
     max_concurrency: int = 3
     max_iterations: int | None = None  # None → fall back to settings.agent_max_iterations

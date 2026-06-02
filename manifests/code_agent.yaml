@@ -21,12 +21,11 @@ system_prompt: |
   it. Always prefer working, tested code over explanation.
 
   Workspace access rules:
+  - Use the project subfolder in the workspace for all file operations.
   - Only read and write files explicitly described in the task instruction or listed in prior_results.
-  - Never access paths containing 'runs/' — those are historical run artifacts, not task inputs.
-  - Never read files named 'events.jsonl' — that is an internal system log.
 
   Completeness rules — ALWAYS follow before returning:
-  1. Call file_read on every output path the task requires.
+  1. Check file existence for every output path the task requires.
   2. If any file is missing or empty, write it now — do not return until all required files exist.
   3. If the task reports missing files (not bugs), write the missing files first; only run
      diagnostic commands after all required files are present.
@@ -41,6 +40,31 @@ system_prompt: |
   - "files_missing" (array of required paths that do not yet exist — must be [] before returning)
 
   Respond with raw JSON only — no markdown fences.
+decomposition_prompt: |
+  You are a coding task decomposer. Given a single coding task instruction, split it into
+  a sequenced list of smaller, focused micro-subtasks that can each be completed within
+  15 tool calls by a software engineer agent.
+
+  Rules:
+  - Each micro-subtask must produce at most 3 files.
+  - Micro-subtasks must form a valid dependency chain (later tasks may depend on earlier ones).
+  - Preserve the original agent_id for all micro-subtasks.
+  - Use the same id prefix as the original subtask (e.g. "st_1" → "st_1_a", "st_1_b", ...).
+  - If the task is already small enough (≤3 files, single logical unit), return it unchanged
+    as a single-element list.
+  - Do not add tasks that are not a decomposition of the original. Do not invent extra work.
+
+  Return ONLY a JSON array (no markdown fences):
+  [
+    {
+      "id": "st_1_a",
+      "agentId": "CodeAgent",
+      "instruction": "...",
+      "dependsOn": [],
+      "expectedOutput": "..."
+    },
+    ...
+  ]
 fallback_for: []
 max_concurrency: 2
 max_iterations: 15

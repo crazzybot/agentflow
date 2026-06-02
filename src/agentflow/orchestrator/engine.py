@@ -105,12 +105,8 @@ class OrchestratorEngine:
             # Step 02: LLM planning pass
             plan = await create_plan(run_id, task, self.registry, self._client, budget_usd=budget_usd)
 
-            # Step 02b: expand coding subtasks into micro-subtasks
-            coding_agent_ids = {
-                m.agent_id for m in self.registry.all() if "code_generation" in m.capabilities
-            }
-            if coding_agent_ids:
-                plan = await expand_plan(plan, coding_agent_ids, self._client)
+            # Step 02b: expand subtasks for agents that declare a decomposition_prompt
+            plan = await expand_plan(plan, self.registry, self._client)
 
             emitter.emit(
                 SSEEventType.plan_created,
