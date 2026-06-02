@@ -108,7 +108,7 @@ async def compile_report(
         messages=[{"role": "user", "content": synthesis_input}],
     )
     report_body = next(
-        (block.text for block in response.content if hasattr(block, "text")), ""
+        (block.text for block in response.content if hasattr(block, "text")), "" # type: ignore
     ).strip()
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
