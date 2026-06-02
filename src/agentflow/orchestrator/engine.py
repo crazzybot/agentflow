@@ -86,12 +86,12 @@ class OrchestratorEngine:
         budget_usd: float | None = None,
     ) -> None:
         events_file = (
-            f"{settings.workspace_dir}/runs/{run_id}/events.jsonl"
+            f"{settings.runs_dir}/{run_id}/events.jsonl"
             if settings.capture_events
             else None
         )
         results_file = (
-            f"{settings.workspace_dir}/runs/{run_id}/results.jsonl"
+            f"{settings.runs_dir}/{run_id}/results.jsonl"
             if settings.capture_results
             else None
         )

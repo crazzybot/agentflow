@@ -133,7 +133,7 @@ async def compile_report(
     )
     full_report = header + report_body
 
-    run_dir = os.path.join(settings.workspace_dir, "runs", run_id)
+    run_dir = os.path.join(settings.runs_dir, run_id)
     os.makedirs(run_dir, exist_ok=True)
     report_path = os.path.join(run_dir, "report.md")
     with open(report_path, "w", encoding="utf-8") as fh:

@@ -14,6 +14,7 @@ class Settings(BaseSettings):
 
     manifests_dir: str = "manifests"
     workspace_dir: str = "workspace"
+    runs_dir: str = ".runs"
     skills_dir: str = "skills"
     sandbox_python: str = "sandbox/.venv/bin/python"
     agent_max_iterations: int = 10  # fallback when no budget is set
