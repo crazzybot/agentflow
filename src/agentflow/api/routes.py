@@ -1,13 +1,26 @@
-"""FastAPI routes — POST /run and GET /run/:id/stream."""
+"""FastAPI routes — POST /run, GET /run/:id/stream, and past-run query endpoints."""
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
-from agentflow.core.models import RunRequest, RunResponse
+from agentflow.config import settings
+from agentflow.core.models import (
+    RunEventsResponse,
+    RunInfo,
+    RunListResponse,
+    RunReportResponse,
+    RunRequest,
+    RunResponse,
+    RunResultsResponse,
+    SSEEvent,
+    SubtaskResult,
+)
 from agentflow.orchestrator.stream import stream_registry
 
 router = APIRouter()
@@ -41,3 +54,85 @@ async def stream_run(run_id: str):
     if emitter is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found")
     return EventSourceResponse(emitter)
+
+
+# ---------------------------------------------------------------------------
+# Past-run query endpoints
+# ---------------------------------------------------------------------------
+
+
+def _run_dir(run_id: str) -> Path:
+    return Path(settings.runs_dir) / run_id
+
+
+def _require_run(run_id: str) -> Path:
+    d = _run_dir(run_id)
+    if not d.is_dir():
+        raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found")
+    return d
+
+
+@router.get("/runs", response_model=RunListResponse)
+async def list_runs():
+    runs_dir = Path(settings.runs_dir)
+    if not runs_dir.exists():
+        return RunListResponse(runs=[])
+    runs = [
+        RunInfo(
+            run_id=d.name,
+            has_events=(d / "events.jsonl").exists(),
+            has_results=(d / "results.jsonl").exists(),
+            has_report=(d / "report.md").exists(),
+        )
+        for d in sorted(runs_dir.iterdir())
+        if d.is_dir()
+    ]
+    return RunListResponse(runs=runs)
+
+
+@router.get("/runs/{run_id}", response_model=RunInfo)
+async def get_run(run_id: str):
+    d = _require_run(run_id)
+    return RunInfo(
+        run_id=run_id,
+        has_events=(d / "events.jsonl").exists(),
+        has_results=(d / "results.jsonl").exists(),
+        has_report=(d / "report.md").exists(),
+    )
+
+
+@router.get("/runs/{run_id}/events", response_model=RunEventsResponse)
+async def get_run_events(run_id: str):
+    d = _require_run(run_id)
+    events_file = d / "events.jsonl"
+    if not events_file.exists():
+        raise HTTPException(status_code=404, detail="No events captured for this run")
+    events = [
+        SSEEvent.model_validate(json.loads(line))
+        for line in events_file.read_text().splitlines()
+        if line.strip()
+    ]
+    return RunEventsResponse(run_id=run_id, events=events)
+
+
+@router.get("/runs/{run_id}/results", response_model=RunResultsResponse)
+async def get_run_results(run_id: str):
+    d = _require_run(run_id)
+    results_file = d / "results.jsonl"
+    if not results_file.exists():
+        raise HTTPException(status_code=404, detail="No results captured for this run")
+    results = [
+        SubtaskResult.model_validate(json.loads(line))
+        for line in results_file.read_text().splitlines()
+        if line.strip()
+    ]
+    return RunResultsResponse(run_id=run_id, results=results)
+
+
+@router.get("/runs/{run_id}/report", response_model=RunReportResponse)
+async def get_run_report(run_id: str):
+    d = _require_run(run_id)
+    report_file = d / "report.md"
+    if not report_file.exists():
+        raise HTTPException(status_code=404, detail="No report for this run")
+    return RunReportResponse(run_id=run_id, report=report_file.read_text(encoding="utf-8"))

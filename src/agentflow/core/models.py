@@ -179,3 +179,38 @@ class RunRequest(BaseModel):
 class RunResponse(BaseModel):
     run_id: str
     status: str = "started"
+
+
+# ---------------------------------------------------------------------------
+# Past-run query response shapes
+# ---------------------------------------------------------------------------
+
+
+class RunInfo(BaseModel):
+    run_id: str
+    has_events: bool
+    has_results: bool
+    has_report: bool
+
+
+class RunListResponse(BaseModel):
+    runs: list[RunInfo]
+
+
+class SubtaskResult(AgentResult):
+    subtask_id: str
+
+
+class RunResultsResponse(BaseModel):
+    run_id: str
+    results: list[SubtaskResult]
+
+
+class RunEventsResponse(BaseModel):
+    run_id: str
+    events: list[SSEEvent]
+
+
+class RunReportResponse(BaseModel):
+    run_id: str
+    report: str
