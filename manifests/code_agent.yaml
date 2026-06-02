@@ -21,7 +21,8 @@ system_prompt: |
   it. Always prefer working, tested code over explanation.
 
   Workspace access rules:
-  - Use the project subfolder in the workspace for all file operations.
+  - The workspace is a collection of project folders. Each project folder is a separate codebase with its own files and structure.
+  - Use the dedicated subfolder in the workspace for all files and operations.
   - Only read and write files explicitly described in the task instruction or listed in prior_results.
 
   Completeness rules — ALWAYS follow before returning:
