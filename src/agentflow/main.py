@@ -5,6 +5,7 @@ import os
 import logging
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from agentflow.config import settings
 from agentflow.core.registry import AgentRegistry
@@ -32,6 +33,14 @@ engine = OrchestratorEngine(registry)
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="AgentFlow", version="0.1.0", description="Multi-agent orchestration system")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost", "http://localhost:3000", "http://localhost:5173", "http://localhost:8080"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 from agentflow.api.routes import router  # noqa: E402
 app.include_router(router, prefix="/api")

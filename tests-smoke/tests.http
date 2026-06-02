@@ -12,13 +12,11 @@ POST {{host}}/api/run HTTP/1.1
 Content-Type: application/json
 
 {
-    "task": "Complete the implementation of the tic-tac-toe project. The current implementation state is in the `implementation-state.md` document.",
+    "task": "Implement a simple MCP server that can load historical stock prices.",
     "context": {
-        "project": "tic-tac-toe",
-        "language": "Typescript",
-        "tooling": "vite",
-        "framework": "react",
-        "type": "web, spa"
+        "project": "mcp-sample",
+        "language": "Python",
+        "dependency_management": "uv"
     },
     "budget_usd": 3.0
 }

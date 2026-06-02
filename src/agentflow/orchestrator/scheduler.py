@@ -28,7 +28,7 @@ class DependencyGraph:
         if not nx.is_directed_acyclic_graph(self._graph):
             raise ValueError("Execution plan contains a dependency cycle")
 
-    def ready(self, completed: set[str], failed: set[str] = frozenset()) -> list[Subtask]:
+    def ready(self, completed: set[str], failed: set[str] = frozenset()) -> list[Subtask]: # type: ignore
         """Return subtasks whose dependencies all succeeded.
 
         A task is skipped (never returned) if any dependency is in *failed*;
