@@ -158,8 +158,8 @@ async def create_plan(
             model=settings.planner_model,
             max_tokens=4096,
             system=system_prompt,
-            messages=messages,
-            tools=anthropic_tools,
+            messages=messages,  # type: ignore
+            tools=anthropic_tools, # type: ignore
         )
         last_response = response
         messages.append({"role": "assistant", "content": response.content})
