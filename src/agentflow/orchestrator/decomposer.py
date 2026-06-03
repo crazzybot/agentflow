@@ -11,7 +11,7 @@ import re
 from typing import TYPE_CHECKING
 
 from agentflow.config import settings
-from agentflow.core.models import AgentManifest, AgentStatus, ExecutionPlan, Subtask, TaskEnvelope
+from agentflow.core.models import AgentManifest, AgentStatus, ExecutionPlan, Subtask, TaskContext, TaskEnvelope
 from agentflow.core.registry import AgentRegistry
 from agentflow.llm import LLMClient
 
@@ -48,6 +48,8 @@ async def decompose_subtask(
     run_id: str,
     client: LLMClient,
     emitter: "StreamEmitter",
+    task: str = "",
+    user_context: dict | None = None,
 ) -> list[Subtask]:
     """Run a ReAct loop to decompose *subtask* using read-only tools.
 
@@ -69,14 +71,19 @@ async def decompose_subtask(
         max_iterations=settings.decomposer_max_iterations,
     )
 
+    instruction_parts = []
+    if task:
+        instruction_parts.append(f"Top-level task:\n{task}")
+    instruction_parts.append(
+        f'Original subtask id: "{subtask.id}"\n'
+        f'Agent: "{subtask.agent_id}"\n'
+        f'Instruction:\n{subtask.instruction}'
+    )
     envelope = TaskEnvelope(
         parent_run_id=run_id,
         agent_id=decomposer_manifest.agent_id,
-        instruction=(
-            f'Original subtask id: "{subtask.id}"\n'
-            f'Agent: "{subtask.agent_id}"\n'
-            f'Instruction:\n{subtask.instruction}'
-        ),
+        instruction="\n\n".join(instruction_parts),
+        context=TaskContext(user_context=user_context or {}),
     )
 
     logger.info("[decomposer] Decomposing subtask %s via ReAct loop", subtask.id)
@@ -121,6 +128,8 @@ async def expand_plan(
     registry: AgentRegistry,
     client: LLMClient,
     emitter: "StreamEmitter",
+    task: str = "",
+    user_context: dict | None = None,
 ) -> ExecutionPlan:
     """Expand subtasks whose agent manifest declares a decomposition_prompt.
 
@@ -138,7 +147,7 @@ async def expand_plan(
             tail_id[subtask.id] = subtask.id
             continue
 
-        micro = await decompose_subtask(subtask, manifest, plan.run_id, client, emitter)
+        micro = await decompose_subtask(subtask, manifest, plan.run_id, client, emitter, task=task, user_context=user_context)
         expanded.extend(micro)
         tail_id[subtask.id] = micro[-1].id
 
