@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -385,12 +386,24 @@ tool_registry.register(ToolDefinition(
 # ---------------------------------------------------------------------------
 
 async def _bash_exec(command: str, purpose: str, timeout_seconds: int = 30) -> str:
+    # Block ~ paths — they escape the workspace sandbox
+    if re.search(r'(?:^|[\s;|&`(])~[/\s]|(?:^|[\s;|&`(])~$', command):
+        return (
+            "Error: '~' paths are not allowed. "
+            "The workspace is already your current directory — use relative paths only."
+        )
+
+    workspace = _workspace()
+    # Override HOME so any residual ~ expansion stays inside the workspace
+    env = {**os.environ, "HOME": str(workspace)}
+
     try:
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            cwd=str(_workspace()),
+            cwd=str(workspace),
+            env=env,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
         output = stdout.decode(errors="replace")
@@ -403,7 +416,11 @@ async def _bash_exec(command: str, purpose: str, timeout_seconds: int = 30) -> s
 
 tool_registry.register(ToolDefinition(
     name="bash_exec",
-    description="Execute a bash command in the workspace directory. Returns stdout+stderr and exit code.",
+    description=(
+        "Execute a bash command with the workspace as the current working directory. "
+        "Use only relative paths — absolute paths and '~' are not permitted and will be rejected. "
+        "Returns stdout+stderr and exit code."
+    ),
     input_schema={
         "type": "object",
         "properties": {
