@@ -9,6 +9,7 @@ tools:
   - web_search
   - fetch_url
   - wikipedia
+  - arxiv_search
   - file_read
   - file_write
 skills: []

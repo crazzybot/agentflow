@@ -509,8 +509,39 @@ def _make_stub(tool_name: str, description: str, required_params: list[str], imp
     )
 
 
+async def _arxiv_search_handler(query: str, max_results: int = 10) -> str:
+    from agentflow.tools.arxiv_search import arxiv_search as _arxiv_search
+
+    try:
+        urls = await asyncio.to_thread(_arxiv_search, query, max_results)
+    except (ValueError, RuntimeError) as exc:
+        return f"arXiv search error: {exc}"
+    return "\n".join(urls) if urls else "No results found."
+
+
+tool_registry.register(ToolDefinition(
+    name="arxiv_search",
+    description="Search academic papers on arXiv and return a list of abstract URLs.",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Free-text search query",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum number of results to return (default 10)",
+                "default": 10,
+            },
+        },
+        "required": ["query"],
+    },
+    handler=_arxiv_search_handler,
+    impact=ToolImpact.read_only,
+))
+
 _STUBS: list[tuple[str, str, list[str], ToolImpact]] = [
-    ("arxiv_search",     "Search academic papers on arXiv",                        ["query"],               ToolImpact.read_only),
     ("sql_query",        "Execute a SQL query against a configured database",       ["query"],               ToolImpact.execute),
     ("chart_gen",        "Generate a chart from data and return a file path",       ["data", "chart_type"],  ToolImpact.write),
     ("csv_parse",        "Parse a CSV file and return structured data",             ["path"],                ToolImpact.read_only),

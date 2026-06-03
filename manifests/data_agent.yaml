@@ -8,6 +8,7 @@ capabilities:
 tools:
   - bash_exec
   - python_exec
+  - arxiv_search
   - file_read
   - file_write
 skills:
