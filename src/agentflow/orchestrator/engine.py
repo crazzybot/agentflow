@@ -2,16 +2,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from agentflow.config import settings
 from agentflow.core.bus import task_bus
 from agentflow.core.context import RunContext, context_store
 from agentflow.core.models import (AgentResult, AgentStatus, ExecutionPlan,
-                                   SSEEventType, Subtask, TaskConstraints,
-                                   TaskContext, TaskEnvelope)
+                                   RunMeta, SSEEventType, Subtask,
+                                   TaskConstraints, TaskContext, TaskEnvelope)
 from agentflow.core.registry import AgentRegistry
 from agentflow.llm import LLMClient
 from agentflow.orchestrator.decomposer import expand_plan
@@ -74,6 +77,33 @@ class OrchestratorEngine:
             self._agent_instances[manifest.agent_id] = Agent(manifest, self._client)
             logger.info("Instantiated agent %s", manifest.agent_id)
 
+    async def _generate_run_name(self, task: str) -> str:
+        try:
+            response = await self._client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=24,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f'Give this task a short name: 3-5 words, title case, no punctuation.\n'
+                        f'Task: "{task[:300]}"\n'
+                        f'Reply with only the name.'
+                    ),
+                }],
+            )
+            for block in response.content:
+                if hasattr(block, "text") and block.text.strip():
+                    return block.text.strip()
+        except Exception:
+            logger.warning("Failed to generate run name", exc_info=True)
+        return " ".join(task.split()[:5])
+
+    def _write_meta(self, run_id: str, task: str, name: str, created_at: str) -> None:
+        meta = RunMeta(run_id=run_id, task=task, name=name, created_at=created_at)
+        meta_path = Path(settings.runs_dir) / run_id / "meta.json"
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        meta_path.write_text(meta.model_dump_json(indent=2))
+
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -98,6 +128,10 @@ class OrchestratorEngine:
         emitter = stream_registry.create(run_id, events_file=events_file)
         ctx = context_store.create(run_id, results_file=results_file, budget_usd=budget_usd, user_context=user_context)
         task_bus.create_run(run_id)
+
+        created_at = datetime.now(timezone.utc).isoformat()
+        name = await self._generate_run_name(task)
+        self._write_meta(run_id, task, name, created_at)
 
         emitter.emit(SSEEventType.run_started, message=f"Run {run_id} started")
 

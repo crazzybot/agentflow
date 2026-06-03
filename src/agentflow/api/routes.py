@@ -14,6 +14,7 @@ from agentflow.core.models import (
     RunEventsResponse,
     RunInfo,
     RunListResponse,
+    RunMeta,
     RunReportResponse,
     RunRequest,
     RunResponse,
@@ -31,7 +32,7 @@ def _get_engine():
     return engine
 
 
-@router.post("/run", response_model=RunResponse)
+@router.post("/runs", response_model=RunResponse)
 async def start_run(request: RunRequest, background_tasks: BackgroundTasks):
     run_id = str(uuid.uuid4())
     engine = _get_engine()
@@ -48,7 +49,7 @@ async def start_run(request: RunRequest, background_tasks: BackgroundTasks):
     return RunResponse(run_id=run_id)
 
 
-@router.get("/run/{run_id}/stream")
+@router.get("/runs/{run_id}/stream")
 async def stream_run(run_id: str):
     emitter = stream_registry.get(run_id)
     if emitter is None:
@@ -72,33 +73,43 @@ def _require_run(run_id: str) -> Path:
     return d
 
 
+def _load_meta(d: Path) -> RunMeta | None:
+    meta_file = d / "meta.json"
+    if not meta_file.exists():
+        return None
+    try:
+        return RunMeta.model_validate_json(meta_file.read_text())
+    except Exception:
+        return None
+
+
+def _run_info(d: Path) -> RunInfo:
+    meta = _load_meta(d)
+    return RunInfo(
+        run_id=d.name,
+        has_events=(d / "events.jsonl").exists(),
+        has_results=(d / "results.jsonl").exists(),
+        has_report=(d / "report.md").exists(),
+        task=meta.task if meta else None,
+        name=meta.name if meta else None,
+        created_at=meta.created_at if meta else None,
+    )
+
+
 @router.get("/runs", response_model=RunListResponse)
 async def list_runs():
     runs_dir = Path(settings.runs_dir)
     if not runs_dir.exists():
         return RunListResponse(runs=[])
-    runs = [
-        RunInfo(
-            run_id=d.name,
-            has_events=(d / "events.jsonl").exists(),
-            has_results=(d / "results.jsonl").exists(),
-            has_report=(d / "report.md").exists(),
-        )
-        for d in sorted(runs_dir.iterdir())
-        if d.is_dir()
-    ]
+    runs = [_run_info(d) for d in runs_dir.iterdir() if d.is_dir()]
+    runs.sort(key=lambda r: r.created_at or "", reverse=True)
     return RunListResponse(runs=runs)
 
 
 @router.get("/runs/{run_id}", response_model=RunInfo)
 async def get_run(run_id: str):
     d = _require_run(run_id)
-    return RunInfo(
-        run_id=run_id,
-        has_events=(d / "events.jsonl").exists(),
-        has_results=(d / "results.jsonl").exists(),
-        has_report=(d / "report.md").exists(),
-    )
+    return _run_info(d)
 
 
 @router.get("/runs/{run_id}/events", response_model=RunEventsResponse)

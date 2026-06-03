@@ -186,11 +186,21 @@ class RunResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class RunMeta(BaseModel):
+    run_id: str
+    task: str
+    name: str
+    created_at: str
+
+
 class RunInfo(BaseModel):
     run_id: str
     has_events: bool
     has_results: bool
     has_report: bool
+    task: str | None = None
+    name: str | None = None
+    created_at: str | None = None
 
 
 class RunListResponse(BaseModel):

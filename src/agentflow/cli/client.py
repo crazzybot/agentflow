@@ -27,7 +27,7 @@ async def start_run(base_url: str, task: str, context: dict[str, Any]) -> dict[s
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                f"{base_url}/api/run",
+                f"{base_url}/api/runs",
                 json={"task": task, "context": context},
                 timeout=15.0,
             )
@@ -42,7 +42,7 @@ async def start_run(base_url: str, task: str, context: dict[str, Any]) -> dict[s
 async def stream_events(base_url: str, run_id: str) -> AsyncIterator[dict[str, Any]]:
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(None)) as client:
-            async with client.stream("GET", f"{base_url}/api/run/{run_id}/stream") as resp:
+            async with client.stream("GET", f"{base_url}/api/runs/{run_id}/stream") as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
                     if line.startswith("data: "):
