@@ -16,8 +16,13 @@ from pydantic import BaseModel, Field
 
 class MCPServerConfig(BaseModel):
     name: str
-    url: str  # SSE endpoint, e.g. "http://localhost:3001/sse"
     transport: str = "sse"
+    # SSE transport
+    url: str | None = None  # e.g. "http://localhost:3001/sse"
+    # stdio transport
+    command: str | None = None  # executable to launch, e.g. "uv" or "skb-mcp"
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)  # merged on top of current env
 
 
 class AgentManifest(BaseModel):
