@@ -93,7 +93,10 @@ class AgentRegistry:
             parts = [f"## {agent.agent_id}"]
             parts.append(f"  domain: {agent.domain}")
             parts.append(f"  capabilities: {', '.join(agent.capabilities) or 'none'}")
-            parts.append(f"  tools: {', '.join(agent.tools) or 'none'}")
+            all_tools = list(agent.tools)
+            if agent.mcp_servers:
+                all_tools += [f"{s.name}/*" for s in agent.mcp_servers]
+            parts.append(f"  tools: {', '.join(all_tools) or 'none'}")
             if agent.skills:
                 parts.append(f"  skills: {', '.join(agent.skills)}")
             blocks.append("\n".join(parts))

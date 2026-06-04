@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
@@ -30,19 +31,27 @@ except ImportError:
     logger.warning("'mcp' package not found — MCP server connectivity is disabled")
 
 
-def _make_mcp_handler(session: Any, tool_name: str):
+# Anthropic tool names must match ^[a-zA-Z0-9_-]{1,128}$
+_INVALID_TOOL_CHARS = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def _sanitize_tool_name(name: str) -> str:
+    """Map any character outside [a-zA-Z0-9_-] to underscore and cap at 128 chars."""
+    return _INVALID_TOOL_CHARS.sub("_", name)[:128]
+
+
+def _make_mcp_handler(session: Any, mcp_name: str):
+    """mcp_name is the original name sent to the MCP server (may contain dots, etc.)."""
     async def handler(**kwargs: Any) -> str:
         try:
-            result = await session.call_tool(tool_name, kwargs)
-            parts = []
-            for block in result.content or []:
-                if hasattr(block, "text"):
-                    parts.append(block.text)
-                else:
-                    parts.append(str(block))
+            result = await session.call_tool(mcp_name, kwargs)
+            parts = [
+                block.text if hasattr(block, "text") else str(block)
+                for block in result.content or []
+            ]
             return "\n".join(parts) if parts else "(empty response)"
         except Exception as exc:
-            return f"MCP tool {tool_name!r} error: {exc}"
+            return f"MCP tool {mcp_name!r} error: {exc}"
 
     return handler
 
@@ -50,10 +59,10 @@ def _make_mcp_handler(session: Any, tool_name: str):
 def _build_tool_defs(tools_result: Any, session: Any, server_name: str) -> list[ToolDefinition]:
     return [
         ToolDefinition(
-            name=t.name,
+            name=_sanitize_tool_name(t.name),  # Anthropic-safe name
             description=t.description or f"MCP tool from {server_name}",
             input_schema=t.inputSchema or {"type": "object", "properties": {}},
-            handler=_make_mcp_handler(session, t.name),
+            handler=_make_mcp_handler(session, t.name),  # original name for MCP call
         )
         for t in tools_result.tools
     ]
@@ -74,6 +83,7 @@ async def mcp_session(config: "MCPServerConfig") -> AsyncIterator[list[ToolDefin
 
     # SSE transport (default)
     logger.info("Connecting to MCP server %r at %s", config.name, config.url)
+    launched = False
     try:
         async with sse_client(config.url) as (read, write):
             async with ClientSession(read, write) as session:
@@ -81,10 +91,16 @@ async def mcp_session(config: "MCPServerConfig") -> AsyncIterator[list[ToolDefin
                 tools_result = await session.list_tools()
                 tool_defs = _build_tool_defs(tools_result, session, config.name)
                 logger.info("Loaded %d tools from MCP server %r", len(tool_defs), config.name)
+                launched = True
                 yield tool_defs
     except Exception as exc:
-        logger.error("Failed to connect to MCP server %r: %s", config.name, exc)
-        yield []
+        if not launched:
+            # Connection / init failed — yield an empty tool list as graceful fallback.
+            logger.error("Failed to connect to MCP server %r: %s", config.name, exc)
+            yield []
+        else:
+            # Exception came from inside the agent body — propagate it; do not yield again.
+            raise
 
 
 @asynccontextmanager
@@ -108,6 +124,7 @@ async def _stdio_session(config: "MCPServerConfig") -> AsyncIterator[list[ToolDe
     params = StdioServerParameters(command=config.command, args=config.args, env=merged_env)
 
     logger.info("Launching stdio MCP server %r: %s %s", config.name, config.command, " ".join(config.args))
+    launched = False
     try:
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
@@ -115,7 +132,13 @@ async def _stdio_session(config: "MCPServerConfig") -> AsyncIterator[list[ToolDe
                 tools_result = await session.list_tools()
                 tool_defs = _build_tool_defs(tools_result, session, config.name)
                 logger.info("Loaded %d tools from stdio MCP server %r", len(tool_defs), config.name)
+                launched = True
                 yield tool_defs
     except Exception as exc:
-        logger.error("Failed to launch stdio MCP server %r: %s", config.name, exc)
-        yield []
+        if not launched:
+            # Process launch / init failed — yield an empty tool list as graceful fallback.
+            logger.error("Failed to launch stdio MCP server %r: %s", config.name, exc)
+            yield []
+        else:
+            # Exception came from inside the agent body — propagate it; do not yield again.
+            raise
