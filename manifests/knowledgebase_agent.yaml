@@ -7,7 +7,14 @@ capabilities:
   - context_navigation
 tools:
   - file_read
-mcp_servers:
+  - file_write
+  - skb_add
+  - skb_search
+  - skb_read
+  - skb_prev
+  - skb_next
+  - skb_list
+mcp_servers:  
   - name: semantic-kb
     transport: stdio
     command: uv

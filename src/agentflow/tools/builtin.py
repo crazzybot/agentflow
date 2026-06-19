@@ -24,6 +24,14 @@ _MAX_CONTENT = 8_000  # chars returned to the LLM
 # Helpers
 # ---------------------------------------------------------------------------
 
+async def _record_artifact(path: str) -> None:
+    """Register a workspace-relative path with the current run's artifact sink."""
+    from agentflow.tools.artifact_tracker import _current_sink
+    sink = _current_sink.get()
+    if sink is not None:
+        await sink.record(path)
+
+
 def _workspace() -> Path:
     p = Path(settings.workspace_dir)
     p.mkdir(parents=True, exist_ok=True)
@@ -247,11 +255,13 @@ async def _file_write(
 
         if mode == "overwrite":
             target.write_text(content, encoding="utf-8")
+            await _record_artifact(path)
             return f"Wrote {len(content)} chars to {path}"
 
         if mode == "append":
             with target.open("a", encoding="utf-8") as f:
                 f.write(content)
+            await _record_artifact(path)
             return f"Appended {len(content)} chars to {path}"
 
         # Remaining modes require an existing file
@@ -270,6 +280,7 @@ async def _file_write(
             idx = max(0, min(line - 1, total))
             lines.insert(idx, block)
             target.write_text("".join(lines), encoding="utf-8")
+            await _record_artifact(path)
             return f"Inserted {len(content)} chars before line {line} in {path}"
 
         if mode == "replace_lines":
@@ -280,6 +291,7 @@ async def _file_write(
             block = (content if content.endswith("\n") else content + "\n") if content else ""
             lines[lo:hi] = [block] if block else []
             target.write_text("".join(lines), encoding="utf-8")
+            await _record_artifact(path)
             return f"Replaced lines {start_line}-{end_line} in {path}"
 
         if mode == "replace_pattern":
@@ -289,6 +301,7 @@ async def _file_write(
             if count == 0:
                 return f"No matches for pattern {pattern!r} in {path}"
             target.write_text(new_text, encoding="utf-8")
+            await _record_artifact(path)
             return f"Replaced {count} occurrence(s) of {pattern!r} in {path}"
 
         if mode == "replace_between":
@@ -308,6 +321,7 @@ async def _file_write(
             block = (content if content.endswith("\n") else content + "\n") if content else ""
             lines[start_idx + 1:end_idx] = [block] if block else []
             target.write_text("".join(lines), encoding="utf-8")
+            await _record_artifact(path)
             return f"Replaced content between lines {start_idx + 1} and {end_idx + 1} in {path}"
 
         return f"Error: unknown mode {mode!r}"

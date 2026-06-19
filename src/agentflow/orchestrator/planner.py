@@ -5,15 +5,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import TYPE_CHECKING
 
 import anthropic
 from anthropic.types import TextBlock
 
 from agentflow.config import settings
-from agentflow.core.models import ExecutionPlan, Subtask
+from agentflow.core.models import ExecutionPlan, SSEEventType, Subtask
 from agentflow.core.registry import AgentRegistry
 from agentflow.llm import LLMClient
 from agentflow.tools import tool_registry
+
+if TYPE_CHECKING:
+    from agentflow.orchestrator.stream import StreamEmitter
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +137,7 @@ async def create_plan(
     client: LLMClient | anthropic.AsyncAnthropic,
     budget_usd: float | None = None,
     user_context: dict | None = None,
+    emitter: "StreamEmitter | None" = None,
 ) -> ExecutionPlan:
     agent_summary = registry.summary()
     planner_tools = tool_registry.get_many(_PLANNER_TOOLS)
@@ -152,6 +157,9 @@ async def create_plan(
     last_response = None
 
     logger.info("[%s] Starting agentic planner (max %d iterations)", run_id, settings.planner_max_iterations)
+
+    if emitter is not None:
+        emitter.emit(SSEEventType.agent_progress, agent_id="planner", message="Planning task...")
 
     for iteration in range(settings.planner_max_iterations):
         response = await client.messages.create(
@@ -176,6 +184,14 @@ async def create_plan(
         logger.info("[%s] Planner iteration %d: %d tool call(s): %s",
                     run_id, iteration + 1, len(tool_use_blocks),
                     [b.name for b in tool_use_blocks])
+
+        if emitter is not None:
+            tool_names = [b.name for b in tool_use_blocks]
+            emitter.emit(
+                SSEEventType.agent_progress,
+                agent_id="planner",
+                message=f"Exploring workspace: {', '.join(tool_names)}",
+            )
 
         tool_results = await asyncio.gather(
             *[_call_planner_tool(b, planner_tools) for b in tool_use_blocks]

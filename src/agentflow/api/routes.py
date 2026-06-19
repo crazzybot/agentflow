@@ -11,6 +11,9 @@ from sse_starlette.sse import EventSourceResponse
 
 from agentflow.config import settings
 from agentflow.core.models import (
+    RunArtifact,
+    RunArtifactContentResponse,
+    RunArtifactsResponse,
     RunEventsResponse,
     RunInfo,
     RunListResponse,
@@ -90,6 +93,7 @@ def _run_info(d: Path) -> RunInfo:
         has_events=(d / "events.jsonl").exists(),
         has_results=(d / "results.jsonl").exists(),
         has_report=(d / "report.md").exists(),
+        has_artifacts=(d / "artifacts.jsonl").exists(),
         task=meta.task if meta else None,
         name=meta.name if meta else None,
         created_at=meta.created_at if meta else None,
@@ -147,3 +151,45 @@ async def get_run_report(run_id: str):
     if not report_file.exists():
         raise HTTPException(status_code=404, detail="No report for this run")
     return RunReportResponse(run_id=run_id, report=report_file.read_text(encoding="utf-8"))
+
+
+def _load_artifacts(d: Path) -> list[RunArtifact]:
+    artifacts_file = d / "artifacts.jsonl"
+    if not artifacts_file.exists():
+        return []
+    return [
+        RunArtifact.model_validate(json.loads(line))
+        for line in artifacts_file.read_text().splitlines()
+        if line.strip()
+    ]
+
+
+@router.get("/runs/{run_id}/artifacts", response_model=RunArtifactsResponse)
+async def get_run_artifacts(run_id: str):
+    d = _require_run(run_id)
+    return RunArtifactsResponse(run_id=run_id, artifacts=_load_artifacts(d))
+
+
+@router.get("/runs/{run_id}/artifacts/{artifact_id}", response_model=RunArtifactContentResponse)
+async def get_run_artifact_content(run_id: str, artifact_id: str):
+    d = _require_run(run_id)
+    artifacts = _load_artifacts(d)
+    artifact = next((a for a in artifacts if a.id == artifact_id), None)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail=f"Artifact {artifact_id!r} not found")
+
+    from agentflow.config import settings
+    workspace = Path(settings.workspace_dir).resolve()
+    target = (workspace / artifact.path).resolve()
+    if not str(target).startswith(str(workspace)):
+        raise HTTPException(status_code=400, detail="Invalid artifact path")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail=f"Artifact file not found: {artifact.path}")
+
+    return RunArtifactContentResponse(
+        run_id=run_id,
+        artifact_id=artifact_id,
+        name=artifact.name,
+        path=artifact.path,
+        content=target.read_text(encoding="utf-8"),
+    )

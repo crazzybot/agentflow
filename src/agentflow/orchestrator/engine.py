@@ -22,6 +22,7 @@ from agentflow.orchestrator.planner import create_plan
 from agentflow.orchestrator.reporter import compile_report
 from agentflow.orchestrator.scheduler import DependencyGraph
 from agentflow.orchestrator.stream import StreamEmitter, stream_registry
+from agentflow.tools.artifact_tracker import ArtifactSink, _current_sink
 
 logger = logging.getLogger(__name__)
 
@@ -135,9 +136,13 @@ class OrchestratorEngine:
 
         emitter.emit(SSEEventType.run_started, message=f"Run {run_id} started")
 
+        artifacts_file = Path(settings.runs_dir) / run_id / "artifacts.jsonl"
+        sink = ArtifactSink(artifacts_file)
+        sink_token = _current_sink.set(sink)
+
         try:
             # Step 02: LLM planning pass
-            plan = await create_plan(run_id, task, self.registry, self._client, budget_usd=budget_usd, user_context=user_context)
+            plan = await create_plan(run_id, task, self.registry, self._client, budget_usd=budget_usd, user_context=user_context, emitter=emitter)
 
             # Step 02b: expand subtasks for agents that declare a decomposition_prompt
             plan = await expand_plan(plan, self.registry, self._client, emitter, task=task, user_context=user_context)
@@ -188,6 +193,7 @@ class OrchestratorEngine:
             logger.exception("[%s] Orchestrator error", run_id)
             emitter.emit(SSEEventType.run_error, message=str(exc))
         finally:
+            _current_sink.reset(sink_token)
             self._client.stats.log_summary()
             emitter.close()
             task_bus.close_run(run_id)

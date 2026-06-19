@@ -203,6 +203,7 @@ class RunInfo(BaseModel):
     has_events: bool
     has_results: bool
     has_report: bool
+    has_artifacts: bool = False
     task: str | None = None
     name: str | None = None
     created_at: str | None = None
@@ -229,3 +230,22 @@ class RunEventsResponse(BaseModel):
 class RunReportResponse(BaseModel):
     run_id: str
     report: str
+
+
+class RunArtifact(BaseModel):
+    id: str
+    name: str
+    path: str  # relative to workspace root
+
+
+class RunArtifactsResponse(BaseModel):
+    run_id: str
+    artifacts: list[RunArtifact]
+
+
+class RunArtifactContentResponse(BaseModel):
+    run_id: str
+    artifact_id: str
+    name: str
+    path: str
+    content: str

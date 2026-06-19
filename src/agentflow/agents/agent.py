@@ -225,7 +225,20 @@ class Agent:
             if anthropic_tools:
                 create_kwargs["tools"] = anthropic_tools
 
-            response = await self.client.messages.create(**create_kwargs)
+            try:
+                response = await self.client.messages.create(**create_kwargs)
+            except anthropic.BadRequestError as exc:
+                body = exc.body if isinstance(exc.body, dict) else {}
+                api_message = body.get("error", {}).get("message", "") or str(exc)
+                if "content filter" in api_message.lower() or "output blocked" in api_message.lower():
+                    logger.error("[%s] Content filter blocked the model output: %s", self.agent_id, exc)
+                    return AgentResult(
+                        task_id=envelope.task_id,
+                        agent_id=self.agent_id,
+                        status=AgentStatus.failed,
+                        error=f"Content filter blocked response: {api_message}",
+                    )
+                raise
             u = response.usage
             call_cache_write = u.cache_creation_input_tokens or 0
             call_cache_read = u.cache_read_input_tokens or 0
