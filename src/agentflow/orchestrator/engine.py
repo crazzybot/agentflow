@@ -13,6 +13,7 @@ from agentflow.config import settings
 from agentflow.core.bus import task_bus
 from agentflow.core.context import RunContext, context_store
 from agentflow.core.models import (AgentResult, AgentStatus, ExecutionPlan,
+                                   HumanInputRequest, HumanInputResponse,
                                    RunMeta, SSEEventType, Subtask,
                                    TaskConstraints, TaskContext, TaskEnvelope)
 from agentflow.core.registry import AgentRegistry
@@ -353,10 +354,12 @@ class OrchestratorEngine:
                     )
                     return False
 
-            if result.status == AgentStatus.partial and envelope.constraints.budget_usd is None:
-                # Only continue when there was no task budget — with a budget the agent
-                # already ran until exhausted, so continuation would immediately stop again.
-                result = await self._continue_partial(run_id, subtask, envelope, result, ctx, emitter)
+            if result.status == AgentStatus.partial:
+                if envelope.constraints.budget_usd is None:
+                    result = await self._continue_partial(run_id, subtask, envelope, result, ctx, emitter)
+                else:
+                    # Per-task budget slice exhausted — ask the human before giving up.
+                    result = await self._handle_task_budget_exhausted(run_id, subtask, envelope, result, ctx, emitter)
 
             await ctx.store_result(subtask.id, result)
 
@@ -378,6 +381,96 @@ class OrchestratorEngine:
 
         return False
 
+    async def _request_budget_increase(
+        self,
+        run_id: str,
+        subtask: Subtask,
+        envelope: TaskEnvelope,
+        ctx: RunContext,
+        emitter: StreamEmitter,
+        request_type: str,
+    ) -> HumanInputResponse:
+        """Emit run:awaiting_input, pause the run, and return the human's decision.
+
+        Must be called while holding ctx.human_input_lock so concurrent subtasks
+        are serialised and only one question reaches the user at a time.
+        """
+        cost = ctx.total_cost_usd()
+        if request_type == "task_budget_exhausted":
+            message = (
+                f"Agent '{subtask.agent_id}' used up its budget slice "
+                f"(${envelope.constraints.budget_usd:.4f}). "
+                f"Total run cost so far: ${cost:.4f}. "
+                f"Increase the budget to continue this task?"
+            )
+        else:
+            message = (
+                f"Total run budget ${ctx.budget_usd:.2f} reached "
+                f"(spent ${cost:.4f}). "
+                f"Subtask '{subtask.id}' is incomplete. "
+                f"Increase the budget to continue?"
+            )
+
+        request = HumanInputRequest(
+            request_type=request_type,
+            message=message,
+            context={
+                "subtask_id": subtask.id,
+                "agent_id": subtask.agent_id,
+                "cost_usd": round(cost, 6),
+                "budget_usd": ctx.budget_usd,
+                "task_budget_usd": envelope.constraints.budget_usd,
+            },
+        )
+        emitter.emit(
+            SSEEventType.run_awaiting_input,
+            agent_id=subtask.agent_id,
+            message=message,
+            data=request.model_dump(),
+        )
+
+        ctx.request_human_input()
+        try:
+            response = await asyncio.wait_for(
+                ctx.await_human_input(),
+                timeout=settings.human_input_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[%s] Human input timed out for subtask %s — accepting partial", run_id, subtask.id)
+            response = HumanInputResponse(action="cancel")
+
+        if response.action == "continue" and response.budget_increase_usd:
+            ctx.budget_usd = (ctx.budget_usd or 0.0) + response.budget_increase_usd
+            logger.info(
+                "[%s] Budget increased by $%.4f → new total $%.4f",
+                run_id, response.budget_increase_usd, ctx.budget_usd,
+            )
+
+        return response
+
+    async def _handle_task_budget_exhausted(
+        self,
+        run_id: str,
+        subtask: Subtask,
+        envelope: TaskEnvelope,
+        result: AgentResult,
+        ctx: RunContext,
+        emitter: StreamEmitter,
+    ) -> AgentResult:
+        """Handle the case where a subtask's per-task budget slice was exhausted."""
+        async with ctx.human_input_lock:
+            response = await self._request_budget_increase(
+                run_id, subtask, envelope, ctx, emitter,
+                request_type="task_budget_exhausted",
+            )
+
+        if response.action != "continue" or not response.budget_increase_usd:
+            return result
+
+        # Give the agent the newly approved budget for its continuation.
+        envelope.constraints.budget_usd = response.budget_increase_usd
+        return await self._continue_partial(run_id, subtask, envelope, result, ctx, emitter)
+
     async def _continue_partial(
         self,
         run_id: str,
@@ -392,18 +485,32 @@ class OrchestratorEngine:
 
         for cont in range(1, settings.max_continuations + 1):
             if not ctx.within_budget():
-                cost = ctx.total_cost_usd()
-                logger.warning(
-                    "[%s] Budget $%.4f of $%.4f exhausted — accepting partial result for %s",
-                    run_id, cost, ctx.budget_usd, subtask.id,
-                )
-                emitter.emit(
-                    SSEEventType.run_budget_exceeded,
-                    agent_id=subtask.agent_id,
-                    message=f"Budget ${ctx.budget_usd:.2f} reached (spent ${cost:.4f}) — subtask {subtask.id} accepted as partial",
-                    data={"subtask_id": subtask.id, "cost_usd": round(cost, 6), "budget_usd": ctx.budget_usd},
-                )
-                return result
+                async with ctx.human_input_lock:
+                    # Re-check after acquiring the lock: a concurrent subtask's request
+                    # may have already secured a budget increase.
+                    if ctx.within_budget():
+                        pass  # fall through to continue
+                    else:
+                        response = await self._request_budget_increase(
+                            run_id, subtask, envelope, ctx, emitter,
+                            request_type="run_budget_exhausted",
+                        )
+                        if response.action != "continue" or not response.budget_increase_usd:
+                            cost = ctx.total_cost_usd()
+                            logger.warning(
+                                "[%s] Budget $%.4f of $%.4f exhausted — accepting partial for %s",
+                                run_id, cost, ctx.budget_usd, subtask.id,
+                            )
+                            emitter.emit(
+                                SSEEventType.run_budget_exceeded,
+                                agent_id=subtask.agent_id,
+                                message=f"Budget ${ctx.budget_usd:.2f} reached (spent ${cost:.4f}) — subtask {subtask.id} accepted as partial",
+                                data={"subtask_id": subtask.id, "cost_usd": round(cost, 6), "budget_usd": ctx.budget_usd},
+                            )
+                            return result
+                        # Budget increased — give agent the new allocation if task-budgeted.
+                        if envelope.constraints.budget_usd is not None:
+                            envelope.constraints.budget_usd = response.budget_increase_usd
 
             logger.info("[%s] Continuing subtask %s (continuation %d/%d)", run_id, subtask.id, cont, settings.max_continuations)
             emitter.emit(
@@ -415,8 +522,8 @@ class OrchestratorEngine:
 
             try:
                 next_result = await asyncio.wait_for(
-                    # Fix 3: resume the existing message thread rather than rebuilding
-                    # from a text summary — no re-reading, no lost tool context.
+                    # Resume the existing message thread rather than rebuilding from a
+                    # text summary — no re-reading, no lost tool context.
                     agent.run(envelope, emitter, resume_messages=result.messages),
                     timeout=settings.task_timeout_ms / 1000,
                 )

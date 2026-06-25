@@ -46,5 +46,9 @@ class Settings(BaseSettings):
     # Max iterations for the per-subtask decomposer ReAct loop
     decomposer_max_iterations: int = 5
 
+    # How long (seconds) the engine waits for human input before timing out and
+    # accepting the partial result.  Default: 30 minutes.
+    human_input_timeout_s: float = 1800
+
 
 settings = Settings()

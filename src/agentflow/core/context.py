@@ -4,9 +4,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agentflow.core.models import AgentResult
+
+if TYPE_CHECKING:
+    from agentflow.core.models import HumanInputResponse
 
 
 class RunContext:
@@ -26,6 +29,39 @@ class RunContext:
         self._total_cost_usd: float = 0.0
         if results_file:
             os.makedirs(os.path.dirname(results_file), exist_ok=True)
+        # Human-in-the-loop: serialises concurrent budget-exhaustion requests so at
+        # most one question is shown to the user at a time.
+        self.human_input_lock = asyncio.Lock()
+        self._human_input_event: asyncio.Event | None = None
+        self._human_input_response: HumanInputResponse | None = None
+
+    @property
+    def is_awaiting_input(self) -> bool:
+        return self._human_input_event is not None and not self._human_input_event.is_set()
+
+    def request_human_input(self) -> None:
+        """Arm the one-shot event; must be called while holding human_input_lock."""
+        self._human_input_event = asyncio.Event()
+        self._human_input_response = None
+
+    def provide_human_input(self, response: HumanInputResponse) -> bool:
+        """Deliver the user's response. Returns False if no input was pending."""
+        if self._human_input_event is None or self._human_input_event.is_set():
+            return False
+        self._human_input_response = response
+        self._human_input_event.set()
+        return True
+
+    async def await_human_input(self) -> HumanInputResponse:
+        """Await the armed event and return the response. Caller holds human_input_lock."""
+        if self._human_input_event is None:
+            raise RuntimeError("No human input request is pending")
+        await self._human_input_event.wait()
+        response = self._human_input_response
+        self._human_input_event = None
+        self._human_input_response = None
+        assert response is not None
+        return response
 
     def add_result_cost(self, result: AgentResult) -> None:
         self._total_cost_usd += result.cost_usd

@@ -153,6 +153,7 @@ class SSEEventType(str, Enum):
     run_complete = "run:complete"
     run_error = "run:error"
     run_budget_exceeded = "run:budget_exceeded"
+    run_awaiting_input = "run:awaiting_input"
 
 
 class SSEPayload(BaseModel):
@@ -168,6 +169,22 @@ class SSEEvent(BaseModel):
     type: SSEEventType
     agent_id: str | None = None
     payload: SSEPayload = Field(default_factory=SSEPayload)
+
+
+# ---------------------------------------------------------------------------
+# Human-in-the-loop input request/response
+# ---------------------------------------------------------------------------
+
+
+class HumanInputRequest(BaseModel):
+    request_type: str  # e.g. "task_budget_exhausted", "run_budget_exhausted"
+    message: str
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class HumanInputResponse(BaseModel):
+    action: str  # "continue" or "cancel"
+    budget_increase_usd: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +222,7 @@ class RunInfo(BaseModel):
     has_report: bool
     has_artifacts: bool = False
     is_streaming: bool = False
+    is_awaiting_input: bool = False
     task: str | None = None
     name: str | None = None
     created_at: str | None = None

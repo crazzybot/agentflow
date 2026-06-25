@@ -10,7 +10,9 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
 from agentflow.config import settings
+from agentflow.core.context import context_store
 from agentflow.core.models import (
+    HumanInputResponse,
     RunArtifact,
     RunArtifactContentResponse,
     RunArtifactsResponse,
@@ -60,6 +62,17 @@ async def stream_run(run_id: str):
     return EventSourceResponse(emitter)
 
 
+@router.post("/runs/{run_id}/input")
+async def provide_run_input(run_id: str, response: HumanInputResponse):
+    """Deliver a human response to a paused run (e.g. approve/reject a budget increase)."""
+    ctx = context_store.get(run_id)
+    if ctx is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found or not active")
+    if not ctx.provide_human_input(response):
+        raise HTTPException(status_code=409, detail="No input is currently pending for this run")
+    return {"status": "accepted"}
+
+
 # ---------------------------------------------------------------------------
 # Past-run query endpoints
 # ---------------------------------------------------------------------------
@@ -89,6 +102,7 @@ def _load_meta(d: Path) -> RunMeta | None:
 def _run_info(d: Path) -> RunInfo:
     meta = _load_meta(d)
     emitter = stream_registry.get(d.name)
+    ctx = context_store.get(d.name)
     return RunInfo(
         run_id=d.name,
         has_events=(d / "events.jsonl").exists(),
@@ -96,6 +110,7 @@ def _run_info(d: Path) -> RunInfo:
         has_report=(d / "report.md").exists(),
         has_artifacts=(d / "artifacts.jsonl").exists(),
         is_streaming=emitter is not None and not emitter.done,
+        is_awaiting_input=ctx.is_awaiting_input if ctx else False,
         task=meta.task if meta else None,
         name=meta.name if meta else None,
         created_at=meta.created_at if meta else None,
