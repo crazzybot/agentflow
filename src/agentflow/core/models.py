@@ -204,6 +204,7 @@ class RunInfo(BaseModel):
     has_results: bool
     has_report: bool
     has_artifacts: bool = False
+    is_streaming: bool = False
     task: str | None = None
     name: str | None = None
     created_at: str | None = None

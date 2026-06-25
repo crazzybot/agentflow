@@ -17,6 +17,7 @@ class StreamEmitter:
 
     def __init__(self, run_id: str, events_file: str | None = None) -> None:
         self.run_id = run_id
+        self.done = False
         self._queue: asyncio.Queue[SSEEvent | None] = asyncio.Queue()
         self._seq = 0
         self._events_file = events_file
@@ -49,6 +50,7 @@ class StreamEmitter:
         logger.debug("[%s] emit %s %s", self.run_id, event_type, message)
 
     def close(self) -> None:
+        self.done = True
         self._queue.put_nowait(None)  # sentinel
 
     async def __aiter__(self) -> AsyncIterator[dict[str, str]]:

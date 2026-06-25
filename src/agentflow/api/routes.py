@@ -88,12 +88,14 @@ def _load_meta(d: Path) -> RunMeta | None:
 
 def _run_info(d: Path) -> RunInfo:
     meta = _load_meta(d)
+    emitter = stream_registry.get(d.name)
     return RunInfo(
         run_id=d.name,
         has_events=(d / "events.jsonl").exists(),
         has_results=(d / "results.jsonl").exists(),
         has_report=(d / "report.md").exists(),
         has_artifacts=(d / "artifacts.jsonl").exists(),
+        is_streaming=emitter is not None and not emitter.done,
         task=meta.task if meta else None,
         name=meta.name if meta else None,
         created_at=meta.created_at if meta else None,
