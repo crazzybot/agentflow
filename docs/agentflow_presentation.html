@@ -1,0 +1,1824 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentFlow — Multi-Agent AI Architecture</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d1117;--surface:#161b22;--surface2:#1f2937;
+  --blue:#3b82f6;--purple:#8b5cf6;--green:#10b981;
+  --amber:#f59e0b;--red:#ef4444;--cyan:#06b6d4;
+  --text:#f0f6fc;--muted:#8b949e;--border:#30363d;
+  --code-bg:#1e293b;
+}
+html,body{width:100%;height:100%;background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden}
+body {overflow:auto}
+/* ── deck ── */
+#deck{width:100%;height:100%;position:relative}
+.slide{
+  position:absolute;inset:0;display:none;flex-direction:column;
+  padding:56px 72px 80px;opacity:0;transition:opacity .3s ease
+}
+.slide.active{display:flex;opacity:1}
+/* ── nav chrome ── */
+#progress{position:fixed;bottom:0;left:0;height:3px;background:linear-gradient(90deg,var(--blue),var(--purple));transition:width .3s ease;z-index:100}
+#counter{position:fixed;bottom:14px;right:24px;font-size:12px;color:var(--muted);z-index:100;font-variant-numeric:tabular-nums}
+#nav{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);display:flex;gap:8px;z-index:100}
+.nav-btn{background:var(--surface2);border:1px solid var(--border);color:var(--muted);padding:4px 16px;border-radius:20px;cursor:pointer;font-size:13px;transition:all .2s}
+.nav-btn:hover{background:var(--blue);color:#fff;border-color:var(--blue)}
+/* ── section badge ── */
+.section-badge{
+  display:inline-block;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  padding:3px 10px;border-radius:12px;margin-bottom:16px;width:fit-content
+}
+.badge-exec{background:rgba(59,130,246,.15);color:var(--blue);border:1px solid rgba(59,130,246,.3)}
+.badge-arch{background:rgba(139,92,246,.15);color:var(--purple);border:1px solid rgba(139,92,246,.3)}
+.badge-impl{background:rgba(16,185,129,.15);color:var(--green);border:1px solid rgba(16,185,129,.3)}
+.badge-deploy{background:rgba(245,158,11,.15);color:var(--amber);border:1px solid rgba(245,158,11,.3)}
+/* ── typography ── */
+h1{font-size:52px;font-weight:800;line-height:1.1;letter-spacing:-.02em}
+h2{font-size:36px;font-weight:700;line-height:1.2;letter-spacing:-.01em;margin-bottom:8px}
+h3{font-size:22px;font-weight:600;color:var(--blue);margin-bottom:8px}
+h4{font-size:15px;font-weight:600;color:var(--text)}
+p{font-size:17px;line-height:1.65;color:rgba(240,246,252,.85)}
+.lead{font-size:22px;line-height:1.55;color:rgba(240,246,252,.9);max-width:760px}
+.muted{color:var(--muted);font-size:14px}
+/* ── layout ── */
+.cols{display:grid;gap:32px;flex:1;align-items:start}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:1fr 1fr 1fr}
+.cols-6040{grid-template-columns:60fr 40fr}
+.cols-4060{grid-template-columns:40fr 60fr}
+.fill{flex:1}
+/* ── cards ── */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px 24px}
+.card-blue{border-color:rgba(59,130,246,.4);background:rgba(59,130,246,.07)}
+.card-purple{border-color:rgba(139,92,246,.4);background:rgba(139,92,246,.07)}
+.card-green{border-color:rgba(16,185,129,.4);background:rgba(16,185,129,.07)}
+.card-amber{border-color:rgba(245,158,11,.4);background:rgba(245,158,11,.07)}
+/* ── code ── */
+pre,code{font-family:'Cascadia Code','Fira Code',Consolas,monospace}
+pre{
+  background:var(--code-bg);border:1px solid var(--border);border-radius:10px;
+  padding:16px 20px;font-size:13px;line-height:1.6;overflow:auto;
+  color:#e2e8f0;flex:1
+}
+.kw{color:#c792ea}.str{color:#c3e88d}.fn{color:#82aaff}.cmt{color:#546e7a;font-style:italic}
+.num{color:#f78c6c}.key{color:#f07178}.type{color:#ffcb6b}.op{color:#89ddff}
+/* ── pills / tags ── */
+.pill{display:inline-block;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600;margin:2px}
+.pill-blue{background:rgba(59,130,246,.2);color:#93c5fd;border:1px solid rgba(59,130,246,.3)}
+.pill-purple{background:rgba(139,92,246,.2);color:#c4b5fd;border:1px solid rgba(139,92,246,.3)}
+.pill-green{background:rgba(16,185,129,.2);color:#6ee7b7;border:1px solid rgba(16,185,129,.3)}
+.pill-amber{background:rgba(245,158,11,.2);color:#fcd34d;border:1px solid rgba(245,158,11,.3)}
+/* ── lists ── */
+ul.fancy{list-style:none;display:flex;flex-direction:column;gap:10px}
+ul.fancy li{display:flex;align-items:flex-start;gap:10px;font-size:16px;line-height:1.5}
+ul.fancy li::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--blue);margin-top:9px;flex-shrink:0}
+ul.fancy.green li::before{background:var(--green)}
+ul.fancy.purple li::before{background:var(--purple)}
+/* ── divider ── */
+.divider{width:48px;height:3px;background:linear-gradient(90deg,var(--blue),var(--purple));border-radius:2px;margin:12px 0 20px}
+/* ── stat boxes ── */
+.stat-row{display:flex;gap:20px;margin-top:16px}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 20px;flex:1;text-align:center}
+.stat-val{font-size:32px;font-weight:800;background:linear-gradient(135deg,var(--blue),var(--purple));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.stat-lbl{font-size:12px;color:var(--muted);margin-top:2px}
+/* ── step flow ── */
+.steps{display:flex;gap:0;align-items:stretch;flex:1}
+.step{
+  flex:1;display:flex;flex-direction:column;align-items:center;text-align:center;
+  position:relative;padding:20px 12px
+}
+.step::after{
+  content:'›';position:absolute;right:-10px;top:50%;transform:translateY(-50%);
+  font-size:24px;color:var(--muted)
+}
+.step:last-child::after{display:none}
+.step-num{
+  width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-weight:800;font-size:15px;margin-bottom:10px;flex-shrink:0
+}
+.step-title{font-size:13px;font-weight:700;color:var(--text);margin-bottom:4px}
+.step-desc{font-size:11px;color:var(--muted);line-height:1.4}
+/* ── highlight box ── */
+.highlight{
+  background:linear-gradient(135deg,rgba(59,130,246,.1),rgba(139,92,246,.1));
+  border:1px solid rgba(139,92,246,.3);border-radius:12px;padding:20px 24px;
+  font-size:15px;line-height:1.6
+}
+/* ── title slide ── */
+.slide-title{
+  justify-content:center;
+  background:radial-gradient(ellipse 60% 50% at 50% 0%,rgba(59,130,246,.15) 0%,transparent 70%),
+             radial-gradient(ellipse 40% 40% at 80% 80%,rgba(139,92,246,.1) 0%,transparent 60%)
+}
+/* ── section break ── */
+.slide-break{
+  align-items:center;justify-content:center;text-align:center;
+  background:radial-gradient(ellipse 50% 50% at 50% 50%,rgba(59,130,246,.08) 0%,transparent 70%)
+}
+/* ── diagram ── */
+svg text{font-family:'Segoe UI',system-ui,sans-serif}
+</style>
+</head>
+<body>
+<div id="deck">
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 1 — TITLE
+═══════════════════════════════════════════════ -->
+<div class="slide slide-title active">
+  <div style="max-width:820px;margin:auto 0">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:36px">
+      <svg width="44" height="44" viewBox="0 0 44 44"><defs><linearGradient id="lg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#3b82f6"/><stop offset="100%" stop-color="#8b5cf6"/></linearGradient></defs><rect width="44" height="44" rx="10" fill="url(#lg1)"/><circle cx="14" cy="22" r="4" fill="white" opacity=".9"/><circle cx="30" cy="14" r="4" fill="white" opacity=".9"/><circle cx="30" cy="30" r="4" fill="white" opacity=".9"/><line x1="18" y1="20" x2="27" y2="16" stroke="white" stroke-width="1.5" opacity=".6"/><line x1="18" y1="24" x2="27" y2="28" stroke="white" stroke-width="1.5" opacity=".6"/></svg>
+      <span style="font-size:28px;font-weight:800;letter-spacing:-.02em">AgentFlow</span>
+    </div>
+    <h1 style="margin-bottom:24px">Multi-Agent AI<br><span style="background:linear-gradient(135deg,var(--blue),var(--purple));-webkit-background-clip:text;-webkit-text-fill-color:transparent">Orchestration</span></h1>
+    <div class="divider"></div>
+    <p class="lead" style="margin-bottom:48px">A production-grade platform for composing specialized AI agents into parallel, streaming, budget-aware pipelines — powered by Claude.</p>
+    <div style="display:flex;gap:12px;flex-wrap:wrap">
+      <span class="pill pill-blue">FastAPI + Python</span>
+      <span class="pill pill-purple">Claude Sonnet / Haiku</span>
+      <span class="pill pill-green">Server-Sent Events</span>
+      <span class="pill pill-amber">Declarative Manifests</span>
+      <span class="pill pill-blue">Human-in-the-Loop</span>
+      <span class="pill pill-purple">Prompt Caching</span>
+    </div>
+  </div>
+  <p class="muted" style="position:absolute;bottom:90px;left:72px">Use ← → arrow keys or buttons to navigate</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 2 — THE PROBLEM
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-exec">The Problem</div>
+  <h2>Single AI calls don't scale to real work</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1;margin-top:8px">
+    <div>
+      <p style="margin-bottom:24px">Complex knowledge work requires <strong>depth across multiple domains</strong> simultaneously — research, analysis, code, synthesis. A single LLM prompt cannot do all of it well.</p>
+      <ul class="fancy" style="margin-bottom:24px">
+        <li>Context windows overflow on large tasks</li>
+        <li>Monolithic prompts produce shallow, unfocused output</li>
+        <li>No parallelism — every step is sequential</li>
+        <li>No accountability — opaque reasoning, no audit trail</li>
+        <li>Cost blindness — no per-task budget control</li>
+        <li>Human oversight is absent until the very end</li>
+      </ul>
+      <div class="highlight">
+        <strong>The insight:</strong> The best teams assign specialized people to parallel workstreams with a coordinator. AI agents should work the same way.
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <div class="card card-blue">
+        <h4>❌ Monolithic Approach</h4>
+        <p style="font-size:14px;margin-top:8px;color:var(--muted)">One prompt, one model, one response. Hits context limits. Sequential. No specialization. No transparency.</p>
+      </div>
+      <div class="card card-green">
+        <h4>✅ Multi-Agent Approach</h4>
+        <p style="font-size:14px;margin-top:8px;color:var(--muted)">Specialized agents run in parallel. Each scoped to its domain. Coordinator synthesizes results. Streaming progress. Human checkpoints.</p>
+      </div>
+      <div class="card">
+        <h4 style="color:var(--amber)">The numbers</h4>
+        <div class="stat-row" style="margin-top:12px">
+          <div class="stat"><div class="stat-val">10×</div><div class="stat-lbl">faster via parallelism</div></div>
+          <div class="stat"><div class="stat-val">80%</div><div class="stat-lbl">token reduction (caching)</div></div>
+          <div class="stat"><div class="stat-val">5×</div><div class="stat-lbl">cost via model routing</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 3 — WHAT IS AGENTFLOW
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-exec">Overview</div>
+  <h2>What is AgentFlow?</h2>
+  <div class="divider"></div>
+  <p class="lead" style="margin-bottom:32px">AgentFlow is an <strong>open-source orchestration engine</strong> that decomposes a natural-language task into a directed acyclic graph of specialized agent subtasks, executes them in parallel, and streams every state transition to the client in real time.</p>
+  <div class="cols cols-3">
+    <div class="card card-blue">
+      <div style="font-size:28px;margin-bottom:10px">🧩</div>
+      <h3>Composable</h3>
+      <p style="font-size:14px">New agents added via a single YAML manifest file. No orchestrator code changes required.</p>
+    </div>
+    <div class="card card-purple">
+      <div style="font-size:28px;margin-bottom:10px">⚡</div>
+      <h3>Parallel</h3>
+      <p style="font-size:14px">DAG-based scheduler dispatches all independent subtasks simultaneously, cutting wall-clock time dramatically.</p>
+    </div>
+    <div class="card card-green">
+      <div style="font-size:28px;margin-bottom:10px">👁️</div>
+      <h3>Transparent</h3>
+      <p style="font-size:14px">Every state transition — plan creation, agent progress, cost, errors — streams live to the client via SSE.</p>
+    </div>
+    <div class="card card-amber">
+      <div style="font-size:28px;margin-bottom:10px">🛡️</div>
+      <h3>Budget-Safe</h3>
+      <p style="font-size:14px">Per-subtask USD budgets enforced in real time. Human approval gate before budget expansion.</p>
+    </div>
+    <div class="card">
+      <div style="font-size:28px;margin-bottom:10px">🔧</div>
+      <h3>Tool-Rich</h3>
+      <p style="font-size:14px">Built-in tools (bash, file I/O, web search) plus MCP server integration for external capabilities.</p>
+    </div>
+    <div class="card">
+      <div style="font-size:28px;margin-bottom:10px">🔄</div>
+      <h3>Resilient</h3>
+      <p style="font-size:14px">Automatic retry, fallback agent routing, and continuation for partial results near iteration limits.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 4 — BUSINESS VALUE
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-exec">Business Value</div>
+  <h2>Why it matters for the organization</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1">
+    <div style="display:flex;flex-direction:column;gap:20px">
+      <div class="card card-blue">
+        <h4>Accelerate knowledge work</h4>
+        <p style="font-size:14px;margin-top:6px">Run research, coding, analysis, and writing in parallel instead of sequentially. A task that takes 30 minutes of serial LLM calls completes in 5 minutes with parallel agents.</p>
+      </div>
+      <div class="card card-green">
+        <h4>Predictable AI costs</h4>
+        <p style="font-size:14px;margin-top:6px">Every run has a declared USD budget cap. Prompt caching cuts token costs up to 90% on repeated system prompts. Model routing assigns cheap models to simple subtasks.</p>
+      </div>
+      <div class="card card-purple">
+        <h4>Human oversight built in</h4>
+        <p style="font-size:14px;margin-top:6px">The Human-in-the-Loop pattern pauses execution for human approval before sensitive or budget-exceeding actions — compliance-friendly by design.</p>
+      </div>
+      <div class="card card-amber">
+        <h4>Extensible platform</h4>
+        <p style="font-size:14px;margin-top:6px">Add a domain expert agent in one YAML file. No changes to the orchestrator, no redeployment of existing agents. Ship new capabilities in hours.</p>
+      </div>
+    </div>
+    <div>
+      <div class="highlight" style="margin-bottom:20px">
+        <h4 style="margin-bottom:12px;color:var(--blue)">Target use cases</h4>
+        <ul class="fancy">
+          <li>Automated research & competitive analysis</li>
+          <li>Multi-file codebase generation and review</li>
+          <li>Data pipeline creation with validation</li>
+          <li>Technical documentation with factual grounding</li>
+          <li>Business analysis with web + internal data sources</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h4 style="color:var(--green)">Integration model</h4>
+        <p style="font-size:14px;margin-top:8px">Standard REST + SSE API. Submit a task via <code style="background:var(--code-bg);padding:2px 6px;border-radius:4px">POST /runs</code>, stream results via <code style="background:var(--code-bg);padding:2px 6px;border-radius:4px">GET /runs/{id}/stream</code>. Integrates with any frontend or backend in minutes.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 5 — SECTION BREAK: ARCHITECTURE
+═══════════════════════════════════════════════ -->
+<div class="slide slide-break">
+  <div style="text-align:center">
+    <div class="section-badge badge-arch" style="margin:0 auto 20px">Architecture</div>
+    <h1 style="font-size:48px;margin-bottom:16px">System Architecture</h1>
+    <p class="lead" style="margin:0 auto;text-align:center;max-width:600px">How the layers fit together — from the client request to the final report</p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 6 — ARCHITECTURE DIAGRAM
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-arch">Architecture</div>
+  <h2>Layered system architecture</h2>
+  <div class="divider"></div>
+  <div class="cols cols-6040" style="flex:1;align-items:center">
+    <div>
+      <svg viewBox="0 0 480 440" width="100%" style="max-height:400px">
+        <defs>
+          <linearGradient id="gBlue" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#3b82f6" stop-opacity=".8"/><stop offset="100%" stop-color="#3b82f6" stop-opacity=".4"/></linearGradient>
+          <linearGradient id="gPurple" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#8b5cf6" stop-opacity=".8"/><stop offset="100%" stop-color="#8b5cf6" stop-opacity=".4"/></linearGradient>
+          <linearGradient id="gGreen" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#10b981" stop-opacity=".8"/><stop offset="100%" stop-color="#10b981" stop-opacity=".4"/></linearGradient>
+          <linearGradient id="gAmber" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#f59e0b" stop-opacity=".8"/><stop offset="100%" stop-color="#f59e0b" stop-opacity=".4"/></linearGradient>
+          <linearGradient id="gCyan" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#06b6d4" stop-opacity=".8"/><stop offset="100%" stop-color="#06b6d4" stop-opacity=".4"/></linearGradient>
+        </defs>
+        <!-- Client -->
+        <rect x="140" y="10" width="200" height="42" rx="8" fill="url(#gBlue)" stroke="#3b82f6" stroke-width="1"/>
+        <text x="240" y="36" text-anchor="middle" fill="white" font-size="13" font-weight="700">Client / Browser</text>
+        <!-- Arrow down -->
+        <line x1="240" y1="52" x2="240" y2="74" stroke="#3b82f6" stroke-width="1.5" stroke-dasharray="4 2"/>
+        <polygon points="240,76 236,70 244,70" fill="#3b82f6"/>
+        <text x="260" y="67" fill="#3b82f6" font-size="10">HTTP · SSE</text>
+        <!-- API Layer -->
+        <rect x="60" y="78" width="360" height="52" rx="8" fill="url(#gBlue)" stroke="#3b82f6" stroke-width="1"/>
+        <text x="240" y="98" text-anchor="middle" fill="white" font-size="13" font-weight="700">API Layer — FastAPI</text>
+        <text x="240" y="118" text-anchor="middle" fill="rgba(255,255,255,.7)" font-size="11">POST /runs · GET /runs/{id}/stream · POST /runs/{id}/input</text>
+        <!-- Arrow down -->
+        <line x1="240" y1="130" x2="240" y2="148" stroke="#8b5cf6" stroke-width="1.5" stroke-dasharray="4 2"/>
+        <polygon points="240,150 236,144 244,144" fill="#8b5cf6"/>
+        <!-- Orchestration -->
+        <rect x="30" y="152" width="420" height="90" rx="8" fill="url(#gPurple)" stroke="#8b5cf6" stroke-width="1"/>
+        <text x="240" y="172" text-anchor="middle" fill="white" font-size="13" font-weight="700">Orchestration Engine</text>
+        <rect x="46" y="182" width="116" height="44" rx="6" fill="rgba(0,0,0,.3)"/>
+        <text x="104" y="199" text-anchor="middle" fill="white" font-size="11" font-weight="600">Planner</text>
+        <text x="104" y="214" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="10">LLM decomposition</text>
+        <rect x="174" y="182" width="116" height="44" rx="6" fill="rgba(0,0,0,.3)"/>
+        <text x="232" y="199" text-anchor="middle" fill="white" font-size="11" font-weight="600">Scheduler</text>
+        <text x="232" y="214" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="10">DAG · topological sort</text>
+        <rect x="302" y="182" width="132" height="44" rx="6" fill="rgba(0,0,0,.3)"/>
+        <text x="368" y="199" text-anchor="middle" fill="white" font-size="11" font-weight="600">Stream Emitter</text>
+        <text x="368" y="214" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="10">SSE event bus</text>
+        <!-- Arrow down -->
+        <line x1="240" y1="242" x2="240" y2="258" stroke="#10b981" stroke-width="1.5" stroke-dasharray="4 2"/>
+        <polygon points="240,260 236,254 244,254" fill="#10b981"/>
+        <text x="256" y="253" fill="#10b981" font-size="10">Task Bus</text>
+        <!-- Agents -->
+        <rect x="30" y="262" width="420" height="62" rx="8" fill="url(#gGreen)" stroke="#10b981" stroke-width="1"/>
+        <text x="240" y="280" text-anchor="middle" fill="white" font-size="13" font-weight="700">Agent Layer (manifest-driven)</text>
+        <text x="90" y="310" text-anchor="middle" fill="white" font-size="11" font-weight="600">Research</text>
+        <text x="180" y="310" text-anchor="middle" fill="white" font-size="11" font-weight="600">Code</text>
+        <text x="254" y="310" text-anchor="middle" fill="white" font-size="11" font-weight="600">Data</text>
+        <text x="328" y="310" text-anchor="middle" fill="white" font-size="11" font-weight="600">Writer</text>
+        <text x="406" y="310" text-anchor="middle" fill="white" font-size="11" font-weight="600">Planner</text>
+        <!-- Arrow down -->
+        <line x1="240" y1="324" x2="240" y2="340" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4 2"/>
+        <polygon points="240,342 236,336 244,336" fill="#f59e0b"/>
+        <!-- Core -->
+        <rect x="30" y="344" width="420" height="52" rx="8" fill="url(#gAmber)" stroke="#f59e0b" stroke-width="1"/>
+        <text x="240" y="364" text-anchor="middle" fill="white" font-size="13" font-weight="700">Core Layer</text>
+        <text x="110" y="386" text-anchor="middle" fill="white" font-size="11">Registry</text>
+        <text x="210" y="386" text-anchor="middle" fill="white" font-size="11">RunContext</text>
+        <text x="310" y="386" text-anchor="middle" fill="white" font-size="11">TaskBus</text>
+        <text x="400" y="386" text-anchor="middle" fill="white" font-size="11">Models</text>
+        <!-- Tools -->
+        <rect x="30" y="410" width="200" height="28" rx="6" fill="rgba(6,182,212,.2)" stroke="#06b6d4" stroke-width="1"/>
+        <text x="130" y="428" text-anchor="middle" fill="#06b6d4" font-size="11" font-weight="600">Built-in Tools + MCP Servers</text>
+        <rect x="250" y="410" width="200" height="28" rx="6" fill="rgba(6,182,212,.15)" stroke="#06b6d4" stroke-width="1" stroke-dasharray="3 2"/>
+        <text x="350" y="428" text-anchor="middle" fill="#06b6d4" font-size="11" font-weight="600">Workspace / .runs / Artifacts</text>
+      </svg>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="card card-blue" style="padding:14px 18px">
+        <h4 style="font-size:13px">API Layer</h4>
+        <p style="font-size:12px;margin-top:4px">FastAPI handles HTTP + SSE streaming. Runs start immediately, execute in background.</p>
+      </div>
+      <div class="card card-purple" style="padding:14px 18px">
+        <h4 style="font-size:13px">Orchestration Engine</h4>
+        <p style="font-size:12px;margin-top:4px">7-step pipeline: plan → schedule → dispatch → collect → continue → report.</p>
+      </div>
+      <div class="card card-green" style="padding:14px 18px">
+        <h4 style="font-size:13px">Agent Layer</h4>
+        <p style="font-size:12px;margin-top:4px">One generic <code style="font-size:11px;background:var(--code-bg);padding:1px 4px;border-radius:3px">Agent</code> class. Behavior from manifest. Stateless — context via envelope.</p>
+      </div>
+      <div class="card card-amber" style="padding:14px 18px">
+        <h4 style="font-size:13px">Core Layer</h4>
+        <p style="font-size:12px;margin-top:4px">Registry, RunContext, TaskBus — all designed as swappable interfaces (in-process today, Redis tomorrow).</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 7 — SIX DESIGN PRINCIPLES
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-arch">Design Principles</div>
+  <h2>Six load-bearing design decisions</h2>
+  <div class="divider"></div>
+  <div class="cols cols-3" style="flex:1">
+    <div class="card" style="border-top:3px solid var(--blue)">
+      <div style="font-size:24px;margin-bottom:10px">📋</div>
+      <h3 style="font-size:16px">1. Declarative agents</h3>
+      <p style="font-size:13px">Every agent is a YAML manifest. Capabilities, tools, system prompt, iteration limits — all config, not code. Add agents without touching the engine.</p>
+    </div>
+    <div class="card" style="border-top:3px solid var(--purple)">
+      <div style="font-size:24px;margin-bottom:10px">🔒</div>
+      <h3 style="font-size:16px">2. Stateless agents</h3>
+      <p style="font-size:13px">Agents receive all needed context via a typed <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px;font-size:11px">TaskEnvelope</code>. No shared mutable state between agents. No direct inter-agent calls.</p>
+    </div>
+    <div class="card" style="border-top:3px solid var(--green)">
+      <div style="font-size:24px;margin-bottom:10px">🧠</div>
+      <h3 style="font-size:16px">3. LLM-powered planning</h3>
+      <p style="font-size:13px">The decomposition step is itself an LLM call. The planner reads the agent registry and workspace, then produces a JSON execution plan with dependency declarations.</p>
+    </div>
+    <div class="card" style="border-top:3px solid var(--amber)">
+      <div style="font-size:24px;margin-bottom:10px">📡</div>
+      <h3 style="font-size:16px">4. Streaming-first</h3>
+      <p style="font-size:13px">Every state transition emits a typed SSE event. The client is never waiting blind — it sees the plan, each dispatch, each completion, and costs in real time.</p>
+    </div>
+    <div class="card" style="border-top:3px solid var(--cyan)">
+      <div style="font-size:24px;margin-bottom:10px">💰</div>
+      <h3 style="font-size:16px">5. Budget awareness</h3>
+      <p style="font-size:13px">Each subtask gets a fractional budget slice. Real-time USD tracking. Budget exhaustion triggers a human approval gate before execution continues.</p>
+    </div>
+    <div class="card" style="border-top:3px solid var(--red)">
+      <div style="font-size:24px;margin-bottom:10px">🔁</div>
+      <h3 style="font-size:16px">6. Swappable internals</h3>
+      <p style="font-size:13px"><code style="background:var(--code-bg);padding:1px 4px;border-radius:3px;font-size:11px">TaskBus</code>, <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px;font-size:11px">StreamEmitter</code>, <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px;font-size:11px">RunContext</code> all have clean interfaces. In-process asyncio today; Redis Streams on day one of scale-out.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 8 — DECLARATIVE AGENT MANIFESTS
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-arch">Declarative Agents</div>
+  <h2>Agent manifest — behavior as configuration</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1">
+    <div>
+      <p style="margin-bottom:16px;font-size:15px">Each agent is fully declared in a YAML file. The orchestrator loads all manifests at startup — no code changes needed to add or modify an agent.</p>
+      <pre><span class="key">agent_id</span><span class="op">:</span> <span class="str">ResearchAgent</span>
+<span class="key">domain</span><span class="op">:</span> <span class="str">Information Retrieval</span>
+<span class="key">capabilities</span><span class="op">:</span>
+  <span class="op">-</span> <span class="str">web_research</span>
+  <span class="op">-</span> <span class="str">document_synthesis</span>
+  <span class="op">-</span> <span class="str">citation</span>
+
+<span class="key">tools</span><span class="op">:</span>
+  <span class="op">-</span> <span class="str">web_search</span>
+  <span class="op">-</span> <span class="str">fetch_url</span>
+  <span class="op">-</span> <span class="str">file_read</span>
+  <span class="op">-</span> <span class="str">file_write</span>
+
+<span class="key">mcp_servers</span><span class="op">:</span>
+  <span class="op">-</span> <span class="key">name</span><span class="op">:</span> <span class="str">knowledge-base</span>
+    <span class="key">transport</span><span class="op">:</span> <span class="str">stdio</span>
+
+<span class="key">skills</span><span class="op">:</span>
+  <span class="op">-</span> <span class="str">research-methodology</span>
+
+<span class="key">max_iterations</span><span class="op">:</span> <span class="num">8</span>
+<span class="key">fallback_for</span><span class="op">:</span> <span class="str">KBAgent</span>
+
+<span class="key">system_prompt</span><span class="op">:</span> <span class="op">|</span>
+  <span class="str">You are an expert research analyst...</span></pre>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <h3 style="color:var(--text);font-size:18px">What a manifest controls</h3>
+      <div class="card card-blue" style="padding:14px 18px">
+        <h4 style="font-size:13px;color:var(--blue)">Capability index</h4>
+        <p style="font-size:12px;margin-top:4px">The registry builds a <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">capability → [agent_ids]</code> map. The LLM planner reads this roster to decide which agent handles which subtask.</p>
+      </div>
+      <div class="card card-purple" style="padding:14px 18px">
+        <h4 style="font-size:13px;color:var(--purple)">Tool scope</h4>
+        <p style="font-size:12px;margin-top:4px">Agents only receive tools listed in their manifest. The tool registry filters globally registered tools — enforced isolation.</p>
+      </div>
+      <div class="card card-green" style="padding:14px 18px">
+        <h4 style="font-size:13px;color:var(--green)">MCP integration</h4>
+        <p style="font-size:12px;margin-top:4px">Agents can declare external MCP servers (stdio or SSE). The engine connects at runtime and injects their tools into the agentic loop automatically.</p>
+      </div>
+      <div class="card card-amber" style="padding:14px 18px">
+        <h4 style="font-size:13px;color:var(--amber)">Fallback routing</h4>
+        <p style="font-size:12px;margin-top:4px"><code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">fallback_for</code> field means this agent is the retry target if the primary agent fails — declared, not hardcoded.</p>
+      </div>
+      <div class="highlight" style="font-size:13px;padding:14px">
+        <strong>Result:</strong> A domain expert can ship a new AI capability by writing a 30-line YAML file. No Python required.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 9 — ORCHESTRATION PIPELINE
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-arch">Engine</div>
+  <h2>The 7-step orchestration pipeline</h2>
+  <div class="divider"></div>
+  <div class="steps" style="margin-bottom:24px">
+    <div class="step">
+      <div class="step-num" style="background:rgba(59,130,246,.2);color:var(--blue);border:2px solid var(--blue)">01</div>
+      <div class="step-title">Initialize</div>
+      <div class="step-desc">Create run directory, SSE emitter, task bus, run metadata</div>
+    </div>
+    <div class="step">
+      <div class="step-num" style="background:rgba(139,92,246,.2);color:var(--purple);border:2px solid var(--purple)">02</div>
+      <div class="step-title">Plan</div>
+      <div class="step-desc">LLM planner explores workspace, outputs JSON execution plan</div>
+    </div>
+    <div class="step">
+      <div class="step-num" style="background:rgba(16,185,129,.2);color:var(--green);border:2px solid var(--green)">03</div>
+      <div class="step-title">Expand</div>
+      <div class="step-desc">Per-manifest decomposition splits large subtasks further</div>
+    </div>
+    <div class="step">
+      <div class="step-num" style="background:rgba(245,158,11,.2);color:var(--amber);border:2px solid var(--amber)">04</div>
+      <div class="step-title">Schedule</div>
+      <div class="step-desc">Build DAG, topological sort, dispatch all ready subtasks in parallel</div>
+    </div>
+    <div class="step">
+      <div class="step-num" style="background:rgba(6,182,212,.2);color:var(--cyan);border:2px solid var(--cyan)">05</div>
+      <div class="step-title">Execute</div>
+      <div class="step-desc">Agents run agentic loops, store results in RunContext</div>
+    </div>
+    <div class="step">
+      <div class="step-num" style="background:rgba(239,68,68,.2);color:var(--red);border:2px solid var(--red)">06</div>
+      <div class="step-title">Continue</div>
+      <div class="step-desc">Partial results resumed (up to 3×) from message history</div>
+    </div>
+    <div class="step">
+      <div class="step-num" style="background:rgba(59,130,246,.2);color:var(--blue);border:2px solid var(--blue)">07</div>
+      <div class="step-title">Report</div>
+      <div class="step-desc">Compile final markdown report, emit run:complete event</div>
+    </div>
+  </div>
+  <div class="cols cols-3">
+    <div class="card card-purple" style="padding:14px">
+      <h4 style="font-size:13px">Retry logic</h4>
+      <p style="font-size:12px;margin-top:4px">Configurable <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">task_max_retries</code> with exponential backoff. On final failure, registry finds a <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">fallback_for</code> agent.</p>
+    </div>
+    <div class="card card-amber" style="padding:14px">
+      <h4 style="font-size:13px">Budget gate</h4>
+      <p style="font-size:12px;margin-top:4px">If a subtask exhausts its slice: emit <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">human_input_request</code>, pause with asyncio lock, resume on approval.</p>
+    </div>
+    <div class="card card-green" style="padding:14px">
+      <h4 style="font-size:13px">Partial acceptance</h4>
+      <p style="font-size:12px;margin-top:4px">A subtask returning <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">status:partial</code> is stored and used downstream — never silently dropped.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 10 — LLM PLANNING
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-arch">Planning</div>
+  <h2>LLM-powered task decomposition</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1">
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <p style="font-size:15px">The planner is itself an agentic loop — it receives the task, the agent registry roster, and a workspace exploration toolkit, then produces a structured execution plan.</p>
+      <div class="card card-blue">
+        <h4 style="font-size:13px;color:var(--blue)">Phase 1 — Exploration (ReAct loop)</h4>
+        <p style="font-size:12px;margin-top:6px">Planner calls <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">file_read</code>, <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">bash_exec</code>, <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">web_search</code> to understand the workspace before committing to a plan (max 5–8 tool calls).</p>
+      </div>
+      <div class="card card-purple">
+        <h4 style="font-size:13px;color:var(--purple)">Phase 2 — Decomposition</h4>
+        <p style="font-size:12px;margin-top:6px">LLM outputs a JSON plan. Rules enforced by the system prompt: budget fractions must sum to 1.0, prefer parallel over sequential, always add verification subtasks after file generation.</p>
+      </div>
+      <div class="card card-green">
+        <h4 style="font-size:13px;color:var(--green)">Phase 3 — Expansion</h4>
+        <p style="font-size:12px;margin-top:6px">Agents with a <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">decomposition_prompt</code> (e.g. CodeAgent) can further split their assigned subtask into micro-tasks before execution begins.</p>
+      </div>
+    </div>
+    <div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:8px">Planner output — ExecutionPlan JSON</p>
+      <pre style="font-size:12px">{
+  <span class="key">"subtasks"</span>: [
+    {
+      <span class="key">"id"</span>: <span class="str">"st_1"</span>,
+      <span class="key">"agentId"</span>: <span class="str">"ResearchAgent"</span>,
+      <span class="key">"instruction"</span>: <span class="str">"Survey recent papers on..."</span>,
+      <span class="key">"dependsOn"</span>: <span class="op">[]</span>,
+      <span class="key">"budgetFraction"</span>: <span class="num">0.30</span>
+    },
+    {
+      <span class="key">"id"</span>: <span class="str">"st_2"</span>,
+      <span class="key">"agentId"</span>: <span class="str">"DataAgent"</span>,
+      <span class="key">"instruction"</span>: <span class="str">"Analyse dataset at data/..."</span>,
+      <span class="key">"dependsOn"</span>: <span class="op">[]</span>,
+      <span class="key">"budgetFraction"</span>: <span class="num">0.35</span>
+    },
+    {
+      <span class="key">"id"</span>: <span class="str">"st_3"</span>,
+      <span class="key">"agentId"</span>: <span class="str">"WriterAgent"</span>,
+      <span class="key">"instruction"</span>: <span class="str">"Synthesise findings into report"</span>,
+      <span class="key">"dependsOn"</span>: <span class="op">[</span><span class="str">"st_1"</span>, <span class="str">"st_2"</span><span class="op">]</span>,
+      <span class="key">"budgetFraction"</span>: <span class="num">0.35</span>
+    }
+  ]
+}</pre>
+      <div class="highlight" style="font-size:13px;margin-top:12px;padding:12px">
+        st_1 and st_2 have no dependencies → dispatched in <strong>parallel</strong>. st_3 waits for both.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 11 — DAG SCHEDULING
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-arch">Scheduler</div>
+  <h2>DAG-based dependency scheduling</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1;align-items:center">
+    <div>
+      <svg viewBox="0 0 380 300" width="100%">
+        <!-- Nodes -->
+        <g>
+          <!-- st_1 Research -->
+          <rect x="20" y="60" width="130" height="48" rx="8" fill="rgba(59,130,246,.2)" stroke="#3b82f6" stroke-width="1.5"/>
+          <text x="85" y="79" text-anchor="middle" fill="#93c5fd" font-size="12" font-weight="700">st_1</text>
+          <text x="85" y="97" text-anchor="middle" fill="rgba(255,255,255,.7)" font-size="10">ResearchAgent</text>
+          <!-- st_2 Data -->
+          <rect x="20" y="190" width="130" height="48" rx="8" fill="rgba(59,130,246,.2)" stroke="#3b82f6" stroke-width="1.5"/>
+          <text x="85" y="209" text-anchor="middle" fill="#93c5fd" font-size="12" font-weight="700">st_2</text>
+          <text x="85" y="227" text-anchor="middle" fill="rgba(255,255,255,.7)" font-size="10">DataAgent</text>
+          <!-- st_3 Writer -->
+          <rect x="230" y="125" width="130" height="48" rx="8" fill="rgba(139,92,246,.2)" stroke="#8b5cf6" stroke-width="1.5"/>
+          <text x="295" y="144" text-anchor="middle" fill="#c4b5fd" font-size="12" font-weight="700">st_3</text>
+          <text x="295" y="162" text-anchor="middle" fill="rgba(255,255,255,.7)" font-size="10">WriterAgent</text>
+          <!-- Arrows -->
+          <line x1="150" y1="84" x2="228" y2="142" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arr)"/>
+          <line x1="150" y1="214" x2="228" y2="158" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arr)"/>
+          <defs><marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#3b82f6"/></marker></defs>
+          <!-- PARALLEL label -->
+          <rect x="14" y="24" width="142" height="22" rx="4" fill="rgba(16,185,129,.1)" stroke="rgba(16,185,129,.4)" stroke-width="1"/>
+          <text x="85" y="38" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">⚡ Parallel dispatch</text>
+          <!-- WAITS label -->
+          <text x="295" y="108" text-anchor="middle" fill="var(--muted)" font-size="10">waits for st_1, st_2</text>
+          <!-- Timeline -->
+          <text x="20" y="284" fill="var(--muted)" font-size="10">t=0s</text>
+          <line x1="40" y1="276" x2="340" y2="276" stroke="var(--border)" stroke-width="1"/>
+          <rect x="40" y="260" width="100" height="12" rx="3" fill="rgba(59,130,246,.5)"/>
+          <rect x="40" y="260" width="80" height="12" rx="3" fill="rgba(59,130,246,.5)" y="274"/>
+          <text x="55" y="270" fill="white" font-size="9">Research (parallel)</text>
+          <rect x="40" y="274" width="80" height="12" rx="3" fill="rgba(59,130,246,.4)"/>
+          <text x="55" y="283" fill="white" font-size="9">Data (parallel)</text>
+          <rect x="148" y="260" width="80" height="26" rx="3" fill="rgba(139,92,246,.5)"/>
+          <text x="188" y="277" text-anchor="middle" fill="white" font-size="9">Writer</text>
+          <text x="340" y="284" fill="var(--muted)" font-size="10">done</text>
+        </g>
+      </svg>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <div class="card card-blue">
+        <h4 style="font-size:13px">NetworkX DiGraph</h4>
+        <p style="font-size:12px;margin-top:6px">The scheduler builds a directed acyclic graph from the subtask <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">dependsOn</code> declarations. Cycle detection runs at plan ingestion — a circular dependency rejects the plan.</p>
+      </div>
+      <div class="card card-purple">
+        <h4 style="font-size:13px">Ready computation</h4>
+        <p style="font-size:12px;margin-top:6px">On each loop iteration: <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">ready = graph.ready(completed, failed)</code>. All ready subtasks dispatched simultaneously via <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">asyncio.gather()</code>.</p>
+      </div>
+      <div class="card card-green">
+        <h4 style="font-size:13px">Context inheritance</h4>
+        <p style="font-size:12px;margin-top:6px">When a subtask has exactly one dependency, it inherits the full message thread — no redundant re-reading of prior output. Multi-dependency subtasks receive a synthesized text summary.</p>
+      </div>
+      <div class="highlight" style="font-size:13px;padding:12px">
+        <strong>Wall-clock impact:</strong> A 3-agent plan where two are independent runs in the time of the longest single agent — not their sum.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 12 — SECTION BREAK: IMPLEMENTATION
+═══════════════════════════════════════════════ -->
+<div class="slide slide-break">
+  <div class="section-badge badge-impl" style="margin:0 auto 20px">Implementation</div>
+  <h1 style="font-size:48px;margin-bottom:16px">Key Implementation<br>Patterns</h1>
+  <p class="lead" style="margin:0 auto;text-align:center;max-width:600px">How the best practices — streaming, caching, HITL, skills — are built into the code</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 13 — THE AGENTIC LOOP
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-impl">Agentic Loop</div>
+  <h2>The agent execution loop</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1">
+    <pre style="font-size:12px"><span class="kw">async def</span> <span class="fn">_agentic_loop</span>(self, envelope):
+  messages = <span class="fn">build_initial_messages</span>(envelope)
+
+  <span class="kw">for</span> iteration <span class="kw">in</span> <span class="fn">range</span>(self.max_iterations):
+    response = <span class="kw">await</span> self.llm.<span class="fn">call</span>(
+      model=self.model,
+      system=self.system_prompt,
+      messages=messages,
+      tools=self.tools,          <span class="cmt"># scoped to manifest</span>
+      betas=[<span class="str">"prompt-caching-2024-07-31"</span>]
+    )
+
+    <span class="cmt"># track cost in real time</span>
+    self.<span class="fn">_accumulate_tokens</span>(response.usage)
+
+    <span class="kw">if</span> response.stop_reason == <span class="str">"end_turn"</span>:
+      <span class="kw">return</span> <span class="fn">AgentResult</span>(status=<span class="str">"success"</span>, ...)
+
+    <span class="kw">if</span> response.stop_reason == <span class="str">"tool_use"</span>:
+      tool_results = []
+      <span class="kw">for</span> block <span class="kw">in</span> response.content:
+        result = <span class="kw">await</span> self.<span class="fn">_call_tool</span>(block)
+        tool_results.<span class="fn">append</span>(result)
+      messages.<span class="fn">extend</span>([response, tool_results])
+
+    <span class="kw">if</span> self.<span class="fn">_budget_exhausted</span>():
+      <span class="kw">return</span> <span class="fn">AgentResult</span>(status=<span class="str">"partial"</span>, ...)
+
+  <span class="kw">return</span> <span class="fn">AgentResult</span>(status=<span class="str">"partial"</span>, ...)</pre>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="card card-blue" style="padding:14px">
+        <h4 style="font-size:13px">Standard ReAct pattern</h4>
+        <p style="font-size:12px;margin-top:4px">Think → Act (tool call) → Observe (tool result) → repeat. The loop continues until <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">end_turn</code> or a stop condition.</p>
+      </div>
+      <div class="card card-purple" style="padding:14px">
+        <h4 style="font-size:13px">Three stop conditions</h4>
+        <ul class="fancy purple" style="font-size:12px;gap:6px;margin-top:4px">
+          <li><code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">end_turn</code> — model finished → success</li>
+          <li>Budget exhausted → partial result</li>
+          <li>Max iterations hit → partial result</li>
+        </ul>
+      </div>
+      <div class="card card-green" style="padding:14px">
+        <h4 style="font-size:13px">Tool result capping</h4>
+        <p style="font-size:12px;margin-top:4px">Tool outputs are truncated to 8K chars before injection into the message thread — prevents context bloat on large file reads or web pages.</p>
+      </div>
+      <div class="card card-amber" style="padding:14px">
+        <h4 style="font-size:13px">Continuation support</h4>
+        <p style="font-size:12px;margin-top:4px">A <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">partial</code> result carries its full message history. The engine can re-dispatch with <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">"Continue where you left off..."</code> — up to 3× per subtask.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 14 — REAL-TIME STREAMING
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-impl">Streaming</div>
+  <h2>Real-time streaming with Server-Sent Events</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1">
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <p style="font-size:15px">Every state transition in the pipeline emits a typed SSE event. The client never waits blind — it receives incremental progress from plan creation through final report.</p>
+      <div class="card card-blue" style="padding:14px">
+        <h4 style="font-size:13px">SSE endpoint</h4>
+        <pre style="font-size:11px;padding:10px;margin-top:8px"><span class="fn">@router.get</span>(<span class="str">"/runs/{run_id}/stream"</span>)
+<span class="kw">async def</span> <span class="fn">stream_run</span>(run_id: str):
+  emitter = registry.<span class="fn">get_emitter</span>(run_id)
+  <span class="kw">return</span> <span class="fn">EventSourceResponse</span>(
+    emitter.<span class="fn">event_generator</span>()
+  )</pre>
+      </div>
+      <div class="card" style="padding:14px">
+        <h4 style="font-size:13px;color:var(--green)">Typed event sequence</h4>
+        <div style="display:flex;flex-direction:column;gap:4px;margin-top:8px;font-size:11px;font-family:monospace">
+          <div style="color:#93c5fd">→ <span style="color:var(--green)">run:started</span> {run_id, task, budget_usd}</div>
+          <div style="color:#93c5fd">→ <span style="color:var(--green)">plan:created</span> {subtasks: [...]}</div>
+          <div style="color:#93c5fd">→ <span style="color:var(--amber)">task:dispatched</span> {agent_id, subtask_id}</div>
+          <div style="color:#93c5fd">→ <span style="color:var(--muted)">agent:progress</span> {message, cost_usd}</div>
+          <div style="color:#93c5fd">→ <span style="color:var(--green)">task:complete</span> {output, tokens}</div>
+          <div style="color:#93c5fd">→ <span style="color:var(--amber)">task:dispatched</span> {agent_id: Writer}</div>
+          <div style="color:#93c5fd">→ <span style="color:var(--green)">task:complete</span> {output}</div>
+          <div style="color:#93c5fd">→ <span style="color:#3b82f6">run:complete</span> {report, total_cost}</div>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="card card-purple" style="padding:14px">
+        <h4 style="font-size:13px">StreamEmitter internals</h4>
+        <p style="font-size:12px;margin-top:6px">Each run gets its own <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">asyncio.Queue</code>. The <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">event_generator()</code> async-yields from the queue. A sentinel value signals stream end.</p>
+        <p style="font-size:12px;margin-top:6px">Events are also persisted to a JSONL file — the client can replay the full event log at any time via <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">GET /runs/{id}/events</code>.</p>
+      </div>
+      <div class="card card-green" style="padding:14px">
+        <h4 style="font-size:13px">Per-event structure</h4>
+        <pre style="font-size:11px;padding:10px;margin-top:8px">{
+  <span class="key">"type"</span>: <span class="str">"task:complete"</span>,
+  <span class="key">"seq"</span>: <span class="num">7</span>,
+  <span class="key">"agent_id"</span>: <span class="str">"ResearchAgent"</span>,
+  <span class="key">"subtask_id"</span>: <span class="str">"st_1"</span>,
+  <span class="key">"timestamp"</span>: <span class="str">"2026-06-29T..."</span>,
+  <span class="key">"data"</span>: { ... }
+}</pre>
+      </div>
+      <div class="highlight" style="font-size:13px;padding:12px">
+        <strong>Design note:</strong> The <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">StreamEmitter</code> and <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">StreamRegistry</code> use a clean interface — swapping the <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">asyncio.Queue</code> for a Redis Stream unlocks multi-replica deployments without changing any consumer code.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 15 — PROMPT CACHING
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-impl">Prompt Caching</div>
+  <h2>Prompt caching — the biggest cost lever</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1">
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <p style="font-size:15px">System prompts and skills are often hundreds of tokens — repeated on every agentic loop iteration. Anthropic's prompt caching reduces those repeated tokens to <strong>cache reads at 10× lower cost</strong>.</p>
+      <div class="card card-blue">
+        <h4 style="font-size:13px">How it works</h4>
+        <p style="font-size:12px;margin-top:6px">Mark the static parts of the prompt with <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">cache_control: {type: "ephemeral"}</code>. Claude caches the KV activations server-side. Subsequent calls within 5 minutes reuse the cache.</p>
+      </div>
+      <div class="card card-purple">
+        <h4 style="font-size:13px">What gets cached in AgentFlow</h4>
+        <ul class="fancy purple" style="font-size:12px;gap:6px;margin-top:6px">
+          <li>Agent system prompt (often 300–600 tokens)</li>
+          <li>Skill preamble text (reusable knowledge injected at runtime)</li>
+          <li>Tool definitions (static schema blocks)</li>
+          <li>Prior message history on continuation runs</li>
+        </ul>
+      </div>
+      <div class="card card-green">
+        <h4 style="font-size:13px">Cost comparison</h4>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;font-size:12px">
+          <div style="background:var(--code-bg);border-radius:6px;padding:10px;text-align:center">
+            <div style="font-size:20px;font-weight:800;color:var(--red)">$3.00</div>
+            <div style="color:var(--muted);font-size:11px">per 1M input tokens</div>
+          </div>
+          <div style="background:var(--code-bg);border-radius:6px;padding:10px;text-align:center">
+            <div style="font-size:20px;font-weight:800;color:var(--green)">$0.30</div>
+            <div style="color:var(--muted);font-size:11px">per 1M cache read tokens</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:8px">Implementation in LLM client</p>
+      <pre style="font-size:12px"><span class="cmt"># System block with cache breakpoint</span>
+system = [
+  {
+    <span class="str">"type"</span>: <span class="str">"text"</span>,
+    <span class="str">"text"</span>: agent.system_prompt,
+    <span class="str">"cache_control"</span>: {<span class="str">"type"</span>: <span class="str">"ephemeral"</span>}
+  }
+]
+
+<span class="cmt"># Tool definitions with cache breakpoint</span>
+tools = [
+  {
+    ...tool_schema,
+    <span class="str">"cache_control"</span>: {<span class="str">"type"</span>: <span class="str">"ephemeral"</span>}
+  }
+  <span class="kw">for</span> tool <span class="kw">in</span> agent.tools
+]
+
+<span class="cmt"># Token tracking from response</span>
+cache_creation = usage.cache_creation_input_tokens
+cache_read     = usage.cache_read_input_tokens
+cost = (
+  cache_creation * <span class="num">3.75</span>
+  + cache_read   * <span class="num">0.30</span>  <span class="cmt"># 10× cheaper</span>
+  + output_toks  * <span class="num">15.0</span>
+) / <span class="num">1_000_000</span></pre>
+      <div class="highlight" style="font-size:13px;margin-top:12px;padding:12px">
+        An agent with a 500-token system prompt running 8 iterations: without caching = 4,000 input tokens; with caching = 500 write + 3,500 reads = <strong>~87% cost reduction on the system prompt portion</strong>.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 16 — HUMAN-IN-THE-LOOP
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-impl">Human-in-the-Loop</div>
+  <h2>Human-in-the-Loop — safety by design</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1">
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <p style="font-size:15px">The HITL pattern pauses the orchestrator and asks a human before budget-exceeding or sensitive actions proceed. The run state is preserved across the pause.</p>
+      <div class="card card-amber">
+        <h4 style="font-size:13px;color:var(--amber)">Current implementation — Budget gate</h4>
+        <p style="font-size:12px;margin-top:6px">When a subtask exhausts its allocated USD budget slice, the orchestrator emits a <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">human_input_request</code> SSE event, acquires an async lock, and waits (up to 30 min) for a response via <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">POST /runs/{id}/input</code>.</p>
+        <p style="font-size:12px;margin-top:6px">Only one budget question surfaces at a time — the lock ensures serialization even when multiple subtasks exhaust simultaneously.</p>
+      </div>
+      <div class="card" style="padding:14px">
+        <h4 style="font-size:13px">The interaction flow</h4>
+        <div style="font-size:11px;font-family:monospace;display:flex;flex-direction:column;gap:4px;margin-top:8px">
+          <div style="color:var(--blue)">SSE → human_input_request {budget_used, budget_cap}</div>
+          <div style="color:var(--muted);padding-left:12px">↳ client shows approval dialog</div>
+          <div style="color:var(--green)">POST /runs/{id}/input {"approved": true, "amount": 2.00}</div>
+          <div style="color:var(--muted);padding-left:12px">↳ engine resumes with new budget</div>
+          <div style="color:var(--blue)">SSE → task:dispatched (continuation)</div>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="card card-purple">
+        <h4 style="font-size:13px">Roadmap: General interrupt mechanism</h4>
+        <p style="font-size:12px;margin-top:6px">The gap analysis identifies expanding HITL beyond budget to any irreversible action (<code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">bash_exec</code>, <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">file_write</code>). A general <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">InterruptRequest</code> model would carry:</p>
+        <ul class="fancy purple" style="font-size:11px;gap:4px;margin-top:6px">
+          <li>Trigger reason (budget / irreversible action / low confidence)</li>
+          <li>Proposed action + full tool input</li>
+          <li>Reasoning trace and cost so far</li>
+          <li>Options: approve / reject / modify / restart</li>
+          <li>SLA timeout with safe default</li>
+        </ul>
+      </div>
+      <div class="highlight" style="font-size:13px;padding:12px">
+        <strong>Research finding (Wang & Wang 2026):</strong> Agents given only output-level human feedback achieved 0% task completion due to "failure mode oscillation." The interrupt payload must include reasoning trace — humans can't fix what they can't see.
+      </div>
+      <div class="card card-green" style="padding:14px">
+        <h4 style="font-size:13px">Compliance angle</h4>
+        <p style="font-size:12px;margin-top:4px">Every HITL event is logged to the run's event JSONL — a complete audit trail of what the human approved, when, and at what cost point.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 17 — SKILLS
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-impl">Skills</div>
+  <h2>Skills — reusable knowledge libraries</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1">
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <p style="font-size:15px">Skills are shared prompt fragments — domain knowledge, coding standards, methodology guides — that any agent can load at runtime. They are injected into the system prompt before the agentic loop starts.</p>
+      <div class="card card-blue">
+        <h4 style="font-size:13px">How skills are loaded</h4>
+        <p style="font-size:12px;margin-top:6px">If a manifest declares <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">skills: [python-coding]</code>, the engine injects a <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">read_skill</code> tool and a system prompt instruction to load it before starting work. The agent reads the skill file on its first tool call.</p>
+      </div>
+      <div class="card card-purple">
+        <h4 style="font-size:13px">Example skill: python-coding</h4>
+        <p style="font-size:12px;margin-top:6px">Injects project-specific standards: type hints, black formatting, test patterns, import conventions. All CodeAgent subtasks share this knowledge automatically — without repeating it in every agent system prompt.</p>
+      </div>
+      <div class="card card-green">
+        <h4 style="font-size:13px">Caching synergy</h4>
+        <p style="font-size:12px;margin-top:6px">Because skills are stable text, they're ideal cache candidates. Once the skill text is in the context window, subsequent loop iterations read it from the prompt cache — near-zero cost.</p>
+      </div>
+    </div>
+    <div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:8px">Example skill file — skills/python-coding.md</p>
+      <pre style="font-size:12px"><span class="cmt"># Python Coding Standards</span>
+
+<span class="cmt">## Type hints</span>
+Always annotate function signatures.
+Use <span class="str">`Optional[T]`</span> not <span class="str">`T | None`</span> for compatibility.
+
+<span class="cmt">## Testing</span>
+Write pytest tests alongside implementation.
+Use <span class="str">`pytest.mark.asyncio`</span> for async functions.
+Mock external services with <span class="str">`unittest.mock`</span>.
+
+<span class="cmt">## Formatting</span>
+black line length: 88
+isort profile: black
+
+<span class="cmt">## Error handling</span>
+Raise domain-specific exceptions.
+Never swallow exceptions silently.
+Log with structlog, not print().</pre>
+      <div class="highlight" style="font-size:13px;margin-top:12px;padding:12px">
+        <strong>Practical benefit:</strong> A team's engineering standards live in one file. Every CodeAgent subtask — in any run, by any user — automatically follows them. Update the skill file; every future run gets the update.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 18 — MCP TOOL INTEGRATION
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-impl">MCP Integration</div>
+  <h2>MCP — connecting to the tool ecosystem</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1">
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <p style="font-size:15px">The Model Context Protocol (MCP) is an open standard for exposing tools to LLMs. AgentFlow agents can connect to any MCP server — stdio subprocess or SSE endpoint — declared in their manifest.</p>
+      <div class="card card-blue">
+        <h4 style="font-size:13px">Runtime connection</h4>
+        <p style="font-size:12px;margin-top:6px">When an agent starts, the engine opens MCP connections for each server in the manifest's <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">mcp_servers</code> list. Tool schemas are fetched and merged with built-in tools before the agentic loop starts.</p>
+      </div>
+      <div class="card card-purple">
+        <h4 style="font-size:13px">Supported transports</h4>
+        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+          <span class="pill pill-blue">stdio subprocess</span>
+          <span class="pill pill-purple">SSE endpoint</span>
+        </div>
+        <p style="font-size:12px;margin-top:8px">Stdio: spawns the MCP server as a child process. SSE: connects to a running HTTP MCP server. Both present identical tool interfaces to the agent.</p>
+      </div>
+      <div class="card card-green">
+        <h4 style="font-size:13px">Example MCP servers in use</h4>
+        <ul class="fancy green" style="font-size:12px;gap:6px;margin-top:6px">
+          <li>Knowledge base search (KB agent)</li>
+          <li>Internal database query tools</li>
+          <li>Proprietary API wrappers</li>
+          <li>Slack / GitHub / Jira connectors</li>
+        </ul>
+      </div>
+    </div>
+    <div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:8px">Manifest declaration</p>
+      <pre style="font-size:12px"><span class="key">mcp_servers</span><span class="op">:</span>
+  <span class="op">-</span> <span class="key">name</span><span class="op">:</span> <span class="str">knowledge-base</span>
+    <span class="key">transport</span><span class="op">:</span> <span class="str">stdio</span>
+    <span class="key">command</span><span class="op">:</span> <span class="str">python</span>
+    <span class="key">args</span><span class="op">:</span> [<span class="str">"-m"</span>, <span class="str">"kb_server"</span>]
+
+  <span class="op">-</span> <span class="key">name</span><span class="op">:</span> <span class="str">github-tools</span>
+    <span class="key">transport</span><span class="op">:</span> <span class="str">sse</span>
+    <span class="key">url</span><span class="op">:</span> <span class="str">http://mcp-github:8080/sse</span></pre>
+      <p style="font-size:12px;color:var(--muted);margin:12px 0 8px">Engine connection logic</p>
+      <pre style="font-size:12px"><span class="kw">for</span> server_cfg <span class="kw">in</span> manifest.mcp_servers:
+  client = <span class="kw">await</span> <span class="fn">MCPClient.connect</span>(server_cfg)
+  mcp_tools = <span class="kw">await</span> client.<span class="fn">list_tools</span>()
+  all_tools.<span class="fn">extend</span>(mcp_tools)
+<span class="cmt"># mcp_tools merged with built-ins
+# agent sees unified tool list</span></pre>
+      <div class="highlight" style="font-size:13px;margin-top:12px;padding:12px">
+        <strong>Open standard:</strong> Any tool server implementing MCP — from the community or built in-house — integrates with zero framework changes.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 19 — CONTEXT PROPAGATION
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-impl">Context</div>
+  <h2>Context propagation between agents</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1">
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <p style="font-size:15px">Agents are stateless — but downstream agents need upstream results. <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">RunContext</code> stores each completed subtask result and provides two propagation modes depending on the dependency graph shape.</p>
+      <div class="card card-blue">
+        <h4 style="font-size:13px">Mode A — Text summary (multi-dependency)</h4>
+        <p style="font-size:12px;margin-top:6px"><code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">build_prior_results(dep_ids)</code> concatenates the text output from all upstream subtasks into a structured JSON summary and injects it as user context. Efficient for fan-in patterns.</p>
+      </div>
+      <div class="card card-purple">
+        <h4 style="font-size:13px">Mode B — Full message thread (single dependency)</h4>
+        <p style="font-size:12px;margin-top:6px"><code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">build_prior_messages(dep_id)</code> passes the entire conversation thread from the upstream agent — tool calls, tool results, and all. The downstream agent sees the reasoning, not just the conclusion.</p>
+      </div>
+      <div class="card card-green">
+        <h4 style="font-size:13px">User context threading</h4>
+        <p style="font-size:12px;margin-top:6px">The initial <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">user_context</code> dict (submitted with the run) propagates to every agent via the task envelope. Global facts available to all subtasks without re-fetching.</p>
+      </div>
+    </div>
+    <div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:8px">RunContext key methods</p>
+      <pre style="font-size:12px"><span class="kw">class</span> <span class="type">RunContext</span>:
+  <span class="cmt"># Store result after subtask completes</span>
+  <span class="kw">def</span> <span class="fn">store_result</span>(self, subtask_id, result):
+    self._results[subtask_id] = result
+    self.<span class="fn">_persist_to_jsonl</span>(result)  <span class="cmt"># disk</span>
+
+  <span class="cmt"># Multi-dependency: synthesised summary</span>
+  <span class="kw">def</span> <span class="fn">build_prior_results</span>(self, dep_ids):
+    parts = []
+    <span class="kw">for</span> dep_id <span class="kw">in</span> dep_ids:
+      r = self._results[dep_id]
+      parts.<span class="fn">append</span>({<span class="str">"id"</span>: dep_id,
+                    <span class="str">"output"</span>: r.output[<span class="str">"text"</span>]})
+    <span class="kw">return</span> <span class="fn">json.dumps</span>(parts)
+
+  <span class="cmt"># Single dependency: full message thread</span>
+  <span class="kw">def</span> <span class="fn">build_prior_messages</span>(self, dep_id):
+    r = self._results[dep_id]
+    <span class="kw">return</span> r.messages  <span class="cmt"># full history</span>
+
+  <span class="cmt"># Budget tracking</span>
+  <span class="kw">def</span> <span class="fn">remaining_budget_usd</span>(self):
+    spent = <span class="fn">sum</span>(r.cost_usd <span class="kw">for</span> r
+                <span class="kw">in</span> self._results.<span class="fn">values</span>())
+    <span class="kw">return</span> self.budget_usd - spent</pre>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 20 — MODEL ROUTING & COST
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-impl">Cost Strategy</div>
+  <h2>Model routing — right-sizing compute to the task</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1">
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <p style="font-size:15px">Not every subtask needs the same model. A formatting pass is not the same as multi-step code generation. AgentFlow supports per-manifest model overrides, with complexity-based routing on the roadmap.</p>
+      <div class="card card-blue">
+        <h4 style="font-size:13px">Current — per-manifest override</h4>
+        <p style="font-size:12px;margin-top:6px">Manifest declares <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">model: claude-haiku-4-5</code> to override the global default. The KB search agent, reporter, and simple extraction agents run on Haiku; CodeAgent runs on Sonnet.</p>
+      </div>
+      <div class="card card-purple">
+        <h4 style="font-size:13px">Roadmap — complexity routing</h4>
+        <p style="font-size:12px;margin-top:6px">The planner will score each subtask's complexity tier during decomposition. The dispatcher selects the model from a config map — no per-agent manifest change needed.</p>
+        <pre style="font-size:11px;margin-top:8px;padding:10px">MODEL_ROUTING = {
+  <span class="str">"low"</span>:    <span class="str">"claude-haiku-4-5-20251001"</span>,
+  <span class="str">"medium"</span>: <span class="str">"claude-sonnet-4-6"</span>,
+  <span class="str">"high"</span>:   <span class="str">"claude-opus-4-7"</span>
+}</pre>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <h3 style="font-size:16px;color:var(--text)">Current model assignments</h3>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div class="card card-green" style="padding:12px;display:flex;justify-content:space-between;align-items:center">
+          <div><h4 style="font-size:12px">Planner</h4><p style="font-size:11px;color:var(--muted)">Task decomposition</p></div>
+          <span class="pill pill-blue" style="font-size:11px">Sonnet 4.6</span>
+        </div>
+        <div class="card card-blue" style="padding:12px;display:flex;justify-content:space-between;align-items:center">
+          <div><h4 style="font-size:12px">Research / Code / Data / Writer Agents</h4><p style="font-size:11px;color:var(--muted)">Complex work</p></div>
+          <span class="pill pill-blue" style="font-size:11px">Sonnet 4.6</span>
+        </div>
+        <div class="card card-amber" style="padding:12px;display:flex;justify-content:space-between;align-items:center">
+          <div><h4 style="font-size:12px">Reporter</h4><p style="font-size:11px;color:var(--muted)">Final report compilation</p></div>
+          <span class="pill pill-green" style="font-size:11px">Haiku 4.5 ✦ cheap</span>
+        </div>
+      </div>
+      <div class="highlight" style="font-size:13px;padding:12px;margin-top:4px">
+        <strong>Cost projection:</strong> Routing 40% of subtasks to Haiku (at 20× lower input cost) reduces total run cost by ~35% with negligible quality impact on low-complexity steps.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 21 — END-TO-END FLOW
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-impl">End-to-End</div>
+  <h2>A complete run — step by step</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1">
+    <div>
+      <svg viewBox="0 0 340 430" width="100%">
+        <defs><marker id="a2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#8b949e"/></marker></defs>
+        <!-- Client -->
+        <rect x="90" y="10" width="160" height="34" rx="6" fill="rgba(59,130,246,.2)" stroke="#3b82f6" stroke-width="1"/>
+        <text x="170" y="32" text-anchor="middle" fill="white" font-size="12">POST /runs {task, budget}</text>
+        <line x1="170" y1="44" x2="170" y2="58" stroke="#8b949e" stroke-width="1" marker-end="url(#a2)"/>
+        <!-- run:started -->
+        <rect x="50" y="60" width="240" height="28" rx="5" fill="rgba(16,185,129,.15)" stroke="rgba(16,185,129,.4)" stroke-width="1"/>
+        <text x="170" y="78" text-anchor="middle" fill="#6ee7b7" font-size="11">SSE: run:started</text>
+        <line x1="170" y1="88" x2="170" y2="102" stroke="#8b949e" stroke-width="1" marker-end="url(#a2)"/>
+        <!-- Planner -->
+        <rect x="70" y="104" width="200" height="34" rx="6" fill="rgba(139,92,246,.2)" stroke="#8b5cf6" stroke-width="1"/>
+        <text x="170" y="118" text-anchor="middle" fill="white" font-size="11" font-weight="600">Planner: explore workspace</text>
+        <text x="170" y="130" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="10">LLM ReAct loop (5–8 tool calls)</text>
+        <line x1="170" y1="138" x2="170" y2="152" stroke="#8b949e" stroke-width="1" marker-end="url(#a2)"/>
+        <!-- plan:created -->
+        <rect x="50" y="154" width="240" height="28" rx="5" fill="rgba(16,185,129,.15)" stroke="rgba(16,185,129,.4)" stroke-width="1"/>
+        <text x="170" y="172" text-anchor="middle" fill="#6ee7b7" font-size="11">SSE: plan:created {3 subtasks}</text>
+        <line x1="170" y1="182" x2="170" y2="196" stroke="#8b949e" stroke-width="1" marker-end="url(#a2)"/>
+        <!-- Parallel dispatch -->
+        <rect x="20" y="202" width="140" height="28" rx="6" fill="rgba(59,130,246,.2)" stroke="#3b82f6" stroke-width="1"/>
+        <text x="90" y="220" text-anchor="middle" fill="white" font-size="10" font-weight="600">ResearchAgent (st_1)</text>
+        <rect x="180" y="202" width="140" height="28" rx="6" fill="rgba(59,130,246,.2)" stroke="#3b82f6" stroke-width="1"/>
+        <text x="250" y="220" text-anchor="middle" fill="white" font-size="10" font-weight="600">DataAgent (st_2)</text>
+        <!-- parallel label -->
+        <rect x="16" y="198" width="308" height="36" rx="4" fill="rgba(16,185,129,.1)" stroke="rgba(16,185,129,.3)" stroke-width="1" stroke-dasharray="3 2"/>
+        <!-- converge arrows -->
+        <line x1="90" y1="230" x2="160" y2="256" stroke="#8b949e" stroke-width="1" marker-end="url(#a2)"/>
+        <line x1="250" y1="230" x2="180" y2="256" stroke="#8b949e" stroke-width="1" marker-end="url(#a2)"/>
+        <!-- task:complete events -->
+        <rect x="50" y="258" width="240" height="28" rx="5" fill="rgba(16,185,129,.15)" stroke="rgba(16,185,129,.4)" stroke-width="1"/>
+        <text x="170" y="276" text-anchor="middle" fill="#6ee7b7" font-size="11">SSE: task:complete (×2, results stored)</text>
+        <line x1="170" y1="286" x2="170" y2="300" stroke="#8b949e" stroke-width="1" marker-end="url(#a2)"/>
+        <!-- Writer -->
+        <rect x="70" y="302" width="200" height="28" rx="6" fill="rgba(139,92,246,.2)" stroke="#8b5cf6" stroke-width="1"/>
+        <text x="170" y="322" text-anchor="middle" fill="white" font-size="11" font-weight="600">WriterAgent (st_3) — synthesise</text>
+        <line x1="170" y1="330" x2="170" y2="344" stroke="#8b949e" stroke-width="1" marker-end="url(#a2)"/>
+        <!-- run:complete -->
+        <rect x="50" y="346" width="240" height="28" rx="5" fill="rgba(59,130,246,.15)" stroke="rgba(59,130,246,.4)" stroke-width="1"/>
+        <text x="170" y="364" text-anchor="middle" fill="#93c5fd" font-size="11">SSE: run:complete {report, total_cost}</text>
+        <line x1="170" y1="374" x2="170" y2="390" stroke="#8b949e" stroke-width="1" marker-end="url(#a2)"/>
+        <!-- Artifacts -->
+        <rect x="70" y="392" width="200" height="28" rx="6" fill="rgba(245,158,11,.15)" stroke="rgba(245,158,11,.4)" stroke-width="1"/>
+        <text x="170" y="410" text-anchor="middle" fill="#fcd34d" font-size="11">GET /runs/{id}/report · /artifacts</text>
+      </svg>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="card card-blue" style="padding:14px">
+        <h4 style="font-size:13px">Timing breakdown</h4>
+        <div style="font-size:12px;margin-top:8px;display:flex;flex-direction:column;gap:4px">
+          <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Plan creation</span><span>~8–15s</span></div>
+          <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Parallel agents (st_1, st_2)</span><span>~30–90s</span></div>
+          <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Writer agent (st_3)</span><span>~20–60s</span></div>
+          <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Report compilation</span><span>~5–10s</span></div>
+          <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);padding-top:6px;margin-top:4px"><span style="font-weight:600">Total wall-clock</span><span style="color:var(--green);font-weight:700">~60–175s</span></div>
+          <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Serial equivalent</span><span style="color:var(--red)">~180–390s</span></div>
+        </div>
+      </div>
+      <div class="card card-green" style="padding:14px">
+        <h4 style="font-size:13px">Artifacts produced</h4>
+        <ul class="fancy green" style="font-size:12px;gap:4px;margin-top:6px">
+          <li>Final markdown report (compiled)</li>
+          <li>Per-subtask result JSONL</li>
+          <li>Full event log JSONL (replayable)</li>
+          <li>Any files written by agents to workspace</li>
+        </ul>
+      </div>
+      <div class="card card-purple" style="padding:14px">
+        <h4 style="font-size:13px">Budget tracking throughout</h4>
+        <p style="font-size:12px;margin-top:4px">Every LLM call accumulates real-time USD cost. The final <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">run:complete</code> event includes total cost breakdown by subtask and token type.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 22 — API DESIGN
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-impl">API</div>
+  <h2>REST API surface</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1">
+    <div>
+      <h3 style="font-size:16px;color:var(--text);margin-bottom:12px">Run lifecycle</h3>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px">
+        <div class="card card-blue" style="padding:10px 14px">
+          <div style="display:flex;align-items:center;gap:8px"><span class="pill pill-green" style="font-size:10px">POST</span><code style="font-size:12px">/runs</code></div>
+          <p style="font-size:11px;margin-top:4px;color:var(--muted)">Submit task. Returns run_id immediately. Execution in background.</p>
+        </div>
+        <div class="card" style="padding:10px 14px">
+          <div style="display:flex;align-items:center;gap:8px"><span class="pill pill-blue" style="font-size:10px">GET</span><code style="font-size:12px">/runs/{id}/stream</code></div>
+          <p style="font-size:11px;margin-top:4px;color:var(--muted)">SSE stream of all typed events. <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">text/event-stream</code></p>
+        </div>
+        <div class="card" style="padding:10px 14px">
+          <div style="display:flex;align-items:center;gap:8px"><span class="pill pill-green" style="font-size:10px">POST</span><code style="font-size:12px">/runs/{id}/input</code></div>
+          <p style="font-size:11px;margin-top:4px;color:var(--muted)">Submit human approval for HITL gate. <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">{approved, amount}</code></p>
+        </div>
+      </div>
+      <h3 style="font-size:16px;color:var(--text);margin-bottom:12px">Result retrieval</h3>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div class="card" style="padding:10px 14px">
+          <div style="display:flex;align-items:center;gap:8px"><span class="pill pill-blue" style="font-size:10px">GET</span><code style="font-size:12px">/runs/{id}/report</code></div>
+          <p style="font-size:11px;margin-top:4px;color:var(--muted)">Final compiled markdown report</p>
+        </div>
+        <div class="card" style="padding:10px 14px">
+          <div style="display:flex;align-items:center;gap:8px"><span class="pill pill-blue" style="font-size:10px">GET</span><code style="font-size:12px">/runs/{id}/results</code></div>
+          <p style="font-size:11px;margin-top:4px;color:var(--muted)">Per-subtask results JSON</p>
+        </div>
+        <div class="card" style="padding:10px 14px">
+          <div style="display:flex;align-items:center;gap:8px"><span class="pill pill-blue" style="font-size:10px">GET</span><code style="font-size:12px">/runs/{id}/artifacts/{artifact_id}</code></div>
+          <p style="font-size:11px;margin-top:4px;color:var(--muted)">Retrieve generated files by agents</p>
+        </div>
+        <div class="card" style="padding:10px 14px">
+          <div style="display:flex;align-items:center;gap:8px"><span class="pill pill-blue" style="font-size:10px">GET</span><code style="font-size:12px">/runs/{id}/events</code></div>
+          <p style="font-size:11px;margin-top:4px;color:var(--muted)">Full replayable event log (JSONL)</p>
+        </div>
+      </div>
+    </div>
+    <div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:8px">Minimal client integration</p>
+      <pre style="font-size:12px"><span class="cmt"># 1. Submit a run</span>
+resp = requests.<span class="fn">post</span>(<span class="str">"/api/runs"</span>, json={
+  <span class="str">"task"</span>: <span class="str">"Analyse Q2 sales and write report"</span>,
+  <span class="str">"budget_usd"</span>: <span class="num">3.00</span>,
+  <span class="str">"context"</span>: {<span class="str">"quarter"</span>: <span class="str">"Q2-2026"</span>}
+})
+run_id = resp.json()[<span class="str">"run_id"</span>]
+
+<span class="cmt"># 2. Stream events (browser EventSource)</span>
+<span class="kw">const</span> es = <span class="kw">new</span> <span class="fn">EventSource</span>(
+  <span class="str">`/api/runs/<span class="op">${</span>run_id<span class="op">}</span>/stream`</span>
+);
+es.<span class="fn">onmessage</span> = (e) => {
+  <span class="kw">const</span> event = JSON.<span class="fn">parse</span>(e.data);
+  <span class="kw">if</span> (event.type === <span class="str">"run:complete"</span>) {
+    <span class="fn">renderReport</span>(event.data.report);
+    es.<span class="fn">close</span>();
+  }
+};
+
+<span class="cmt"># 3. Human approval (if HITL gate fires)</span>
+requests.<span class="fn">post</span>(<span class="str">f"/api/runs/{run_id}/input"</span>,
+  json={<span class="str">"approved"</span>: <span class="kw">True</span>, <span class="str">"amount"</span>: <span class="num">2.0</span>})</pre>
+      <div class="highlight" style="font-size:13px;margin-top:12px;padding:12px">
+        Standard REST + SSE. Any frontend framework, any backend language. No SDK required.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 23 — SECTION BREAK: DEPLOYMENT
+═══════════════════════════════════════════════ -->
+<div class="slide slide-break">
+  <div class="section-badge badge-deploy" style="margin:0 auto 20px">Deployment</div>
+  <h1 style="font-size:48px;margin-bottom:16px">Deployment Scenarios</h1>
+  <p class="lead" style="margin:0 auto;text-align:center;max-width:600px">From a single-server prototype to a cloud-native horizontally scaled platform</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 24 — DEPLOYMENT 1: SINGLE SERVER
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-deploy">Deployment — Scenario 1</div>
+  <h2>Single-server deployment</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1">
+    <div>
+      <svg viewBox="0 0 320 300" width="100%">
+        <defs><marker id="a3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#8b949e"/></marker></defs>
+        <!-- Browser -->
+        <rect x="90" y="10" width="140" height="36" rx="6" fill="rgba(59,130,246,.2)" stroke="#3b82f6" stroke-width="1.5"/>
+        <text x="160" y="33" text-anchor="middle" fill="white" font-size="13" font-weight="600">Browser / Client</text>
+        <line x1="160" y1="46" x2="160" y2="60" stroke="#8b949e" stroke-width="1" marker-end="url(#a3)"/>
+        <!-- Server box -->
+        <rect x="20" y="62" width="280" height="176" rx="10" fill="rgba(30,41,59,.8)" stroke="var(--border)" stroke-width="1.5"/>
+        <text x="160" y="82" text-anchor="middle" fill="var(--muted)" font-size="10" font-weight="700" letter-spacing=".08em">SINGLE SERVER</text>
+        <!-- FastAPI -->
+        <rect x="36" y="90" width="248" height="32" rx="6" fill="rgba(59,130,246,.2)" stroke="#3b82f6" stroke-width="1"/>
+        <text x="160" y="110" text-anchor="middle" fill="white" font-size="12" font-weight="600">FastAPI (uvicorn)</text>
+        <!-- Engine -->
+        <rect x="36" y="132" width="116" height="32" rx="6" fill="rgba(139,92,246,.2)" stroke="#8b5cf6" stroke-width="1"/>
+        <text x="94" y="152" text-anchor="middle" fill="white" font-size="12" font-weight="600">Engine</text>
+        <!-- Background tasks -->
+        <rect x="168" y="132" width="116" height="32" rx="6" fill="rgba(139,92,246,.2)" stroke="#8b5cf6" stroke-width="1"/>
+        <text x="226" y="147" text-anchor="middle" fill="white" font-size="10">BackgroundTasks</text>
+        <text x="226" y="160" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="9">asyncio</text>
+        <!-- In-process state -->
+        <rect x="36" y="174" width="248" height="52" rx="6" fill="rgba(245,158,11,.1)" stroke="rgba(245,158,11,.3)" stroke-width="1"/>
+        <text x="160" y="192" text-anchor="middle" fill="#fcd34d" font-size="10" font-weight="600">In-Process State</text>
+        <text x="88" y="212" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="9">RunContext</text>
+        <text x="160" y="212" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="9">StreamEmitter</text>
+        <text x="236" y="212" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="9">TaskBus</text>
+        <!-- Disk -->
+        <line x1="160" y1="238" x2="160" y2="258" stroke="#8b949e" stroke-width="1" marker-end="url(#a3)"/>
+        <rect x="70" y="260" width="180" height="32" rx="6" fill="rgba(16,185,129,.1)" stroke="rgba(16,185,129,.3)" stroke-width="1"/>
+        <text x="160" y="281" text-anchor="middle" fill="#6ee7b7" font-size="12">Local disk (.runs/)</text>
+      </svg>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="card card-green">
+        <h4 style="font-size:13px">When to use</h4>
+        <ul class="fancy green" style="font-size:12px;gap:6px;margin-top:6px">
+          <li>Development and experimentation</li>
+          <li>Internal team tooling (low concurrency)</li>
+          <li>Proof-of-concept demos</li>
+          <li>&lt;20 concurrent runs expected</li>
+        </ul>
+      </div>
+      <div class="card card-blue">
+        <h4 style="font-size:13px">Stack</h4>
+        <ul class="fancy" style="font-size:12px;gap:4px;margin-top:6px">
+          <li>Python 3.12 + uv</li>
+          <li>FastAPI + uvicorn (single worker)</li>
+          <li>In-process asyncio concurrency</li>
+          <li>Local disk for run persistence</li>
+          <li>ANTHROPIC_API_KEY in .env</li>
+        </ul>
+      </div>
+      <div class="card card-amber">
+        <h4 style="font-size:13px;color:var(--amber)">Limitations</h4>
+        <ul class="fancy" style="font-size:12px;gap:4px;margin-top:6px">
+          <li>State lost on server restart</li>
+          <li>Cannot scale horizontally</li>
+          <li>No auth or tenant isolation</li>
+          <li>Unbounded asyncio task accumulation under load</li>
+        </ul>
+      </div>
+      <pre style="font-size:11px;padding:10px"><span class="cmt"># Start dev server</span>
+cp .env.example .env
+<span class="cmt"># add ANTHROPIC_API_KEY</span>
+uv run uvicorn agentflow.main:app --reload</pre>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 25 — DEPLOYMENT 2: HORIZONTALLY SCALABLE
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-deploy">Deployment — Scenario 2</div>
+  <h2>Horizontally scalable deployment</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1">
+    <div>
+      <svg viewBox="0 0 340 360" width="100%">
+        <defs><marker id="a4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#8b949e"/></marker></defs>
+        <!-- LB -->
+        <rect x="100" y="10" width="140" height="32" rx="6" fill="rgba(59,130,246,.3)" stroke="#3b82f6" stroke-width="1.5"/>
+        <text x="170" y="31" text-anchor="middle" fill="white" font-size="12" font-weight="700">Load Balancer</text>
+        <!-- Arrows to replicas -->
+        <line x1="130" y1="42" x2="80" y2="76" stroke="#8b949e" stroke-width="1" marker-end="url(#a4)"/>
+        <line x1="170" y1="42" x2="170" y2="76" stroke="#8b949e" stroke-width="1" marker-end="url(#a4)"/>
+        <line x1="210" y1="42" x2="260" y2="76" stroke="#8b949e" stroke-width="1" marker-end="url(#a4)"/>
+        <!-- Replica 1 -->
+        <rect x="10" y="78" width="100" height="52" rx="6" fill="rgba(139,92,246,.2)" stroke="#8b5cf6" stroke-width="1"/>
+        <text x="60" y="98" text-anchor="middle" fill="white" font-size="11" font-weight="600">API Replica 1</text>
+        <text x="60" y="112" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="9">stateless FastAPI</text>
+        <!-- Replica 2 -->
+        <rect x="120" y="78" width="100" height="52" rx="6" fill="rgba(139,92,246,.2)" stroke="#8b5cf6" stroke-width="1"/>
+        <text x="170" y="98" text-anchor="middle" fill="white" font-size="11" font-weight="600">API Replica 2</text>
+        <text x="170" y="112" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="9">stateless FastAPI</text>
+        <!-- Replica 3 -->
+        <rect x="230" y="78" width="100" height="52" rx="6" fill="rgba(139,92,246,.2)" stroke="#8b5cf6" stroke-width="1"/>
+        <text x="280" y="98" text-anchor="middle" fill="white" font-size="11" font-weight="600">API Replica 3</text>
+        <text x="280" y="112" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="9">stateless FastAPI</text>
+        <!-- Arrows down -->
+        <line x1="80" y1="130" x2="130" y2="168" stroke="#8b949e" stroke-width="1" marker-end="url(#a4)"/>
+        <line x1="170" y1="130" x2="170" y2="168" stroke="#8b949e" stroke-width="1" marker-end="url(#a4)"/>
+        <line x1="260" y1="130" x2="210" y2="168" stroke="#8b949e" stroke-width="1" marker-end="url(#a4)"/>
+        <!-- Redis -->
+        <rect x="60" y="170" width="220" height="60" rx="8" fill="rgba(239,68,68,.15)" stroke="rgba(239,68,68,.4)" stroke-width="1.5"/>
+        <text x="170" y="190" text-anchor="middle" fill="#fca5a5" font-size="12" font-weight="700">Redis</text>
+        <text x="105" y="210" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="9">RunContext hashes</text>
+        <text x="200" y="210" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="9">SSE Streams</text>
+        <text x="255" y="210" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="9">TaskBus</text>
+        <!-- Arrow down -->
+        <line x1="170" y1="230" x2="170" y2="258" stroke="#8b949e" stroke-width="1" marker-end="url(#a4)"/>
+        <!-- Postgres -->
+        <rect x="60" y="260" width="220" height="44" rx="8" fill="rgba(6,182,212,.1)" stroke="rgba(6,182,212,.3)" stroke-width="1.5"/>
+        <text x="170" y="278" text-anchor="middle" fill="#67e8f9" font-size="12" font-weight="700">Postgres</text>
+        <text x="170" y="295" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="9">Run history · audit log · HITL events</text>
+        <!-- Object Storage -->
+        <rect x="60" y="318" width="220" height="36" rx="8" fill="rgba(16,185,129,.1)" stroke="rgba(16,185,129,.3)" stroke-width="1.5"/>
+        <text x="170" y="340" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">Object Storage (artifacts)</text>
+      </svg>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="card card-blue">
+        <h4 style="font-size:13px">Key changes from single-server</h4>
+        <ul class="fancy" style="font-size:12px;gap:6px;margin-top:6px">
+          <li><code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">RunContext</code> → Redis hash per run</li>
+          <li><code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">StreamEmitter</code> → Redis Stream (XADD/XREAD BLOCK)</li>
+          <li><code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">TaskBus</code> → Redis pub/sub or LPUSH/BRPOPLPUSH</li>
+          <li>HITL async events → Redis pub/sub channel</li>
+          <li>Concurrency semaphore → HTTP 429 on overload</li>
+        </ul>
+      </div>
+      <div class="card card-green">
+        <h4 style="font-size:13px">Why this unlocks scale</h4>
+        <p style="font-size:12px;margin-top:6px">Any replica can handle any request — no sticky sessions. A run created on Replica 1 can stream to Replica 2. A restart of any replica loses zero in-flight state. Run behind any standard load balancer.</p>
+      </div>
+      <div class="card card-purple">
+        <h4 style="font-size:13px">Auth layer (required for multi-tenant)</h4>
+        <p style="font-size:12px;margin-top:6px">API key middleware. Redis key prefix per tenant: <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">{tenant}:run:{id}:*</code>. Postgres RLS enforces row-level tenant isolation on history tables.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 26 — DEPLOYMENT 3: CLOUD-NATIVE
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-deploy">Deployment — Scenario 3</div>
+  <h2>Cloud-native / Kubernetes deployment</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1">
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <p style="font-size:15px">For high-volume or long-horizon runs, decouple submission from execution using a task queue. Kubernetes provides pod autoscaling on queue depth.</p>
+      <div class="card card-blue">
+        <h4 style="font-size:13px">Architecture additions</h4>
+        <ul class="fancy" style="font-size:12px;gap:6px;margin-top:6px">
+          <li><strong>Celery workers</strong> — replace <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">BackgroundTasks</code>; pull from Redis/RabbitMQ</li>
+          <li><strong>API pods</strong> — only handle HTTP + SSE; no LLM calls</li>
+          <li><strong>Worker pods</strong> — only handle LLM calls + tool execution</li>
+          <li><strong>HPA</strong> — autoscale workers on Celery queue depth metric</li>
+          <li><strong>Celery Beat</strong> — scheduled or recurring runs</li>
+        </ul>
+      </div>
+      <div class="card card-purple">
+        <h4 style="font-size:13px">Why Celery for this pattern</h4>
+        <p style="font-size:12px;margin-top:6px">Celery's <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">chord</code> and <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">group</code> primitives map directly onto the DAG fan-out pattern. A chord fans subtasks out to workers and calls a callback when all complete — the orchestrator fan-in step.</p>
+      </div>
+      <div class="card card-green">
+        <h4 style="font-size:13px">Observability stack</h4>
+        <ul class="fancy green" style="font-size:12px;gap:4px;margin-top:6px">
+          <li>OpenTelemetry → Jaeger (distributed traces)</li>
+          <li>Prometheus + Grafana (LLM cost metrics)</li>
+          <li>LangSmith / Langfuse (LLM trace capture)</li>
+        </ul>
+      </div>
+    </div>
+    <div>
+      <svg viewBox="0 0 300 380" width="100%">
+        <defs><marker id="a5" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#8b949e"/></marker></defs>
+        <!-- Ingress -->
+        <rect x="75" y="10" width="150" height="30" rx="5" fill="rgba(59,130,246,.3)" stroke="#3b82f6" stroke-width="1.5"/>
+        <text x="150" y="30" text-anchor="middle" fill="white" font-size="12" font-weight="700">Ingress / API Gateway</text>
+        <line x1="150" y1="40" x2="150" y2="54" stroke="#8b949e" stroke-width="1" marker-end="url(#a5)"/>
+        <!-- API pods -->
+        <rect x="30" y="56" width="240" height="40" rx="6" fill="rgba(139,92,246,.2)" stroke="#8b5cf6" stroke-width="1"/>
+        <text x="150" y="72" text-anchor="middle" fill="white" font-size="11" font-weight="600">API Pods (HPA: RPS)</text>
+        <text x="150" y="86" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="9">POST /runs → enqueue task | GET /stream → Redis consumer</text>
+        <line x1="150" y1="96" x2="150" y2="110" stroke="#8b949e" stroke-width="1" marker-end="url(#a5)"/>
+        <!-- Queue -->
+        <rect x="50" y="112" width="200" height="34" rx="6" fill="rgba(239,68,68,.15)" stroke="rgba(239,68,68,.4)" stroke-width="1.5"/>
+        <text x="150" y="128" text-anchor="middle" fill="#fca5a5" font-size="12" font-weight="700">Redis / RabbitMQ Task Queue</text>
+        <text x="150" y="140" text-anchor="middle" fill="rgba(255,255,255,.5)" font-size="9">Celery broker</text>
+        <line x1="150" y1="146" x2="150" y2="160" stroke="#8b949e" stroke-width="1" marker-end="url(#a5)"/>
+        <!-- Worker pods -->
+        <rect x="30" y="162" width="240" height="40" rx="6" fill="rgba(16,185,129,.2)" stroke="#10b981" stroke-width="1"/>
+        <text x="150" y="178" text-anchor="middle" fill="white" font-size="11" font-weight="600">Worker Pods (HPA: queue depth)</text>
+        <text x="150" y="192" text-anchor="middle" fill="rgba(255,255,255,.6)" font-size="9">Celery workers — full orchestration engine</text>
+        <line x1="150" y1="202" x2="150" y2="216" stroke="#8b949e" stroke-width="1" marker-end="url(#a5)"/>
+        <!-- Redis state -->
+        <rect x="30" y="218" width="240" height="40" rx="6" fill="rgba(239,68,68,.15)" stroke="rgba(239,68,68,.4)" stroke-width="1"/>
+        <text x="150" y="235" text-anchor="middle" fill="#fca5a5" font-size="11" font-weight="600">Redis (state store + SSE streams)</text>
+        <text x="150" y="249" text-anchor="middle" fill="rgba(255,255,255,.5)" font-size="9">RunContext · TaskBus · HITL channels</text>
+        <line x1="150" y1="258" x2="150" y2="272" stroke="#8b949e" stroke-width="1" marker-end="url(#a5)"/>
+        <!-- Postgres -->
+        <rect x="30" y="274" width="115" height="34" rx="6" fill="rgba(6,182,212,.1)" stroke="rgba(6,182,212,.3)" stroke-width="1"/>
+        <text x="87" y="291" text-anchor="middle" fill="#67e8f9" font-size="11" font-weight="600">Postgres</text>
+        <text x="87" y="304" text-anchor="middle" fill="rgba(255,255,255,.5)" font-size="9">run history · HITL audit</text>
+        <!-- Object store -->
+        <rect x="155" y="274" width="115" height="34" rx="6" fill="rgba(16,185,129,.1)" stroke="rgba(16,185,129,.3)" stroke-width="1"/>
+        <text x="212" y="291" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">Object Store</text>
+        <text x="212" y="304" text-anchor="middle" fill="rgba(255,255,255,.5)" font-size="9">artifacts (S3/GCS)</text>
+        <!-- Observability -->
+        <rect x="30" y="322" width="240" height="44" rx="6" fill="rgba(245,158,11,.1)" stroke="rgba(245,158,11,.3)" stroke-width="1"/>
+        <text x="150" y="340" text-anchor="middle" fill="#fcd34d" font-size="11" font-weight="600">Observability</text>
+        <text x="88" y="358" text-anchor="middle" fill="rgba(255,255,255,.5)" font-size="9">OTel → Jaeger</text>
+        <text x="175" y="358" text-anchor="middle" fill="rgba(255,255,255,.5)" font-size="9">Prometheus + Grafana</text>
+        <text x="258" y="358" text-anchor="middle" fill="rgba(255,255,255,.5)" font-size="9">Langfuse</text>
+      </svg>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 27 — OBSERVABILITY
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-deploy">Observability</div>
+  <h2>Observability — what production visibility looks like</h2>
+  <div class="divider"></div>
+  <div class="cols cols-3" style="flex:1">
+    <div class="card card-blue" style="display:flex;flex-direction:column;gap:10px">
+      <div style="font-size:24px">🔍</div>
+      <h3 style="font-size:16px">Distributed Tracing</h3>
+      <p style="font-size:13px">OpenTelemetry spans span the full call tree:</p>
+      <ul class="fancy" style="font-size:12px;gap:4px">
+        <li><code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">OrchestratorEngine.run()</code> → root span</li>
+        <li><code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">Agent._execute()</code> → child span</li>
+        <li><code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">LLMClient.call()</code> → leaf span (tokens, latency)</li>
+        <li>Tool calls → leaf spans (tool name, impact)</li>
+      </ul>
+      <p style="font-size:12px;color:var(--muted)">Export to Jaeger or any OTLP collector.</p>
+    </div>
+    <div class="card card-purple" style="display:flex;flex-direction:column;gap:10px">
+      <div style="font-size:24px">📊</div>
+      <h3 style="font-size:16px">Prometheus Metrics</h3>
+      <p style="font-size:13px">Key metrics exposed at <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">/metrics</code>:</p>
+      <ul class="fancy purple" style="font-size:12px;gap:4px">
+        <li><code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">agentflow_active_runs</code> gauge</li>
+        <li><code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">agentflow_llm_latency_seconds</code> histogram</li>
+        <li><code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">agentflow_tokens_total</code> by type (input / output / cache)</li>
+        <li><code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">agentflow_cost_usd_total</code> by agent_id</li>
+        <li><code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">agentflow_task_duration_seconds</code> histogram</li>
+      </ul>
+      <p style="font-size:12px;color:var(--muted)">Visualise in Grafana. Alert on cost spikes.</p>
+    </div>
+    <div class="card card-green" style="display:flex;flex-direction:column;gap:10px">
+      <div style="font-size:24px">🧬</div>
+      <h3 style="font-size:16px">LLM Trace Capture</h3>
+      <p style="font-size:13px">Langfuse (self-hosted) or LangSmith on every <code style="background:var(--code-bg);padding:1px 4px;border-radius:3px">LLMClient.call()</code>:</p>
+      <ul class="fancy green" style="font-size:12px;gap:4px">
+        <li>Full prompt + completion capture</li>
+        <li>Tool call sequence per agent</li>
+        <li>Side-by-side run comparison</li>
+        <li>RLHF export for fine-tuning</li>
+        <li>Regression detection on deploy</li>
+      </ul>
+      <p style="font-size:12px;color:var(--muted)">Critical for: debugging agent failures, optimizing prompts, cost attribution.</p>
+    </div>
+  </div>
+  <div class="highlight" style="font-size:14px;margin-top:20px;padding:14px">
+    <strong>Research principle (Wang & Wang 2026):</strong> "You cannot improve what you cannot see, and what you cannot see in multi-agent systems is the <em>intermediate reasoning state</em>." Distributed tracing is not optional at production scale.
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 28 — GAP ANALYSIS SUMMARY
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-deploy">Roadmap</div>
+  <h2>Gap analysis — current vs. production-ready</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1">
+    <div>
+      <h3 style="font-size:16px;color:var(--text);margin-bottom:12px">P0 — Critical (blocks scale)</h3>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px">
+        <div class="card" style="padding:10px 14px;border-left:3px solid var(--red)">
+          <h4 style="font-size:12px">State is process-local</h4>
+          <p style="font-size:11px;color:var(--muted);margin-top:2px">RunContext, StreamEmitter, TaskBus are in-process singletons → Redis-backed swap → 2–3 days</p>
+        </div>
+        <div class="card" style="padding:10px 14px;border-left:3px solid var(--red)">
+          <h4 style="font-size:12px">HITL is budget-only</h4>
+          <p style="font-size:11px;color:var(--muted);margin-top:2px">Expand to general InterruptRequest for irreversible tool actions → 2 days</p>
+        </div>
+      </div>
+      <h3 style="font-size:16px;color:var(--text);margin-bottom:12px">P1 — High priority</h3>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div class="card" style="padding:10px 14px;border-left:3px solid var(--amber)">
+          <h4 style="font-size:12px">No auth / tenant isolation</h4>
+          <p style="font-size:11px;color:var(--muted);margin-top:2px">API key middleware + tenant namespacing → 1 day</p>
+        </div>
+        <div class="card" style="padding:10px 14px;border-left:3px solid var(--amber)">
+          <h4 style="font-size:12px">No backpressure</h4>
+          <p style="font-size:11px;color:var(--muted);margin-top:2px">Concurrency semaphore → HTTP 429 on overload → 2 hours</p>
+        </div>
+        <div class="card" style="padding:10px 14px;border-left:3px solid var(--amber)">
+          <h4 style="font-size:12px">No distributed tracing</h4>
+          <p style="font-size:11px;color:var(--muted);margin-top:2px">OpenTelemetry + Prometheus → 1–2 days</p>
+        </div>
+      </div>
+    </div>
+    <div>
+      <h3 style="font-size:16px;color:var(--text);margin-bottom:12px">P2 — Quality</h3>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px">
+        <div class="card" style="padding:10px 14px;border-left:3px solid var(--blue)">
+          <h4 style="font-size:12px">Uncontrolled context window</h4>
+          <p style="font-size:11px;color:var(--muted);margin-top:2px">Typed AgentContextSlice per role + message truncation with summarization → 1–2 days</p>
+        </div>
+        <div class="card" style="padding:10px 14px;border-left:3px solid var(--blue)">
+          <h4 style="font-size:12px">No complexity-based model routing</h4>
+          <p style="font-size:11px;color:var(--muted);margin-top:2px">Planner scores subtask complexity → 3-tier model selection → 1 day</p>
+        </div>
+      </div>
+      <h3 style="font-size:16px;color:var(--text);margin-bottom:12px">P3 — Scale & memory</h3>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div class="card" style="padding:10px 14px;border-left:3px solid var(--purple)">
+          <h4 style="font-size:12px">No cross-session memory</h4>
+          <p style="font-size:11px;color:var(--muted);margin-top:2px">Shared Redis result cache (blackboard lite) + pgvector knowledge store</p>
+        </div>
+        <div class="card" style="padding:10px 14px;border-left:3px solid var(--purple)">
+          <h4 style="font-size:12px">No durable task queue</h4>
+          <p style="font-size:11px;color:var(--muted);margin-top:2px">Celery backend → long-horizon run durability across deploys</p>
+        </div>
+      </div>
+      <div class="highlight" style="font-size:12px;margin-top:14px;padding:12px">
+        <strong>North star:</strong> stateless orchestrator that survives a server restart, runs behind a load balancer, with human approval gates that show reviewers the reasoning trace.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 29 — WHAT'S NEXT
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-deploy">Roadmap</div>
+  <h2>What's next — sprint priorities</h2>
+  <div class="divider"></div>
+  <div class="cols cols-3" style="flex:1">
+    <div class="card" style="border-top:3px solid var(--red)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <h3 style="font-size:16px;color:var(--red)">Sprint 1</h3>
+        <span class="pill pill-amber" style="font-size:11px">~1 week</span>
+      </div>
+      <h4 style="font-size:13px;margin-bottom:10px">Production readiness baseline</h4>
+      <ul class="fancy" style="font-size:12px;gap:8px">
+        <li>Redis-backed RunContext (P1.1)</li>
+        <li>Redis Stream SSE emitter (P1.2)</li>
+        <li>Redis-backed TaskBus (P1.3)</li>
+        <li>General InterruptRequest model (P2.1)</li>
+        <li>Tool-impact gate in agentic loop (P2.2)</li>
+        <li>Rich HITL payload with reasoning trace (P2.3)</li>
+      </ul>
+      <div style="margin-top:12px;font-size:12px;color:var(--green)">
+        ✓ Survives restarts<br>
+        ✓ Runs behind load balancer<br>
+        ✓ Safe for irreversible actions
+      </div>
+    </div>
+    <div class="card" style="border-top:3px solid var(--amber)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <h3 style="font-size:16px;color:var(--amber)">Sprint 2</h3>
+        <span class="pill pill-amber" style="font-size:11px">~1 week</span>
+      </div>
+      <h4 style="font-size:13px;margin-bottom:10px">Security + observability</h4>
+      <ul class="fancy" style="font-size:12px;gap:8px">
+        <li>API key auth middleware (P3.1)</li>
+        <li>Tenant namespacing (P3.2)</li>
+        <li>Concurrency semaphore + HTTP 429 (P4.1)</li>
+        <li>OpenTelemetry instrumentation (P5.1)</li>
+        <li>Prometheus /metrics endpoint (P5.2)</li>
+        <li>Prompt injection sanitizer (P3.3)</li>
+      </ul>
+      <div style="margin-top:12px;font-size:12px;color:var(--green)">
+        ✓ Multi-tenant safe<br>
+        ✓ Overload-resistant<br>
+        ✓ Debuggable in production
+      </div>
+    </div>
+    <div class="card" style="border-top:3px solid var(--blue)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <h3 style="font-size:16px;color:var(--blue)">Sprint 3</h3>
+        <span class="pill pill-blue" style="font-size:11px">~2 weeks</span>
+      </div>
+      <h4 style="font-size:13px;margin-bottom:10px">Efficiency + scale</h4>
+      <ul class="fancy" style="font-size:12px;gap:8px">
+        <li>Typed AgentContextSlice per role (P6.1)</li>
+        <li>Message truncation + summarization (P6.2)</li>
+        <li>Complexity-based model routing (P7.2)</li>
+        <li>Postgres warm tier for run history (P1.4)</li>
+        <li>Shared result cache (blackboard, P8.1)</li>
+        <li>Celery task queue backend (P4.2)</li>
+      </ul>
+      <div style="margin-top:12px;font-size:12px;color:var(--green)">
+        ✓ 40–80% token reduction<br>
+        ✓ 3–5× cost via routing<br>
+        ✓ Long-horizon durability
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 30 — SUMMARY
+═══════════════════════════════════════════════ -->
+<div class="slide">
+  <div class="section-badge badge-exec">Summary</div>
+  <h2>Key takeaways</h2>
+  <div class="divider"></div>
+  <div class="cols cols-2" style="flex:1">
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="card card-blue">
+        <h4 style="font-size:14px">1. Declarative agents are the right abstraction</h4>
+        <p style="font-size:13px;margin-top:6px">YAML manifests make agents first-class configuration objects. Domain experts can add AI capabilities without touching orchestration code.</p>
+      </div>
+      <div class="card card-purple">
+        <h4 style="font-size:14px">2. LLM planning + DAG scheduling = natural parallelism</h4>
+        <p style="font-size:13px;margin-top:6px">The planner naturally discovers independent subtasks; the DAG scheduler runs them simultaneously. Wall-clock time drops dramatically without any special effort.</p>
+      </div>
+      <div class="card card-green">
+        <h4 style="font-size:14px">3. Streaming + prompt caching = great UX at low cost</h4>
+        <p style="font-size:13px;margin-top:6px">Users see live progress. Prompt caching cuts token costs up to 90% on repeated system prompts. These are independent benefits that compound.</p>
+      </div>
+      <div class="card card-amber">
+        <h4 style="font-size:14px">4. Human-in-the-Loop is a feature, not an afterthought</h4>
+        <p style="font-size:13px;margin-top:6px">Budget approval gates + rich interrupt payloads make AI agents safe for irreversible actions. Compliance teams can audit every human decision.</p>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="card card-blue">
+        <h4 style="font-size:14px">5. Clean interfaces enable incremental scaling</h4>
+        <p style="font-size:13px;margin-top:6px">RunContext, StreamEmitter, TaskBus have swappable implementations. Swap asyncio for Redis; nothing else changes. Prototype to production is a configuration change.</p>
+      </div>
+      <div class="card card-purple">
+        <h4 style="font-size:14px">6. The foundation is solid — gaps are well-understood</h4>
+        <p style="font-size:13px;margin-top:6px">The gap analysis maps exactly what needs to change for each deployment scenario. Two sprint cycles get AgentFlow from prototype to production-grade.</p>
+      </div>
+      <div class="highlight" style="padding:18px;margin-top:4px">
+        <h4 style="font-size:15px;margin-bottom:10px;color:var(--blue)">The single sentence</h4>
+        <p style="font-size:14px;line-height:1.6">AgentFlow is a composable, streaming, budget-aware multi-agent orchestration platform built on solid architectural instincts — a prototype that is two focused sprints away from running safely in production at scale.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SLIDE 31 — Q&A
+═══════════════════════════════════════════════ -->
+<div class="slide slide-break">
+  <div style="text-align:center;max-width:700px;margin:auto">
+    <div style="font-size:48px;margin-bottom:24px">🙋</div>
+    <div class="section-badge badge-arch" style="margin:0 auto 20px">Discussion</div>
+    <h1 style="font-size:52px;margin-bottom:20px">Questions</h1>
+    <div class="divider" style="margin:0 auto 24px;width:60px"></div>
+    <p class="lead" style="margin:0 auto;text-align:center">Source code, design documents, and gap analysis are all available in the repository.</p>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center;margin-top:32px">
+      <span class="pill pill-blue">github.com/agentflow</span>
+      <span class="pill pill-purple">workspace/docs/multi-agent-system-design.md</span>
+      <span class="pill pill-green">workspace/docs/agentflow_gap_analysis.md</span>
+    </div>
+    <div style="margin-top:48px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;text-align:left">
+      <div class="card" style="padding:14px">
+        <h4 style="font-size:12px;color:var(--blue)">Architecture docs</h4>
+        <p style="font-size:11px;color:var(--muted);margin-top:4px">multi-agent-system-design.md</p>
+      </div>
+      <div class="card" style="padding:14px">
+        <h4 style="font-size:12px;color:var(--purple)">Gap analysis</h4>
+        <p style="font-size:11px;color:var(--muted);margin-top:4px">agentflow_gap_analysis.md</p>
+      </div>
+      <div class="card" style="padding:14px">
+        <h4 style="font-size:12px;color:var(--green)">API reference</h4>
+        <p style="font-size:11px;color:var(--muted);margin-top:4px">GET /health → agent roster</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div><!-- end #deck -->
+
+<!-- Navigation chrome -->
+<div id="progress"></div>
+<div id="counter"></div>
+<div id="nav">
+  <button class="nav-btn" onclick="go(-1)">← Prev</button>
+  <button class="nav-btn" onclick="go(1)">Next →</button>
+</div>
+
+<script>
+const slides = document.querySelectorAll('.slide');
+let cur = 0;
+function show(n) {
+  slides[cur].classList.remove('active');
+  cur = Math.max(0, Math.min(n, slides.length - 1));
+  slides[cur].classList.add('active');
+  document.getElementById('counter').textContent = (cur+1) + ' / ' + slides.length;
+  document.getElementById('progress').style.width = ((cur+1)/slides.length*100) + '%';
+}
+function go(d) { show(cur + d); }
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ') go(1);
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') go(-1);
+});
+show(0);
+</script>
+</body>
+</html>
