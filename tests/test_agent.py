@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from anthropic.types import TextBlock
 
-from agentflow.agents.agent import Agent
+from agentflow.agents.agent import Agent, _with_message_cache_breakpoint
 from agentflow.core.models import AgentManifest, AgentStatus, TaskConstraints, TaskContext, TaskEnvelope
 
 
@@ -138,3 +138,47 @@ async def test_agent_tool_not_available_returns_error_message():
 
     # The loop completes — tool result is an error message, not an exception
     assert result.status == AgentStatus.success
+
+
+# ---------------------------------------------------------------------------
+# _with_message_cache_breakpoint unit tests
+# ---------------------------------------------------------------------------
+
+def test_cache_breakpoint_string_content():
+    messages = [{"role": "user", "content": "hello"}]
+    result = _with_message_cache_breakpoint(messages)
+    # String content is promoted to a list block with cache_control
+    assert result[0]["content"] == [{"type": "text", "text": "hello", "cache_control": {"type": "ephemeral"}}]
+    # Original is unchanged
+    assert messages[0]["content"] == "hello"
+
+
+def test_cache_breakpoint_list_content():
+    messages = [
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": "ok"}]}
+    ]
+    result = _with_message_cache_breakpoint(messages)
+    assert result[0]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    # Original block is unchanged
+    assert "cache_control" not in messages[0]["content"][0]
+
+
+def test_cache_breakpoint_targets_last_user_message():
+    messages = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "reply"},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "y", "content": "data"}]},
+    ]
+    result = _with_message_cache_breakpoint(messages)
+    # First user message should be unchanged
+    assert result[0]["content"] == "first"
+    # Last user message should have cache_control
+    assert result[2]["content"][-1].get("cache_control") == {"type": "ephemeral"}
+
+
+def test_cache_breakpoint_no_double_marking():
+    block = {"type": "tool_result", "tool_use_id": "z", "content": "x", "cache_control": {"type": "ephemeral"}}
+    messages = [{"role": "user", "content": [block]}]
+    result = _with_message_cache_breakpoint(messages)
+    # setdefault should not overwrite existing cache_control
+    assert result[0]["content"][-1]["cache_control"] == {"type": "ephemeral"}

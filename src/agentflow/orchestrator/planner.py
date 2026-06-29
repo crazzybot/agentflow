@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import anthropic
@@ -56,10 +57,9 @@ Use ONLY a JSON object — no markdown fences, no prose before or after:
 Agent selection — derive routing entirely from the agent list provided:
 - Match each subtask to the agent whose domain and capabilities best fit the work.
 - Prefer a specialist agent over a generalist when both could handle the task.
-- If the selected agent lists one or more skills, identify which skill is most relevant
-  to the subtask and begin the instruction with:
-  'Start by calling read_skill(skill="<name>") to load the relevant guidance.'
-  Only include this line when the agent has skills and the task falls within a skill's domain.
+- Agents that list skills have the full skill documentation pre-loaded in their system
+  prompt. Do NOT prefix instructions with "Start by calling read_skill" — the agent
+  already has the guidance available and does not need to fetch it.
 
 Task scope rules — calibrate to actual workspace complexity (from your exploration):
 - A single subtask must output at most 3 files. If more are needed, split by logical module.
@@ -143,9 +143,15 @@ async def create_plan(
     planner_tools = tool_registry.get_many(_PLANNER_TOOLS)
     anthropic_tools = [t.to_anthropic_param() for t in planner_tools]
 
-    system_prompt = _SYSTEM_PROMPT_BASE
+    static_prompt = _SYSTEM_PROMPT_BASE
     if budget_usd is not None:
-        system_prompt = system_prompt + _BUDGET_ALLOCATION_INSTRUCTIONS
+        static_prompt = static_prompt + _BUDGET_ALLOCATION_INSTRUCTIONS
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    system_blocks = [
+        {"type": "text", "text": static_prompt, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": f"Current date and time: {now}"},
+    ]
 
     budget_note = f" (budget: ${budget_usd:.4f})" if budget_usd is not None else ""
     context_note = (
@@ -165,7 +171,7 @@ async def create_plan(
         response = await client.messages.create(
             model=settings.planner_model,
             max_tokens=4096,
-            system=system_prompt,
+            system=system_blocks,
             messages=messages,  # type: ignore
             tools=anthropic_tools, # type: ignore
         )

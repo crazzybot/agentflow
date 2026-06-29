@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime, timezone
 
 # Web pages and large tool outputs can be arbitrarily long. Capping them here
 # prevents a single fetch_url call from dominating every subsequent loop iteration
@@ -35,6 +36,33 @@ if TYPE_CHECKING:
     from agentflow.orchestrator.stream import StreamEmitter
 
 logger = logging.getLogger(__name__)
+
+
+def _with_message_cache_breakpoint(messages: list[dict]) -> list[dict]:
+    """Return messages with cache_control on the last user message's last content block.
+
+    Marks the accumulated conversation history as cacheable so that on each
+    subsequent turn only the newest assistant response and user turn are billed
+    at full input rate.  This uses one of the two remaining Anthropic cache
+    breakpoints (system and tools consume the other two).
+    """
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") != "user":
+            continue
+        content = messages[i].get("content")
+        if isinstance(content, str):
+            new_content: list = [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
+        elif isinstance(content, list) and content:
+            new_content = list(content)
+            last_block = dict(new_content[-1])
+            last_block.setdefault("cache_control", {"type": "ephemeral"})
+            new_content[-1] = last_block
+        else:
+            return messages
+        out = list(messages)
+        out[i] = {**messages[i], "content": new_content}
+        return out
+    return messages
 
 
 def _budget_to_max_tokens(remaining_budget: float, last_input_tokens: int) -> int:
@@ -111,13 +139,7 @@ class Agent:
             # 1. Gather tool definitions from the global registry (filtered by manifest)
             local_tools = tool_registry.get_many(self.manifest.tools)
 
-            # 2. Auto-inject read_skill whenever the manifest declares skills.
-            if self.manifest.skills:
-                read_skill = tool_registry.get("read_skill")
-                if read_skill and read_skill not in local_tools:
-                    local_tools = local_tools + [read_skill]
-
-            # 3. Connect to each MCP server and collect their tools
+            # 2. Connect to each MCP server and collect their tools
             mcp_tools: list = []
             for server_config in self.manifest.mcp_servers:
                 server_tool_defs = await stack.enter_async_context(mcp_session(server_config))
@@ -125,13 +147,23 @@ class Agent:
 
             all_tools = local_tools + mcp_tools
 
-            # 4. Build per-run system prompt: base prompt + skills preamble (if any)
-            system_prompt = self.manifest.system_prompt
+            # 3. Build a 2-block system prompt list:
+            #    Block 0 — static content (persona + full skill docs) → cache_control marks
+            #              this for caching; Anthropic serves it from cache on every turn.
+            #    Block 1 — current date/time (no cache_control) → always processed fresh
+            #              so the model never assumes a stale date.
+            static_content = self.manifest.system_prompt
             if self.manifest.skills:
-                system_prompt += skill_loader.preamble(self.manifest.skills)
+                static_content += skill_loader.full_content(self.manifest.skills)
 
-            # 5. Run the agentic loop
-            return await self._agentic_loop(envelope, all_tools, system_prompt, emitter, resume_messages=resume_messages)
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            system_blocks = [
+                {"type": "text", "text": static_content, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": f"Current date and time: {now}"},
+            ]
+
+            # 4. Run the agentic loop
+            return await self._agentic_loop(envelope, all_tools, system_blocks, emitter, resume_messages=resume_messages)
 
     # ------------------------------------------------------------------
     # Agentic loop with tool execution
@@ -141,7 +173,7 @@ class Agent:
         self,
         envelope: TaskEnvelope,
         tools: list,
-        system_prompt: str,
+        system_prompt: str | list,
         emitter: "StreamEmitter",
         resume_messages: list | None = None,
     ) -> AgentResult:
@@ -220,7 +252,7 @@ class Agent:
                 "model": settings.agent_model,
                 "max_tokens": max_tokens,
                 "system": system_prompt,
-                "messages": messages,
+                "messages": _with_message_cache_breakpoint(messages),
             }
             if anthropic_tools:
                 create_kwargs["tools"] = anthropic_tools

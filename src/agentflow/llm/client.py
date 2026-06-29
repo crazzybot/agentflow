@@ -167,9 +167,15 @@ def _apply_caching(
         cached_system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
     elif isinstance(system, list) and system:
         cached_system = list(system)
-        last = dict(cached_system[-1])
-        last.setdefault("cache_control", {"type": "ephemeral"})
-        cached_system[-1] = last
+        # If the caller pre-marked a specific block (e.g. to leave a trailing date
+        # block uncached), respect that and don't add a second breakpoint.
+        already_marked = any(
+            isinstance(b, dict) and b.get("cache_control") for b in cached_system
+        )
+        if not already_marked:
+            last = dict(cached_system[-1])
+            last["cache_control"] = {"type": "ephemeral"}
+            cached_system[-1] = last
 
     cached_tools: list[dict] | None = None
     if tools:

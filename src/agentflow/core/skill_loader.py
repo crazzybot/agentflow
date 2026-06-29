@@ -167,6 +167,44 @@ class SkillLoader:
             lines.append(f"- **{skill_name}**: {desc}")
         return "\n".join(lines)
 
+    def full_content(self, skill_names: list[str]) -> str:
+        """Return all skill documents embedded for pre-injection into the system prompt.
+
+        Embeds SKILL.md and every topic document for each declared skill so the
+        agent can apply guidance directly without calling read_skill.
+        """
+        if not skill_names:
+            return ""
+        sections: list[str] = [
+            "",
+            "## Skill Reference",
+            "",
+            "The following skill documentation is pre-loaded. Apply it directly — "
+            "no need to call read_skill.",
+        ]
+        for skill_name in skill_names:
+            if not _is_valid_skill_name(skill_name):
+                continue
+            skill_dir = self._skill_dir(skill_name)
+            if not skill_dir.exists():
+                continue
+            sections.append(f"\n### {skill_name}")
+            skill_md = skill_dir / "SKILL.md"
+            if skill_md.exists():
+                try:
+                    sections.append(skill_md.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    logger.warning("Could not read SKILL.md for %r: %s", skill_name, exc)
+            for doc_path in sorted(skill_dir.iterdir()):
+                if doc_path.name == "SKILL.md" or not doc_path.is_file():
+                    continue
+                sections.append(f"\n#### {doc_path.stem}\n")
+                try:
+                    sections.append(doc_path.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    logger.warning("Could not read %r for skill %r: %s", doc_path.name, skill_name, exc)
+        return "\n".join(sections)
+
 
 # Global instance — imported by the tool handler and the agent.
 skill_loader = SkillLoader(settings.skills_dir)
