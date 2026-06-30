@@ -803,7 +803,6 @@ The system prompt instructs the model to:
 - Produce a final JSON plan with fields `subtasks[].{id, agentId, instruction, dependsOn, expectedOutput}` (plus `budgetFraction` when budget is set).
 - Follow task-scope rules: single subtask if completable in ≤15 tool calls and ≤3 files; otherwise split.
 - Follow parallelism rules: minimise `depends_on`, prefer breadth over depth.
-- Add a verification subtask after each file-generating subtask.
 
 Planner allowed tools: `["file_read", "bash_exec", "web_search", "fetch_url"]`.
 

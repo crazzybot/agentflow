@@ -73,14 +73,8 @@ Parallelism rules — minimise wall-clock time:
 - Only add a dependency when a subtask actually consumes output produced by the prior one.
 - Minimise critical path length: prefer breadth over depth.
 
-Completeness verification:
-- After any file-generating subtask, add a verification subtask assigned to the same agent:
-  "Verify that all required files from [prior id] exist: [list files].
-   For each missing file, write it now. Return JSON with files_written and files_missing."
-- The verification subtask must depend on the generation subtask.
-- Only add "fix bugs" when all required files already exist and the problem is behaviour.
-  If files are missing, say "write the missing files" instead.
 """
+
 
 _BUDGET_ALLOCATION_INSTRUCTIONS = """
 Budget allocation:
