@@ -156,10 +156,15 @@ class Agent:
             if self.manifest.skills:
                 static_content += skill_loader.full_content(self.manifest.skills)
 
-            now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            utc_now = datetime.now(timezone.utc)
+            local_now = utc_now.astimezone()
+            now_str = (
+                f"{utc_now.strftime('%Y-%m-%d %H:%M UTC')} "
+                f"/ {local_now.strftime('%Y-%m-%d %H:%M %Z')}"
+            )
             system_blocks = [
                 {"type": "text", "text": static_content, "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": f"Current date and time: {now}"},
+                {"type": "text", "text": f"Current date and time: {now_str}"},
             ]
 
             # 4. Run the agentic loop
