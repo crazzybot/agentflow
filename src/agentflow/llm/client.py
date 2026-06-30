@@ -1,9 +1,9 @@
 """Rate-limited, prompt-cache-aware wrapper around anthropic.AsyncAnthropic.
 
-Rate limits enforced (claude-sonnet-4-6 Tier-1 defaults):
-  - 50 requests per minute
-  - 30 000 non-cached input tokens per minute
-  - 8 000 output tokens per minute
+Rate limits enforced (platform defaults as of 2026):
+  - 10 000 requests per minute
+  - 10 000 000 non-cached input tokens per minute
+  - 2 000 000 output tokens per minute
 
 Prompt caching is applied automatically to the system prompt and tool list
 on every call (when settings.enable_prompt_caching is True).  Anthropic
@@ -25,22 +25,27 @@ import anthropic
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Per-model rate-limit table (Anthropic Tier-1 defaults as of 2025)
+# Per-model rate-limit table (platform defaults as of 2026)
 # ---------------------------------------------------------------------------
 
-_DEFAULT_LIMITS: dict[str, int] = {
-    "requests_per_minute": 50,
-    "input_tokens_per_minute": 30_000,   # excludes cached tokens
-    "output_tokens_per_minute": 8_000,
+_CLAUDE4_LIMITS: dict[str, int] = {
+    "requests_per_minute": 10_000,
+    "input_tokens_per_minute": 10_000_000,  # excludes cached tokens
+    "output_tokens_per_minute": 2_000_000,
 }
 
+_DEFAULT_LIMITS = _CLAUDE4_LIMITS
+
 _MODEL_LIMITS: dict[str, dict[str, int]] = {
-    "claude-sonnet-4-6": _DEFAULT_LIMITS,
-    "claude-haiku-4-5-20251001": {
-        "requests_per_minute": 50,
-        "input_tokens_per_minute": 30_000,
-        "output_tokens_per_minute": 8_000,
-    },
+    # Claude Opus 4.x
+    "claude-opus-4-7": _CLAUDE4_LIMITS,
+    "claude-opus-4-5": _CLAUDE4_LIMITS,
+    # Claude Sonnet 4.x
+    "claude-sonnet-4-6": _CLAUDE4_LIMITS,
+    "claude-sonnet-4-5": _CLAUDE4_LIMITS,
+    # Claude Haiku 4.x
+    "claude-haiku-4-5-20251001": _CLAUDE4_LIMITS,
+    "claude-haiku-4-5": _CLAUDE4_LIMITS,
 }
 
 
