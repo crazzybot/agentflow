@@ -56,7 +56,9 @@ async def start_run(request: RunRequest, background_tasks: BackgroundTasks):
 
 @router.get("/runs/{run_id}/stream")
 async def stream_run(run_id: str):
-    emitter = stream_registry.get(run_id)
+    # connect() checks Redis on a local-cache miss (Redis backend), so a
+    # replica that did not create the run can still stream its events.
+    emitter = await stream_registry.connect(run_id)
     if emitter is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found")
     return EventSourceResponse(emitter)

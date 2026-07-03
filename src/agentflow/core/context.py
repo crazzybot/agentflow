@@ -151,4 +151,13 @@ class ContextStore:
         self._runs.pop(run_id, None)
 
 
-context_store = ContextStore()
+def _make_context_store() -> "ContextStore":
+    from agentflow.config import settings
+    if settings.state_backend == "redis":
+        from agentflow.core.redis_client import get_redis
+        from agentflow.core.context_redis import RedisContextStore
+        return RedisContextStore(get_redis(), ttl=settings.redis_key_ttl)  # type: ignore[return-value]
+    return ContextStore()
+
+
+context_store = _make_context_store()

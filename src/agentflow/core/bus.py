@@ -57,4 +57,13 @@ class TaskBus:
         return await self._result_queues[run_id].get()
 
 
-task_bus = TaskBus()
+def _make_task_bus() -> "TaskBus":
+    from agentflow.config import settings
+    if settings.state_backend == "redis":
+        from agentflow.core.redis_client import get_redis
+        from agentflow.core.bus_redis import RedisTaskBus
+        return RedisTaskBus(get_redis(), ttl=settings.redis_key_ttl)  # type: ignore[return-value]
+    return TaskBus()
+
+
+task_bus = _make_task_bus()
