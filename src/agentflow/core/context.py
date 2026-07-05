@@ -45,7 +45,7 @@ class RunContext:
         self._human_input_event = asyncio.Event()
         self._human_input_response = None
 
-    def provide_human_input(self, response: HumanInputResponse) -> bool:
+    async def provide_human_input(self, response: HumanInputResponse) -> bool:
         """Deliver the user's response. Returns False if no input was pending."""
         if self._human_input_event is None or self._human_input_event.is_set():
             return False

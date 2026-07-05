@@ -77,7 +77,7 @@ async def provide_run_input(run_id: str, response: HumanInputResponse):
     ctx = await context_store.connect(run_id)
     if ctx is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found or not active")
-    if not ctx.provide_human_input(response):
+    if not await ctx.provide_human_input(response):
         raise HTTPException(status_code=409, detail="No input is currently pending for this run")
     return {"status": "accepted"}
 

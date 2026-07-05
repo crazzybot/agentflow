@@ -103,26 +103,26 @@ class RedisRunContext:
     async def _set_hitl_pending(self) -> None:
         await self._redis.set(self._hitl_pending_key, "1", ex=self._ttl)
 
-    def provide_human_input(self, response: HumanInputResponse) -> bool:
-        """Deliver a human response.  Returns False if no input was pending."""
+    async def provide_human_input(self, response: HumanInputResponse) -> bool:
+        """Deliver a human response.  Returns False if no input was pending.
+
+        Awaits the Lua script result so that a concurrent delivery from another
+        replica that wins the atomic check-and-push causes this call to return
+        False (→ HTTP 409) rather than silently succeeding.
+        """
         if not self._is_awaiting:
             return False
-        self._is_awaiting = False
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._push_hitl_response(response))
-        except RuntimeError:
-            logger.warning("[%s] provide_human_input called outside async context", self.run_id)
-        return True
-
-    async def _push_hitl_response(self, response: HumanInputResponse) -> None:
-        await self._redis.eval(
+        result = await self._redis.eval(
             _HITL_DELIVER_SCRIPT,
             2,
             self._hitl_pending_key,
             self._hitl_queue_key,
             response.model_dump_json(),
         )
+        if result:
+            self._is_awaiting = False
+            return True
+        return False
 
     async def await_human_input(self) -> HumanInputResponse:
         """Block until a human response is pushed to the Redis queue.
