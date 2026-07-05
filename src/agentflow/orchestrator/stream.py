@@ -7,6 +7,7 @@ import logging
 import os
 from typing import Any, AsyncIterator
 
+from agentflow.config import settings
 from agentflow.core.models import SSEEvent, SSEEventType, SSEPayload
 
 logger = logging.getLogger(__name__)
@@ -86,7 +87,6 @@ class StreamRegistry:
 
 
 def _make_stream_registry() -> "StreamRegistry":
-    from agentflow.config import settings
     if settings.state_backend == "redis":
         from agentflow.core.redis_client import get_redis
         from agentflow.orchestrator.stream_redis import RedisStreamRegistry

@@ -14,11 +14,16 @@ Design notes
   all_results() which go to Redis directly.
 
 * HITL signalling uses a Redis list + a pending-flag key so that the HTTP
-  route can deliver a response from any replica.  The local _is_awaiting flag
-  is used for the synchronous is_awaiting_input property (status display only).
+  route can deliver a response from any replica.  The Lua script makes the
+  check-and-push atomic, preventing double-delivery on retries or races.
 
 * budget_usd and user_context are kept in instance variables (set once at run
   start) rather than persisted to Redis.  They are not accessed cross-replica.
+
+* Thin contexts created by connect() are NOT cached in _runs.  Caching would
+  preserve a stale _is_awaiting=False between two sequential HITL requests on
+  the same run, causing the second HTTP delivery to return 409.  The objects
+  are cheap; creating a fresh one per request is the correct trade-off.
 """
 from __future__ import annotations
 
@@ -33,6 +38,19 @@ import redis.asyncio as aioredis
 from agentflow.core.models import AgentResult, HumanInputResponse
 
 logger = logging.getLogger(__name__)
+
+# Atomically check the pending flag and push the response only if it is still
+# set.  Prevents double-delivery when the HTTP route is retried or hits a
+# second replica that seeded _is_awaiting=True from the same Redis key.
+_HITL_DELIVER_SCRIPT = """
+local pending = redis.call('GET', KEYS[1])
+if pending then
+    redis.call('RPUSH', KEYS[2], ARGV[1])
+    redis.call('DEL', KEYS[1])
+    return 1
+end
+return 0
+"""
 
 
 class RedisRunContext:
@@ -78,9 +96,12 @@ class RedisRunContext:
         self._is_awaiting = True
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(self._redis.set(self._hitl_pending_key, "1", ex=self._ttl))
+            loop.create_task(self._set_hitl_pending())
         except RuntimeError:
             pass
+
+    async def _set_hitl_pending(self) -> None:
+        await self._redis.set(self._hitl_pending_key, "1", ex=self._ttl)
 
     def provide_human_input(self, response: HumanInputResponse) -> bool:
         """Deliver a human response.  Returns False if no input was pending."""
@@ -95,8 +116,13 @@ class RedisRunContext:
         return True
 
     async def _push_hitl_response(self, response: HumanInputResponse) -> None:
-        await self._redis.rpush(self._hitl_queue_key, response.model_dump_json())
-        await self._redis.delete(self._hitl_pending_key)
+        await self._redis.eval(
+            _HITL_DELIVER_SCRIPT,
+            2,
+            self._hitl_pending_key,
+            self._hitl_queue_key,
+            response.model_dump_json(),
+        )
 
     async def await_human_input(self) -> HumanInputResponse:
         """Block until a human response is pushed to the Redis queue.
@@ -119,11 +145,15 @@ class RedisRunContext:
         if result.cost_usd > 0:
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(
-                    self._redis.incrbyfloat(self._cost_key, result.cost_usd)
-                )
+                loop.create_task(self._incr_cost(result.cost_usd))
             except RuntimeError:
                 pass
+
+    async def _incr_cost(self, amount: float) -> None:
+        async with self._redis.pipeline(transaction=False) as pipe:
+            pipe.incrbyfloat(self._cost_key, amount)
+            pipe.expire(self._cost_key, self._ttl)
+            await pipe.execute()
 
     def total_cost_usd(self) -> float:
         return self._total_cost_usd_local
@@ -166,7 +196,11 @@ class RedisRunContext:
     async def all_results(self) -> dict[str, AgentResult]:
         async with self._lock:
             raw = await self._redis.hgetall(self._results_key)
-            results = {k: AgentResult.model_validate_json(v) for k, v in raw.items()}
+            # hgetall stubs type keys as bytes|str; with decode_responses=True
+            # they are always str at runtime — str() cast satisfies the type checker.
+            results: dict[str, AgentResult] = {
+                str(k): AgentResult.model_validate_json(v) for k, v in raw.items()
+            }
             self._local_results.update(results)
             return dict(results)
 
@@ -219,7 +253,30 @@ class RedisContextStore:
         return ctx
 
     def get(self, run_id: str) -> RedisRunContext | None:
+        """Synchronous local-only lookup — used by status checks."""
         return self._runs.get(run_id)
+
+    async def connect(self, run_id: str) -> RedisRunContext | None:
+        """Return a context for run_id, checking Redis on a local-cache miss.
+
+        Full contexts created by create() are returned from the cache — they
+        track _is_awaiting authoritatively through request_human_input().
+
+        Thin cross-replica contexts are NOT cached.  Caching would preserve a
+        stale _is_awaiting=False between two sequential HITL requests on the
+        same run (instance B caches after HITL-1, sees False for HITL-2 → 409).
+        The objects are cheap; creating a fresh one per request is correct.
+        """
+        if run_id in self._runs:
+            return self._runs[run_id]
+        # Use the event-stream key as a run-existence probe: it is created when
+        # the first SSE event is emitted, which happens before any HITL could
+        # fire.  Avoids false positives from stale hitl keys on recycled run IDs.
+        if not await self._redis.exists(f"run:{run_id}:events"):
+            return None
+        ctx = RedisRunContext(run_id, self._redis, ttl=self._ttl)
+        ctx._is_awaiting = bool(await self._redis.exists(ctx._hitl_pending_key))
+        return ctx  # intentionally not added to self._runs
 
     def remove(self, run_id: str) -> None:
         self._runs.pop(run_id, None)

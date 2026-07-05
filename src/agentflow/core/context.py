@@ -6,6 +6,7 @@ import json
 import os
 from typing import TYPE_CHECKING, Any
 
+from agentflow.config import settings
 from agentflow.core.models import AgentResult
 
 if TYPE_CHECKING:
@@ -147,12 +148,19 @@ class ContextStore:
     def get(self, run_id: str) -> RunContext | None:
         return self._runs.get(run_id)
 
+    async def connect(self, run_id: str) -> RunContext | None:
+        """Async lookup — base class delegates to get().
+
+        Overridden by RedisContextStore to check Redis on a local-cache miss,
+        enabling cross-replica HITL delivery.
+        """
+        return self.get(run_id)
+
     def remove(self, run_id: str) -> None:
         self._runs.pop(run_id, None)
 
 
 def _make_context_store() -> "ContextStore":
-    from agentflow.config import settings
     if settings.state_backend == "redis":
         from agentflow.core.redis_client import get_redis
         from agentflow.core.context_redis import RedisContextStore

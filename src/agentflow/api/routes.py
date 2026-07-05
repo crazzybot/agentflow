@@ -6,7 +6,7 @@ import json
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
 from agentflow.config import settings
@@ -38,14 +38,19 @@ def _get_engine():
 
 
 @router.post("/runs", response_model=RunResponse)
-async def start_run(request: RunRequest, background_tasks: BackgroundTasks):
+async def start_run(request: RunRequest):
     run_id = str(uuid.uuid4())
     engine = _get_engine()
 
-    # Run orchestration in the background so we can return the run_id immediately
-    background_tasks.add_task(engine.run, run_id, request.task, request.context, request.budget_usd)
+    # asyncio.create_task schedules the coroutine on the running event loop
+    # immediately, so it can start during the await-sleep poll below.
+    # BackgroundTasks would only start after the response is sent, making the
+    # poll a no-op and leaving a window where the SSE stream key doesn't exist.
+    asyncio.create_task(
+        engine.run(run_id, request.task, request.context, request.budget_usd)
+    )
 
-    # Wait briefly for the emitter to be created before client can connect
+    # Wait for the engine to create the emitter (happens in the first few ms).
     for _ in range(20):
         if stream_registry.get(run_id):
             break
@@ -67,7 +72,9 @@ async def stream_run(run_id: str):
 @router.post("/runs/{run_id}/input")
 async def provide_run_input(run_id: str, response: HumanInputResponse):
     """Deliver a human response to a paused run (e.g. approve/reject a budget increase)."""
-    ctx = context_store.get(run_id)
+    # connect() checks Redis on a local-cache miss so that a replica that did
+    # not start the run can still deliver the response cross-replica.
+    ctx = await context_store.connect(run_id)
     if ctx is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found or not active")
     if not ctx.provide_human_input(response):
@@ -101,12 +108,15 @@ def _load_meta(d: Path) -> RunMeta | None:
         return None
 
 
-def _run_info(d: Path) -> RunInfo:
+async def _run_info(d: Path) -> RunInfo:
     meta = _load_meta(d)
-    emitter = stream_registry.get(d.name)
-    ctx = context_store.get(d.name)
+    run_id = d.name
+    # connect() checks Redis on a local-cache miss so that cross-replica and
+    # in-memory paths both return accurate is_streaming / is_awaiting_input.
+    emitter = await stream_registry.connect(run_id)
+    ctx = await context_store.connect(run_id)
     return RunInfo(
-        run_id=d.name,
+        run_id=run_id,
         has_events=(d / "events.jsonl").exists(),
         has_results=(d / "results.jsonl").exists(),
         has_report=(d / "report.md").exists(),
@@ -124,7 +134,8 @@ async def list_runs():
     runs_dir = Path(settings.runs_dir)
     if not runs_dir.exists():
         return RunListResponse(runs=[])
-    runs = [_run_info(d) for d in runs_dir.iterdir() if d.is_dir()]
+    dirs = [d for d in runs_dir.iterdir() if d.is_dir()]
+    runs = list(await asyncio.gather(*[_run_info(d) for d in dirs]))
     runs.sort(key=lambda r: r.created_at or "", reverse=True)
     return RunListResponse(runs=runs)
 
@@ -132,7 +143,7 @@ async def list_runs():
 @router.get("/runs/{run_id}", response_model=RunInfo)
 async def get_run(run_id: str):
     d = _require_run(run_id)
-    return _run_info(d)
+    return await _run_info(d)
 
 
 @router.get("/runs/{run_id}/events", response_model=RunEventsResponse)

@@ -9,6 +9,8 @@ import asyncio
 import logging
 from typing import Any
 
+from agentflow.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,7 +60,6 @@ class TaskBus:
 
 
 def _make_task_bus() -> "TaskBus":
-    from agentflow.config import settings
     if settings.state_backend == "redis":
         from agentflow.core.redis_client import get_redis
         from agentflow.core.bus_redis import RedisTaskBus
