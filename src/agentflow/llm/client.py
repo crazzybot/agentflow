@@ -1,52 +1,26 @@
-"""Rate-limited, prompt-cache-aware wrapper around anthropic.AsyncAnthropic.
-
-Rate limits enforced (platform defaults as of 2026):
-  - 10 000 requests per minute
-  - 10 000 000 non-cached input tokens per minute
-  - 2 000 000 output tokens per minute
+"""Prompt-cache-aware wrapper around anthropic.AsyncAnthropic.
 
 Prompt caching is applied automatically to the system prompt and tool list
 on every call (when settings.enable_prompt_caching is True).  Anthropic
 charges 25 % to write a cache entry and only 10 % to read it back, so any
 repeated system prompt or tool set that exceeds the 1 024-token minimum will
 reduce cost on every subsequent call within the 5-minute TTL window.
+
+Rate limiting is handled by the Anthropic SDK (max_retries=4, exponential
+backoff on 429/500).  A proactive per-process limiter would not coordinate
+across replicas and would need to be reconfigured per account tier anyway.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
-from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import anthropic
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Per-model rate-limit table (platform defaults as of 2026)
-# ---------------------------------------------------------------------------
-
-_CLAUDE4_LIMITS: dict[str, int] = {
-    "requests_per_minute": 10_000,
-    "input_tokens_per_minute": 10_000_000,  # excludes cached tokens
-    "output_tokens_per_minute": 2_000_000,
-}
-
-_DEFAULT_LIMITS = _CLAUDE4_LIMITS
-
-_MODEL_LIMITS: dict[str, dict[str, int]] = {
-    # Claude Opus 4.x
-    "claude-opus-4-7": _CLAUDE4_LIMITS,
-    "claude-opus-4-5": _CLAUDE4_LIMITS,
-    # Claude Sonnet 4.x
-    "claude-sonnet-4-6": _CLAUDE4_LIMITS,
-    "claude-sonnet-4-5": _CLAUDE4_LIMITS,
-    # Claude Haiku 4.x
-    "claude-haiku-4-5-20251001": _CLAUDE4_LIMITS,
-    "claude-haiku-4-5": _CLAUDE4_LIMITS,
-}
+_MAX_RETRIES = 4
 
 
 # ---------------------------------------------------------------------------
@@ -78,76 +52,6 @@ class UsageStats:
             self.cache_read_tokens,
             self.cache_hit_rate * 100,
         )
-
-
-# ---------------------------------------------------------------------------
-# Sliding-window rate limiter
-# ---------------------------------------------------------------------------
-
-@dataclass
-class _WindowEntry:
-    ts: float
-    input_tokens: int = 0
-    output_tokens: int = 0
-
-
-class RateLimiter:
-    """Sliding-window rate limiter covering requests, input-token, and output-token budgets.
-
-    In-flight requests are counted against the request limit immediately so
-    that concurrent coroutines do not all race through when the window is
-    nearly full.  Token budgets are updated after each response because token
-    counts are only known once the API returns.
-    """
-
-    def __init__(self, rpm: int, itpm: int, otpm: int) -> None:
-        self._rpm = rpm
-        self._itpm = itpm
-        self._otpm = otpm
-        self._window: deque[_WindowEntry] = deque()
-        self._lock = asyncio.Lock()
-        self._in_flight = 0
-
-    def _prune(self) -> None:
-        cutoff = time.monotonic() - 60.0
-        while self._window and self._window[0].ts < cutoff:
-            self._window.popleft()
-
-    def _totals(self) -> tuple[int, int, int]:
-        reqs = len(self._window) + self._in_flight
-        it = sum(e.input_tokens for e in self._window)
-        ot = sum(e.output_tokens for e in self._window)
-        return reqs, it, ot
-
-    async def acquire(self) -> None:
-        """Block until there is budget for one more request."""
-        while True:
-            async with self._lock:
-                self._prune()
-                reqs, it, ot = self._totals()
-                if reqs < self._rpm and it < self._itpm and ot < self._otpm:
-                    self._in_flight += 1
-                    return
-
-                # Calculate how long until the oldest entry falls out of the window
-                wait_s = (self._window[0].ts + 60.0 - time.monotonic()) if self._window else 0.5
-
-            wait_s = max(0.25, wait_s)
-            logger.warning("Rate limit reached — waiting %.1fs", wait_s)
-            await asyncio.sleep(min(wait_s, 5.0))
-
-    def record(self, input_tokens: int, output_tokens: int) -> None:
-        """Record actual token usage after a completed API call."""
-        self._window.append(_WindowEntry(
-            ts=time.monotonic(),
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-        ))
-        self._in_flight = max(0, self._in_flight - 1)
-
-    def release_failed(self) -> None:
-        """Release the in-flight slot on API error (no tokens to record)."""
-        self._in_flight = max(0, self._in_flight - 1)
 
 
 # ---------------------------------------------------------------------------
@@ -200,29 +104,14 @@ class _MessagesProxy:
     def __init__(
         self,
         inner: anthropic.AsyncAnthropic,
-        limiters: dict[str, RateLimiter],
         stats: UsageStats,
         enable_caching: bool,
     ) -> None:
         self._inner = inner
-        self._limiters = limiters
         self._stats = stats
         self._enable_caching = enable_caching
 
-    def _limiter_for(self, model: str) -> RateLimiter:
-        if model not in self._limiters:
-            limits = _MODEL_LIMITS.get(model, _DEFAULT_LIMITS)
-            self._limiters[model] = RateLimiter(
-                rpm=limits["requests_per_minute"],
-                itpm=limits["input_tokens_per_minute"],
-                otpm=limits["output_tokens_per_minute"],
-            )
-        return self._limiters[model]
-
     async def create(self, **kwargs: Any) -> anthropic.types.Message:
-        model: str = kwargs.get("model", "")
-        limiter = self._limiter_for(model)
-
         if self._enable_caching:
             system = kwargs.pop("system", None)
             tools = kwargs.pop("tools", None)
@@ -232,20 +121,13 @@ class _MessagesProxy:
             if cached_tools is not None:
                 kwargs["tools"] = cached_tools
 
-        await limiter.acquire()
-        try:
-            response = await self._inner.messages.create(**kwargs)
-        except Exception:
-            limiter.release_failed()
-            raise
+        response = await self._inner.messages.create(**kwargs)
 
         usage = response.usage
         input_tokens: int = usage.input_tokens
         output_tokens: int = usage.output_tokens
         cache_creation: int = getattr(usage, "cache_creation_input_tokens", 0) or 0
         cache_read: int = getattr(usage, "cache_read_input_tokens", 0) or 0
-
-        limiter.record(input_tokens, output_tokens)
 
         self._stats.total_requests += 1
         self._stats.total_input_tokens += input_tokens
@@ -255,7 +137,7 @@ class _MessagesProxy:
 
         logger.debug(
             "model=%s in=%d out=%d cache_read=%d cache_create=%d",
-            model, input_tokens, output_tokens, cache_read, cache_creation,
+            kwargs.get("model", ""), input_tokens, output_tokens, cache_read, cache_creation,
         )
 
         return response
@@ -268,8 +150,9 @@ class _MessagesProxy:
 class LLMClient:
     """Drop-in replacement for anthropic.AsyncAnthropic.
 
-    Wraps ``client.messages.create()`` to enforce per-model sliding-window
-    rate limits and inject prompt-cache breakpoints automatically.
+    Wraps ``client.messages.create()`` to inject prompt-cache breakpoints and
+    track token usage.  The underlying SDK retries 429/500 responses with
+    exponential backoff (max_retries=4).
 
     Usage::
 
@@ -284,12 +167,10 @@ class LLMClient:
     """
 
     def __init__(self, api_key: str, enable_prompt_caching: bool = True) -> None:
-        self._inner = anthropic.AsyncAnthropic(api_key=api_key)
-        self._limiters: dict[str, RateLimiter] = {}
+        self._inner = anthropic.AsyncAnthropic(api_key=api_key, max_retries=_MAX_RETRIES)
         self.stats = UsageStats()
         self.messages = _MessagesProxy(
             self._inner,
-            self._limiters,
             self.stats,
             enable_caching=enable_prompt_caching,
         )
