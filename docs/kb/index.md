@@ -15,7 +15,7 @@ Agent-facing knowledge base. **Read this first on any non-trivial task**, then
 the doc(s) relevant to your change, before exploring source.
 
 > These docs are maintained separately from the human/design docs in `docs/`
-> (`design.md`, `../agentflow_gap_analysis.md`, presentation material). Do not
+> (`design.md`, `agentflow_gap_analysis.md`, presentation material). Do not
 > duplicate those; link to them only when needed.
 
 ## Reading order

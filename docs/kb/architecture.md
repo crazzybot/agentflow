@@ -25,7 +25,7 @@ synthesizes the results into a final Markdown report. Everything is in-process
 1. **Entry** — `POST /api/runs` in `src/agentflow/api/routes.py` generates a `run_id`,
    grabs the module-level `engine` singleton (an `OrchestratorEngine`, built once at
    import time in [`main.py`](../../src/agentflow/main.py)), and schedules
-   `engine.run(run_id, task, context, budget_usd)` as a FastAPI `BackgroundTask`. The
+   `engine.run(run_id, task, user_context, budget_usd)` as a FastAPI `BackgroundTask`. The
    endpoint returns the `run_id` immediately; clients poll/stream progress via
    `GET /api/runs/{run_id}/stream` (SSE).
 2. **Run setup** — `OrchestratorEngine.run()` (in
@@ -101,7 +101,7 @@ synthesizes the results into a final Markdown report. Everything is in-process
 
 ## Data flow & messaging
 
-Within one run, components talk through two mechanisms:
+Within one run, components talk through three mechanisms:
 
 - **Shared state — `core/context.py`**: `RunContext` is the source of truth for a run.
   `_dispatch_subtask()` writes each subtask's `AgentResult` via `ctx.store_result()`
