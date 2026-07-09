@@ -74,8 +74,9 @@ status: current
    ```
 3. Add any reference documents (e.g. `topic_one.md`) as sibling files in the same folder — they are what `topic=` loads via `read_skill`.
 4. List the skill's folder name in the agent manifest's `skills:` array (e.g. `manifests/business_analyst_agent.yaml` has `skills: [business-analysis, financial-analysis, equity-research]`).
-5. In the manifest's `system_prompt`, instruct the agent to call the `read_skill` tool, e.g. `read_skill(skill='business-analysis')` for the SKILL.md overview, or `read_skill(skill='business-analysis', topic='sustainability_framework')` for a named reference document (`src/agentflow/tools/skills.py` registers `read_skill`; resolution logic is in `SkillLoader.read()`).
-6. `read_skill` is a global tool (registered once) available to any agent — declaring `skills:` in the manifest only advertises which skills exist to the planner/agent; the agent still needs `read_skill` in its `tools:` list to call it (all shipped manifests include `read_skill` alongside their skills).
+5. That listing is enough on its own: `Agent._execute` (`src/agentflow/agents/agent.py`) automatically appends `skill_loader.full_content(self.manifest.skills)` — the full SKILL.md plus every reference document, for every listed skill — to the agent's static system prompt on each run. No tool call or extra wiring is required for the agent to receive the guidance.
+6. Optionally, reference the skill by name/topic in the `system_prompt` to steer *when* the agent applies which section, e.g. `manifests/business_analyst_agent.yaml` says "Load: read_skill(skill='business-analysis', topic='sustainability_framework')" before each analysis step — this is prose guidance pointing at content that is already embedded, not a required runtime call.
+7. `read_skill` (`src/agentflow/tools/skills.py`, backed by `SkillLoader.read()`) is a separate on-demand tool for fetching a specific skill/topic string at call time instead of embedding everything up front. To make it callable you must add `read_skill` to that agent's `tools:` list explicitly — none of the shipped manifests currently do this, so treat step 5 (full-content injection) as the working mechanism and `read_skill` as an available-but-currently-unwired alternative.
 
 ## Run the system
 
