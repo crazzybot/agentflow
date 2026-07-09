@@ -1,7 +1,7 @@
 ---
 title: Codebase Map
 last_updated: 2026-07-09
-last_verified_sha: c17c818
+last_verified_sha: 1b92446
 sources:
   - src/agentflow/
   - manifests/
@@ -19,18 +19,18 @@ Where things live in `src/agentflow/`, `manifests/`, `skills/`, and `tests/`. Se
 
 | Package | Responsibility | Key files |
 | --- | --- | --- |
-| [core](../../src/agentflow/core/) | Shared domain models, per-run state, agent-manifest loading, and skill discovery — no orchestration logic. | `models.py` (all Pydantic models: manifests, `Subtask`/`ExecutionPlan`, `AgentResult`, SSE events), `context.py` (`RunContext`/`ContextStore`), `bus.py` (`TaskBus`, in-process dispatch/result queues), `registry.py` (`AgentRegistry` — loads `manifests/*.yaml`), `skill_loader.py` (reads `skills/*/SKILL.md` + reference docs) |
+| [core](../../src/agentflow/core/) | Shared domain models, per-run state, agent-manifest loading, and skill discovery — no orchestration logic. | `models.py` (all Pydantic models: manifests, `Subtask`/`ExecutionPlan`, `AgentResult`, SSE events), `context.py` (`RunContext`/`ContextStore` + `_make_context_store()` backend factory), `context_redis.py` (`RedisRunContext`/`RedisContextStore`), `bus.py` (`TaskBus`, in-process dispatch/result queues, backend factory), `bus_redis.py` (`RedisTaskBus`), `redis_client.py` (shared async Redis pool), `registry.py` (`AgentRegistry` — loads `manifests/*.yaml`), `skill_loader.py` (reads `skills/*/SKILL.md` + reference docs) |
 | [agents](../../src/agentflow/agents/) | The single generic, manifest-driven agent runtime shared by every agent type. | `agent.py` (`Agent` class — tool-calling `_agentic_loop()` against the LLM, returns `AgentResult`) |
-| [orchestrator](../../src/agentflow/orchestrator/) | Turns one task into a plan, schedules/executes it as a DAG, and reports the outcome. | `engine.py` (`OrchestratorEngine`, top-level lifecycle), `planner.py` (`create_plan()`), `decomposer.py` (`expand_plan()`), `scheduler.py` (`DependencyGraph`), `reporter.py` (`compile_report()`), `stream.py` (`StreamEmitter`/`StreamRegistry` for SSE) |
-| [llm](../../src/agentflow/llm/) | Single point of contact with the Anthropic API. | `client.py` (`LLMClient` — wraps `AsyncAnthropic.messages.create()`, rate limiting, prompt-cache injection, `UsageStats`) |
+| [orchestrator](../../src/agentflow/orchestrator/) | Turns one task into a plan, schedules/executes it as a DAG, and reports the outcome. | `engine.py` (`OrchestratorEngine`, top-level lifecycle), `planner.py` (`create_plan()`), `decomposer.py` (`expand_plan()`), `scheduler.py` (`DependencyGraph`), `reporter.py` (`compile_report()`), `stream.py` (`StreamEmitter`/`StreamRegistry` for SSE + backend factory), `stream_redis.py` (`RedisStreamEmitter`/`RedisStreamRegistry`, Redis Streams) |
+| [llm](../../src/agentflow/llm/) | Single point of contact with the Anthropic API. | `client.py` (`LLMClient` — wraps `AsyncAnthropic.messages.create()`, prompt-cache injection, `UsageStats`; retries delegated to the SDK's `max_retries`) |
 | [tools](../../src/agentflow/tools/) | Tool definitions agents can call, plus the registry they're looked up in. | `registry.py` (`ToolDefinition`/`ToolImpact`/`tool_registry`), `builtin.py` (built-ins: `bash_exec`, `python_exec`, `file_read`, `file_write`, `web_search`, `fetch_url`, …), `mcp_tools.py` (wraps remote MCP servers as `ToolDefinition`s), `skills.py` (`read_skill` tool), `arxiv_search.py` (arXiv API client), `artifact_tracker.py` (per-run `artifacts.jsonl` writer) |
 | [api](../../src/agentflow/api/) | HTTP surface. | `routes.py` (`POST /api/runs`, `GET /api/runs/{run_id}/stream` SSE, past-run query endpoints) |
 | [cli](../../src/agentflow/cli/) | Terminal client for the API. | `__init__.py` (`main()` entry point), `client.py` (async HTTP client), `display.py` (Rich terminal rendering of SSE events) |
 
 ## Top-level modules
 
-- [`main.py`](../../src/agentflow/main.py) — FastAPI app factory; builds the `AgentRegistry`, `OrchestratorEngine`, and CORS/router wiring once at import time.
-- [`config.py`](../../src/agentflow/config.py) — `Settings` (pydantic-settings): API key, model names per role (`planner_model`, `agent_model`, `reporter_model`), timeouts, `manifests_dir`, etc., loaded from `.env`.
+- [`main.py`](../../src/agentflow/main.py) — FastAPI app factory; builds the `AgentRegistry`, `OrchestratorEngine`, and CORS/router wiring once at import time. A `lifespan` handler closes the shared Redis pool on shutdown when the Redis backend is active.
+- [`config.py`](../../src/agentflow/config.py) — `Settings` (pydantic-settings): API key, model names per role (`planner_model`, `agent_model`, `reporter_model`), timeouts, `manifests_dir`, the state backend (`state_backend`, `redis_url`, `redis_key_ttl`), etc., loaded from `.env`.
 - [`logging_config.py`](../../src/agentflow/logging_config.py) — `setup_logging()`; centralized logging setup (level, optional JSON format, optional file sink).
 - [`__main__.py`](../../src/agentflow/__main__.py) — `python -m agentflow` entry point; delegates to `agentflow.cli.main()`.
 
@@ -67,3 +67,4 @@ uv run pytest
 
 - [architecture](architecture.md) — end-to-end request lifecycle and component responsibilities.
 - [concepts](concepts.md) — domain glossary for the model types referenced above.
+- [subsystems/redis-backend](subsystems/redis-backend.md) — how the `*_redis.py` modules and backend factories fit together.

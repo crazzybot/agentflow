@@ -1,7 +1,7 @@
 ---
 title: Conventions & Patterns
 last_updated: 2026-07-09
-last_verified_sha: c30237c
+last_verified_sha: 1b92446
 sources:
   - pyproject.toml
   - src/agentflow/config.py
@@ -25,6 +25,11 @@ status: current
 - Run tests: `uv run pytest` (or `uv run pytest tests/ -v`).
 - Dev-only deps (`pytest`, `pytest-asyncio`) live in `[dependency-groups].dev`, separate
   from runtime `dependencies`.
+- Runtime `dependencies` include `redis>=5.0.0`, used only when the optional Redis state
+  backend is enabled (`STATE_BACKEND=redis`); the in-memory default needs no Redis server.
+  New settings follow the existing `Settings` pattern — added as typed fields with
+  defaults and overridden via `.env`/env vars (`STATE_BACKEND`, `REDIS_URL`,
+  `REDIS_KEY_TTL`). See [subsystems/redis-backend](subsystems/redis-backend.md).
 
 ## Code style
 
