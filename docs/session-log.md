@@ -5,6 +5,25 @@ Maintained by the `/session-wrap` skill. Newest entries at the top.
 
 ---
 
+## Session: 2026-07-10 (agent:thought streaming)
+
+**Files changed:**
+- `src/agentflow/core/models.py` — added `agent_thought = "agent:thought"` to `SSEEventType`
+- `src/agentflow/agents/agent.py` — emit `agent:thought` for text blocks on `tool_use` turns; consolidate `SSEEventType` to module-level import
+- `src/agentflow/orchestrator/planner.py` — emit `agent:thought` for text blocks during planner exploration turns
+
+**Decisions:**
+- `agent:thought` is emitted only on `tool_use` turns (not `end_turn`) — end-turn text is the final answer, not mid-loop reasoning
+- Planner uses `agent_id="planner"` to distinguish its thoughts from subtask agent thoughts
+- `SSEEventType` moved from three scattered local imports to one module-level import in `agent.py`
+
+**Open questions:** none
+
+**KB updates applied:**
+- `docs/kb/architecture.md` — noted `agent:thought` emission in steps 3 and 6 of the request lifecycle; bumped `last_verified_sha` to `0ee398e`
+
+---
+
 ## Session: 2026-07-10 (continued — implementation session)
 
 **Files changed:**

@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-07-10
-last_verified_sha: 45e5fe8
+last_verified_sha: 0ee398e
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -43,7 +43,8 @@ variants so multiple API replicas can share a run — see
    agentic ReAct loop (read-only `file_read`/`bash_exec`/`web_search`/`fetch_url` tools)
    against `settings.planner_model` to explore the workspace, then emits a JSON
    `ExecutionPlan` of `Subtask`s (agent id, instruction, `depends_on`, optional
-   `budget_fraction`).
+   `budget_fraction`). During exploration turns, text blocks the model produces
+   alongside tool calls are emitted as `agent:thought` events (with `agent_id="planner"`).
 4. **Decompose** — `expand_plan()` in
    [`orchestrator/decomposer.py`](../../src/agentflow/orchestrator/decomposer.py)
    expands any subtask whose target `AgentManifest` declares a `decomposition_prompt`
@@ -71,11 +72,14 @@ variants so multiple API replicas can share a run — see
    [`agents/agent.py`](../../src/agentflow/agents/agent.py) drives Claude turn-by-turn
    (via the shared `LLMClient`) with the manifest's tools/MCP servers until `end_turn`,
    an iteration limit, or a budget limit is hit, executing any `tool_use` blocks
-   concurrently and feeding results back as `tool_result` messages. After each tool-result
-   batch the loop calls `ctx.pop_user_message(self.agent_id)` and — if a message is
-   queued for this agent — appends it as a user turn before the next API call, emitting
-   `run:message_received`. Because `push_user_message()` fans out to every registered
-   agent's queue, all agents running in parallel receive the same injected message.
+   concurrently and feeding results back as `tool_result` messages. Text blocks the model
+   emits alongside tool calls are streamed as `agent:thought` SSE events, making the
+   agent's in-progress reasoning visible to clients (`end_turn` text is the final answer
+   and is not re-emitted as a thought). After each tool-result batch the loop calls
+   `ctx.pop_user_message(self.agent_id)` and — if a message is queued for this agent —
+   appends it as a user turn before the next API call, emitting `run:message_received`.
+   Because `push_user_message()` fans out to every registered agent's queue, all agents
+   running in parallel receive the same injected message.
 7. **Report** — once all subtasks are `completed`/`failed`, the engine gathers
    `ctx.all_results()`, computes a cost summary, and calls `compile_report()` in
    [`orchestrator/reporter.py`](../../src/agentflow/orchestrator/reporter.py), which
