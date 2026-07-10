@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
-last_updated: 2026-07-09
-last_verified_sha: 517f320
+last_updated: 2026-07-10
+last_verified_sha: 45e5fe8
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -53,12 +53,18 @@ variants so multiple API replicas can share a run — see
    `DependencyGraph` (`orchestrator/scheduler.py`) over the plan and loops: ask the
    graph for `ready()` subtasks (deps satisfied, not failed), dispatch each as an
    `asyncio.Task` via `_dispatch_subtask()`, and reconcile with `asyncio.wait(...,
-   FIRST_COMPLETED)` as tasks finish. `_dispatch_subtask()` builds a `TaskEnvelope`
-   (instruction + prior results/messages + budget/timeout constraints) and calls
-   `Agent.run(envelope, emitter, ctx=ctx)`, handling retries with exponential backoff,
-   fallback-agent routing on final failure, and budget-exhaustion continuation
-   (`_continue_partial`, `_request_budget_increase`) which can pause the run for human
-   input. If the run is cancelled (`asyncio.CancelledError` propagates from
+   FIRST_COMPLETED)` as tasks finish. `_dispatch_subtask()` calls
+   `ctx.register_agent(agent_id)` so mid-run user messages are routed to that agent,
+   builds a `TaskEnvelope` (instruction + prior results/messages + budget/timeout
+   constraints; planner-only context keys such as `prior_report` and
+   `prior_subtask_outputs` are stripped before the envelope is built so agents only
+   receive user-supplied extra context), and calls `Agent.run(envelope, emitter,
+   ctx=ctx)`. It handles retries with exponential backoff, fallback-agent routing on
+   final failure (deregistering the primary agent and registering the fallback before
+   its `run()` call), and budget-exhaustion continuation (`_continue_partial`,
+   `_request_budget_increase`) which can pause the run for human input.
+   `ctx.deregister_agent(agent_id)` is always called in a `finally` block when the
+   subtask finishes. If the run is cancelled (`asyncio.CancelledError` propagates from
    `asyncio.wait`), `_execute_plan` cancels all in-flight subtask tasks and re-raises;
    `engine.run()` catches it, emits `run:cancelled`, and proceeds to normal cleanup.
 6. **Per-subtask agent execution** — `Agent._agentic_loop()` in
@@ -66,8 +72,10 @@ variants so multiple API replicas can share a run — see
    (via the shared `LLMClient`) with the manifest's tools/MCP servers until `end_turn`,
    an iteration limit, or a budget limit is hit, executing any `tool_use` blocks
    concurrently and feeding results back as `tool_result` messages. After each tool-result
-   batch the loop calls `ctx.pop_user_message()` and — if a message is queued — appends
-   it as a user turn before the next API call, emitting `run:message_received`.
+   batch the loop calls `ctx.pop_user_message(self.agent_id)` and — if a message is
+   queued for this agent — appends it as a user turn before the next API call, emitting
+   `run:message_received`. Because `push_user_message()` fans out to every registered
+   agent's queue, all agents running in parallel receive the same injected message.
 7. **Report** — once all subtasks are `completed`/`failed`, the engine gathers
    `ctx.all_results()`, computes a cost summary, and calls `compile_report()` in
    [`orchestrator/reporter.py`](../../src/agentflow/orchestrator/reporter.py), which
@@ -86,7 +94,11 @@ variants so multiple API replicas can share a run — see
   logic.
 - **`orchestrator/planner.py` — `create_plan()`**: turns a task string into an
   `ExecutionPlan` via an LLM ReAct loop with read-only exploration tools; also
-  allocates `budget_fraction` per subtask when a run budget is set.
+  allocates `budget_fraction` per subtask when a run budget is set. For follow-up
+  runs, prior-run context keys (`prior_report`, `prior_task`, `prior_run_id`,
+  `prior_subtask_outputs`) are extracted from `user_context` and formatted as a
+  readable "Prior Run" prose section in the planner's first message; any remaining
+  user-supplied context keys appear as a separate JSON block.
 - **`orchestrator/decomposer.py` — `expand_plan()` / `decompose_subtask()`**: optionally
   splits a subtask into micro-subtasks using the agent manifest's own
   `decomposition_prompt`, run as a nested `Agent` loop.
@@ -131,7 +143,12 @@ Within one run, components talk through three mechanisms:
   dependency output via `ctx.build_prior_results()` (text-only summaries) or
   `ctx.build_prior_messages()` (full conversation replay when there is exactly one
   dependency). `RunContext` also tracks `total_cost_usd()`/`remaining_budget_usd()` and
-  arbitrates human-input requests when a budget is exhausted.
+  arbitrates human-input requests when a budget is exhausted. Mid-run user messages
+  (from `POST …/message`) are stored in per-agent queues: `register_agent(agent_id)`
+  creates a queue when a subtask starts; `push_user_message(content)` fans the message
+  out to every registered agent's queue; `pop_user_message(agent_id)` drains one message
+  from that agent's own queue; `deregister_agent(agent_id)` removes the queue when the
+  subtask finishes. This guarantees all parallel agents receive the same injected message.
 - **Events — `core/bus.py` / `orchestrator/stream.py`**: `TaskBus` gives each run an
   asyncio dispatch/result queue pair (`create_run`/`close_run`), intended as the seam
   for a future distributed worker model. Live progress that the HTTP layer actually

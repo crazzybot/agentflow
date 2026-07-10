@@ -5,6 +5,32 @@ Maintained by the `/session-wrap` skill. Newest entries at the top.
 
 ---
 
+## Session: 2026-07-10 (continued — implementation session)
+
+**Files changed:**
+- `src/agentflow/core/context.py` — per-agent message queues (fan-out)
+- `src/agentflow/core/context_redis.py` — Redis fan-out via active-agents set + per-agent lists
+- `src/agentflow/orchestrator/engine.py` — register/deregister agent lifecycle; strip planner-only context keys from agent TaskContext
+- `src/agentflow/agents/agent.py` — `pop_user_message(agent_id)` (agent-scoped)
+- `src/agentflow/api/routes.py` — followup: rename `prior_results`→`prior_subtask_outputs`, include `agent_id` in output map
+- `src/agentflow/orchestrator/planner.py` — format prior-run context as readable prose section; separate from user-supplied JSON context
+
+**Decisions:**
+- Mid-run user messages now fan out to ALL active agents, not just the one that wins the asyncio race — per-agent queues keyed by `agent_id` in both in-process and Redis backends
+- `register_agent`/`deregister_agent` lifecycle in `_dispatch_subtask` with `try/finally`; fallback agent explicitly swaps registration before its `run()` call
+- Planner-only context keys (`prior_report`, `prior_subtask_outputs`, `prior_run_id`, `prior_task`) stripped from `user_context` before agents receive their `TaskContext` — agents only see what the planner embeds in their `instruction`
+- Follow-up context delivered to planner as structured readable section (not raw JSON dump); `prior_subtask_outputs` is a list of `{subtask_id, agent_id, output}` rather than an opaque UUID-keyed dict
+- Messages sent during planning phase (before any agent is registered) are silently dropped — accepted trade-off; no agent is listening yet
+
+**Open questions:**
+- Messages sent during planning or between subtask dispatches are lost — could buffer them and replay on first `register_agent` if this becomes a user pain point
+
+**KB updates applied:**
+- `docs/kb/architecture.md` — updated steps 5 & 6 of request lifecycle; updated `RunContext` entry in data flow section; updated planner component description for follow-up context handling
+- `docs/kb/subsystems/redis-backend.md` — replaced `user_messages` key row with `active_agents` + `msg:{agent_id}` rows; added fan-out description to Context & HITL section
+
+---
+
 ## Session: 2026-07-10
 
 **Files changed:** `CLAUDE.md`, `.claude/skills/session-wrap/SKILL.md`,

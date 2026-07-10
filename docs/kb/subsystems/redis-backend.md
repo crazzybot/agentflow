@@ -1,7 +1,7 @@
 ---
 title: Redis-Backed State Backend
-last_updated: 2026-07-09
-last_verified_sha: 517f320
+last_updated: 2026-07-10
+last_verified_sha: 45e5fe8
 sources:
   - src/agentflow/config.py
   - src/agentflow/core/redis_client.py
@@ -75,7 +75,8 @@ All keys are `run:{run_id}:*` and carry `redis_key_ttl`:
 | `…:cost` | String | `RedisRunContext` | Cumulative USD cost (`INCRBYFLOAT`). |
 | `…:hitl:pending` | String | `RedisRunContext` | `"1"` while awaiting human input. |
 | `…:hitl:queue` | List | `RedisRunContext` | Human response delivery (`RPUSH`/`BLPOP`). |
-| `…:user_messages` | List | `RedisRunContext` | Mid-run user messages (`RPUSH`/`LPOP`); drained by agent loop. |
+| `…:active_agents` | Set | `RedisRunContext` | Agent IDs with active subtasks; managed by `register_agent`/`deregister_agent`. |
+| `…:msg:{agent_id}` | List | `RedisRunContext` | Per-agent user-message queue; `push_user_message` fans out via `SMEMBERS` then pipelines `RPUSH` to each; `pop_user_message(agent_id)` does `LPOP`. |
 | `…:dispatch` | List | `RedisTaskBus` | Orchestrator → worker (not yet wired). |
 | `…:result` | List | `RedisTaskBus` | Worker → orchestrator (not yet wired). |
 
@@ -108,6 +109,15 @@ HTTP 409 instead of double-delivering. `await_human_input()` blocks on a
 1-second `BLPOP` loop so `asyncio.wait_for` cancels cleanly. Thin contexts from
 `connect()` are intentionally **not** cached, to avoid a stale `_is_awaiting`
 between two sequential HITL requests on the same run.
+
+Mid-run user message fan-out uses a two-key pattern: `register_agent(agent_id)`
+does `SADD run:{id}:active_agents {agent_id}`; `push_user_message(content)`
+fetches the set with `SMEMBERS` then pipelines `RPUSH` to each
+`run:{id}:msg:{agent_id}` list in one round-trip; `pop_user_message(agent_id)`
+does `LPOP` from that agent's list; `deregister_agent(agent_id)` removes the
+agent from the set and deletes its list. A message sent while no agents are
+registered (e.g. during the planning phase) is silently dropped — agents that
+start after the message was sent will not receive it.
 
 ## The bus is not yet wired
 
