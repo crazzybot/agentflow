@@ -1,6 +1,6 @@
 """Tests for the generic Agent class (without live LLM or MCP calls)."""
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from anthropic.types import TextBlock
 
@@ -63,7 +63,6 @@ async def test_agent_run_end_turn():
 @pytest.mark.asyncio
 async def test_agent_executes_tool_and_loops():
     """When Claude returns tool_use, the agent executes the tool and loops."""
-    import agentflow.tools  # ensure built-ins registered
 
     tool_use_block = MagicMock()
     tool_use_block.type = "tool_use"

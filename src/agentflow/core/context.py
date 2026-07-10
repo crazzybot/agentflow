@@ -35,6 +35,8 @@ class RunContext:
         self.human_input_lock = asyncio.Lock()
         self._human_input_event: asyncio.Event | None = None
         self._human_input_response: HumanInputResponse | None = None
+        # Mid-run user messages: buffered by the HTTP layer, drained by the agent loop.
+        self._user_message_queue: asyncio.Queue[str] = asyncio.Queue()
 
     @property
     def is_awaiting_input(self) -> bool:
@@ -63,6 +65,15 @@ class RunContext:
         self._human_input_response = None
         assert response is not None
         return response
+
+    def push_user_message(self, content: str) -> None:
+        self._user_message_queue.put_nowait(content)
+
+    async def pop_user_message(self) -> str | None:
+        try:
+            return self._user_message_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return None
 
     def add_result_cost(self, result: AgentResult) -> None:
         self._total_cost_usd += result.cost_usd

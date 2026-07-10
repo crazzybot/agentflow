@@ -2,7 +2,7 @@
 import pytest
 import agentflow.tools  # noqa: F401 — ensures built-ins are registered
 
-from agentflow.tools.registry import ToolDefinition, tool_registry
+from agentflow.tools.registry import tool_registry
 
 
 # ---------------------------------------------------------------------------

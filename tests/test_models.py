@@ -1,13 +1,10 @@
 """Tests for core data models."""
-import pytest
 from agentflow.core.models import (
-    AgentManifest,
     AgentOutput,
     AgentResult,
     AgentStatus,
     ExecutionPlan,
     RunRequest,
-    SSEEvent,
     SSEEventType,
     Subtask,
     TaskEnvelope,

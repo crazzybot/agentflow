@@ -81,6 +81,7 @@ class RedisRunContext:
         self._cost_key = f"run:{run_id}:cost"
         self._hitl_pending_key = f"run:{run_id}:hitl:pending"
         self._hitl_queue_key = f"run:{run_id}:hitl:queue"
+        self._user_messages_key = f"run:{run_id}:user_messages"
         if results_file:
             os.makedirs(os.path.dirname(results_file), exist_ok=True)
 
@@ -139,6 +140,13 @@ class RedisRunContext:
     # ------------------------------------------------------------------
     # Budget / cost tracking  (local + Redis)
     # ------------------------------------------------------------------
+
+    async def push_user_message(self, content: str) -> None:
+        await self._redis.rpush(self._user_messages_key, content)
+        await self._redis.expire(self._user_messages_key, self._ttl)
+
+    async def pop_user_message(self) -> str | None:
+        return await self._redis.lpop(self._user_messages_key)
 
     def add_result_cost(self, result: AgentResult) -> None:
         self._total_cost_usd_local += result.cost_usd

@@ -154,6 +154,8 @@ class SSEEventType(str, Enum):
     run_error = "run:error"
     run_budget_exceeded = "run:budget_exceeded"
     run_awaiting_input = "run:awaiting_input"
+    run_cancelled = "run:cancelled"
+    run_message_received = "run:message_received"
 
 
 class SSEPayload(BaseModel):
@@ -196,6 +198,16 @@ class RunRequest(BaseModel):
     task: str
     context: dict[str, Any] = Field(default_factory=dict)
     budget_usd: float | None = None
+
+
+class FollowUpRequest(BaseModel):
+    task: str
+    context: dict[str, Any] = Field(default_factory=dict)
+    budget_usd: float | None = None
+
+
+class UserMessage(BaseModel):
+    content: str
 
 
 class RunResponse(BaseModel):

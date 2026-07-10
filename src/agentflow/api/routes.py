@@ -12,6 +12,7 @@ from sse_starlette.sse import EventSourceResponse
 from agentflow.config import settings
 from agentflow.core.context import context_store
 from agentflow.core.models import (
+    FollowUpRequest,
     HumanInputResponse,
     RunArtifact,
     RunArtifactContentResponse,
@@ -26,6 +27,7 @@ from agentflow.core.models import (
     RunResultsResponse,
     SSEEvent,
     SubtaskResult,
+    UserMessage,
 )
 from agentflow.orchestrator.stream import stream_registry
 
@@ -80,6 +82,72 @@ async def provide_run_input(run_id: str, response: HumanInputResponse):
     if not await ctx.provide_human_input(response):
         raise HTTPException(status_code=409, detail="No input is currently pending for this run")
     return {"status": "accepted"}
+
+
+@router.post("/runs/{run_id}/cancel")
+async def cancel_run(run_id: str):
+    """Cancel an active run. Returns 404 if the run is not found or already finished."""
+    engine = _get_engine()
+    if not engine.cancel_run(run_id):
+        raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found or already finished")
+    return {"status": "cancelled"}
+
+
+@router.post("/runs/{run_id}/followup", response_model=RunResponse)
+async def followup_run(run_id: str, request: FollowUpRequest):
+    """Start a new run that receives the completed run's report and results as context."""
+    run_dir = _run_dir(run_id)
+    if not run_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found")
+
+    prior_context: dict = dict(request.context)
+    prior_context["prior_run_id"] = run_id
+
+    meta = _load_meta(run_dir)
+    if meta:
+        prior_context["prior_task"] = meta.task
+
+    report_file = run_dir / "report.md"
+    if report_file.exists():
+        prior_context["prior_report"] = report_file.read_text(encoding="utf-8")
+
+    results_file = run_dir / "results.jsonl"
+    if results_file.exists():
+        prior_context["prior_results"] = {
+            entry["subtask_id"]: entry.get("output", {}).get("text", "")
+            for line in results_file.read_text().splitlines()
+            if line.strip()
+            for entry in (json.loads(line),)
+            if "subtask_id" in entry
+        }
+
+    new_run_id = str(uuid.uuid4())
+    engine = _get_engine()
+    asyncio.create_task(
+        engine.run(new_run_id, request.task, prior_context, request.budget_usd)
+    )
+
+    for _ in range(20):
+        if stream_registry.get(new_run_id):
+            break
+        await asyncio.sleep(0.05)
+
+    return RunResponse(run_id=new_run_id)
+
+
+@router.post("/runs/{run_id}/message")
+async def send_run_message(run_id: str, message: UserMessage):
+    """Inject a user message into the active agent loop of a running run."""
+    emitter = await stream_registry.connect(run_id)
+    if emitter is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found or not active")
+    if emitter.done:
+        raise HTTPException(status_code=409, detail="Run has already finished")
+    ctx = await context_store.connect(run_id)
+    if ctx is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found or not active")
+    await ctx.push_user_message(message.content) # type: ignore
+    return {"status": "queued"}
 
 
 # ---------------------------------------------------------------------------
