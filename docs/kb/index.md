@@ -1,7 +1,7 @@
 ---
 title: AgentFlow Knowledge Base — Index
 last_updated: 2026-07-09
-last_verified_sha: 1d91fe3
+last_verified_sha: 1b92446
 sources:
   - src/agentflow/
   - manifests/
@@ -28,7 +28,11 @@ the doc(s) relevant to your change, before exploring source.
 
 ## Subsystem deep-dives
 
-`subsystems/` holds per-subsystem docs added as the system grows. (Empty today.)
+`subsystems/` holds per-subsystem docs added as the system grows.
+
+- [subsystems/redis-backend](subsystems/redis-backend.md) — the optional Redis state
+  backend: bus, context store, and SSE registry variants selected by
+  `STATE_BACKEND=redis`, plus cross-replica HITL and streaming.
 
 ## Keeping this KB current
 

@@ -13,14 +13,8 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timezone
-
-# Web pages and large tool outputs can be arbitrarily long. Capping them here
-# prevents a single fetch_url call from dominating every subsequent loop iteration
-# (the full messages array is re-sent on each turn).
-_MAX_TOOL_RESULT_CHARS = 8_000
-
 from contextlib import AsyncExitStack
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import anthropic
@@ -36,6 +30,11 @@ if TYPE_CHECKING:
     from agentflow.orchestrator.stream import StreamEmitter
 
 logger = logging.getLogger(__name__)
+
+# Web pages and large tool outputs can be arbitrarily long. Capping them here
+# prevents a single fetch_url call from dominating every subsequent loop iteration
+# (the full messages array is re-sent on each turn).
+_MAX_TOOL_RESULT_CHARS = 8_000
 
 
 def _with_message_cache_breakpoint(messages: list[dict]) -> list[dict]:
@@ -101,6 +100,7 @@ class Agent:
         envelope: TaskEnvelope,
         emitter: "StreamEmitter",
         resume_messages: list | None = None,
+        ctx: Any | None = None,
     ) -> AgentResult:
         from agentflow.core.models import SSEEventType
 
@@ -111,7 +111,7 @@ class Agent:
             message=f"Starting: {envelope.instruction[:80]}",
         )
         try:
-            result = await self._execute(envelope, emitter, resume_messages=resume_messages)
+            result = await self._execute(envelope, emitter, resume_messages=resume_messages, ctx=ctx)
         except Exception as exc:
             logger.exception("[%s] Agent %s raised an unhandled error", envelope.parent_run_id, self.agent_id)
             result = AgentResult(
@@ -132,6 +132,7 @@ class Agent:
         envelope: TaskEnvelope,
         emitter: "StreamEmitter",
         resume_messages: list | None = None,
+        ctx: Any | None = None,
     ) -> AgentResult:
         from agentflow.core.skill_loader import skill_loader
 
@@ -168,7 +169,7 @@ class Agent:
             ]
 
             # 4. Run the agentic loop
-            return await self._agentic_loop(envelope, all_tools, system_blocks, emitter, resume_messages=resume_messages)
+            return await self._agentic_loop(envelope, all_tools, system_blocks, emitter, resume_messages=resume_messages, ctx=ctx)
 
     # ------------------------------------------------------------------
     # Agentic loop with tool execution
@@ -181,8 +182,8 @@ class Agent:
         system_prompt: str | list,
         emitter: "StreamEmitter",
         resume_messages: list | None = None,
+        ctx: Any | None = None,
     ) -> AgentResult:
-        from agentflow.core.models import SSEEventType
 
         if resume_messages is not None:
             # Fix 3: resume a partial run — continue from the existing message thread.
@@ -319,6 +320,15 @@ class Agent:
             )
 
             messages.append({"role": "user", "content": list(tool_results)})
+
+            # Inject any pending user message as an additional user turn before
+            # the next API call, so the model sees it without a separate round-trip.
+            if ctx is not None:
+                pending = await ctx.pop_user_message()
+                if pending is not None:
+                    from agentflow.core.models import SSEEventType as _SSE
+                    messages.append({"role": "user", "content": pending})
+                    emitter.emit(_SSE.run_message_received, agent_id=self.agent_id, message=pending[:120])
 
         # Try to parse final text as JSON (many system prompts ask for JSON output)
         structured: dict[str, Any] = {}

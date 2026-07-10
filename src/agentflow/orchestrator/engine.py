@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -69,7 +67,16 @@ class OrchestratorEngine:
             enable_prompt_caching=settings.enable_prompt_caching,
         )
         self._agent_instances: dict[str, Any] = {}
+        self._run_tasks: dict[str, asyncio.Task] = {}
         self._build_agents()
+
+    def cancel_run(self, run_id: str) -> bool:
+        """Cancel an active run. Returns True if the run was found and cancelled."""
+        task = self._run_tasks.get(run_id)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        return True
 
     def _build_agents(self) -> None:
         """Instantiate one generic Agent per registered manifest."""
@@ -117,6 +124,10 @@ class OrchestratorEngine:
         user_context: dict[str, Any],
         budget_usd: float | None = None,
     ) -> None:
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self._run_tasks[run_id] = current_task
+
         events_file = (
             f"{settings.runs_dir}/{run_id}/events.jsonl"
             if settings.capture_events
@@ -190,10 +201,14 @@ class OrchestratorEngine:
                     data={"results": succeeded, "report": report_path, "cost": cost_summary},
                 )
 
+        except asyncio.CancelledError:
+            logger.info("[%s] Run cancelled by user", run_id)
+            emitter.emit(SSEEventType.run_cancelled, message="Run cancelled")
         except Exception as exc:
             logger.exception("[%s] Orchestrator error", run_id)
             emitter.emit(SSEEventType.run_error, message=str(exc))
         finally:
+            self._run_tasks.pop(run_id, None)
             _current_sink.reset(sink_token)
             self._client.stats.log_summary()
             emitter.close()
@@ -216,47 +231,53 @@ class OrchestratorEngine:
         failed: set[str] = set()
         in_flight: dict[str, asyncio.Task[bool]] = {}
 
-        while len(completed) + len(failed) < len(plan.subtasks):
-            ready = [
-                st
-                for st in graph.ready(completed, failed)
-                if st.id not in in_flight
-            ]
+        try:
+            while len(completed) + len(failed) < len(plan.subtasks):
+                ready = [
+                    st
+                    for st in graph.ready(completed, failed)
+                    if st.id not in in_flight
+                ]
 
-            for subtask in ready:
-                task_budget = _compute_subtask_budget(subtask, plan, completed, failed, in_flight, ctx)
-                in_flight[subtask.id] = asyncio.create_task(
-                    self._dispatch_subtask(run_id, subtask, ctx, emitter, task_budget)
+                for subtask in ready:
+                    task_budget = _compute_subtask_budget(subtask, plan, completed, failed, in_flight, ctx)
+                    in_flight[subtask.id] = asyncio.create_task(
+                        self._dispatch_subtask(run_id, subtask, ctx, emitter, task_budget)
+                    )
+
+                if not in_flight:
+                    # Nothing running and nothing dispatchable — cancel blocked remainders
+                    for st in plan.subtasks:
+                        if st.id not in completed and st.id not in failed:
+                            failed.add(st.id)
+                            emitter.emit(
+                                SSEEventType.task_failed,
+                                agent_id=st.agent_id,
+                                message=f"Subtask {st.id} cancelled: upstream dependency failed",
+                                data={"subtask_id": st.id},
+                            )
+                    break
+
+                done, _ = await asyncio.wait(
+                    in_flight.values(), return_when=asyncio.FIRST_COMPLETED
                 )
 
-            if not in_flight:
-                # Nothing running and nothing dispatchable — cancel blocked remainders
-                for st in plan.subtasks:
-                    if st.id not in completed and st.id not in failed:
-                        failed.add(st.id)
-                        emitter.emit(
-                            SSEEventType.task_failed,
-                            agent_id=st.agent_id,
-                            message=f"Subtask {st.id} cancelled: upstream dependency failed",
-                            data={"subtask_id": st.id},
-                        )
-                break
+                for task in done:
+                    subtask_id = next(k for k, v in in_flight.items() if v is task)
+                    in_flight.pop(subtask_id)
+                    try:
+                        succeeded: bool = task.result()
+                    except Exception:
+                        succeeded = False
+                    if succeeded:
+                        completed.add(subtask_id)
+                    else:
+                        failed.add(subtask_id)
 
-            done, _ = await asyncio.wait(
-                in_flight.values(), return_when=asyncio.FIRST_COMPLETED
-            )
-
-            for task in done:
-                subtask_id = next(k for k, v in in_flight.items() if v is task)
-                in_flight.pop(subtask_id)
-                try:
-                    succeeded: bool = task.result()
-                except Exception:
-                    succeeded = False
-                if succeeded:
-                    completed.add(subtask_id)
-                else:
-                    failed.add(subtask_id)
+        except asyncio.CancelledError:
+            for task in in_flight.values():
+                task.cancel()
+            raise
 
     # ------------------------------------------------------------------
     # Single subtask dispatch with retry
@@ -304,7 +325,7 @@ class OrchestratorEngine:
         for attempt in range(1, settings.task_max_retries + 1):
             try:
                 result = await asyncio.wait_for(
-                    agent.run(envelope, emitter),
+                    agent.run(envelope, emitter, ctx=ctx),
                     timeout=settings.task_timeout_ms / 1000,
                 )
             except asyncio.TimeoutError:
@@ -335,7 +356,7 @@ class OrchestratorEngine:
                 if fallback and fallback.agent_id in self._agent_instances:
                     logger.info("[%s] Using fallback agent %s", run_id, fallback.agent_id)
                     envelope.agent_id = fallback.agent_id
-                    fallback_result = await self._agent_instances[fallback.agent_id].run(envelope, emitter)
+                    fallback_result = await self._agent_instances[fallback.agent_id].run(envelope, emitter, ctx=ctx)
                     ctx.add_result_cost(fallback_result)
                     await ctx.store_result(subtask.id, fallback_result)
                     emitter.emit(
@@ -524,7 +545,7 @@ class OrchestratorEngine:
                 next_result = await asyncio.wait_for(
                     # Resume the existing message thread rather than rebuilding from a
                     # text summary — no re-reading, no lost tool context.
-                    agent.run(envelope, emitter, resume_messages=result.messages),
+                    agent.run(envelope, emitter, resume_messages=result.messages, ctx=ctx),
                     timeout=settings.task_timeout_ms / 1000,
                 )
             except asyncio.TimeoutError:

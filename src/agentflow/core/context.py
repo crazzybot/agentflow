@@ -6,6 +6,7 @@ import json
 import os
 from typing import TYPE_CHECKING, Any
 
+from agentflow.config import settings
 from agentflow.core.models import AgentResult
 
 if TYPE_CHECKING:
@@ -34,6 +35,8 @@ class RunContext:
         self.human_input_lock = asyncio.Lock()
         self._human_input_event: asyncio.Event | None = None
         self._human_input_response: HumanInputResponse | None = None
+        # Mid-run user messages: buffered by the HTTP layer, drained by the agent loop.
+        self._user_message_queue: asyncio.Queue[str] = asyncio.Queue()
 
     @property
     def is_awaiting_input(self) -> bool:
@@ -44,7 +47,7 @@ class RunContext:
         self._human_input_event = asyncio.Event()
         self._human_input_response = None
 
-    def provide_human_input(self, response: HumanInputResponse) -> bool:
+    async def provide_human_input(self, response: HumanInputResponse) -> bool:
         """Deliver the user's response. Returns False if no input was pending."""
         if self._human_input_event is None or self._human_input_event.is_set():
             return False
@@ -62,6 +65,15 @@ class RunContext:
         self._human_input_response = None
         assert response is not None
         return response
+
+    def push_user_message(self, content: str) -> None:
+        self._user_message_queue.put_nowait(content)
+
+    async def pop_user_message(self) -> str | None:
+        try:
+            return self._user_message_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return None
 
     def add_result_cost(self, result: AgentResult) -> None:
         self._total_cost_usd += result.cost_usd
@@ -147,8 +159,24 @@ class ContextStore:
     def get(self, run_id: str) -> RunContext | None:
         return self._runs.get(run_id)
 
+    async def connect(self, run_id: str) -> RunContext | None:
+        """Async lookup — base class delegates to get().
+
+        Overridden by RedisContextStore to check Redis on a local-cache miss,
+        enabling cross-replica HITL delivery.
+        """
+        return self.get(run_id)
+
     def remove(self, run_id: str) -> None:
         self._runs.pop(run_id, None)
 
 
-context_store = ContextStore()
+def _make_context_store() -> "ContextStore":
+    if settings.state_backend == "redis":
+        from agentflow.core.redis_client import get_redis
+        from agentflow.core.context_redis import RedisContextStore
+        return RedisContextStore(get_redis(), ttl=settings.redis_key_ttl)  # type: ignore[return-value]
+    return ContextStore()
+
+
+context_store = _make_context_store()

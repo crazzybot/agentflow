@@ -7,6 +7,7 @@ import logging
 import os
 from typing import Any, AsyncIterator
 
+from agentflow.config import settings
 from agentflow.core.models import SSEEvent, SSEEventType, SSEPayload
 
 logger = logging.getLogger(__name__)
@@ -73,8 +74,24 @@ class StreamRegistry:
     def get(self, run_id: str) -> StreamEmitter | None:
         return self._emitters.get(run_id)
 
+    async def connect(self, run_id: str) -> StreamEmitter | None:
+        """Async lookup — base class delegates to get().
+
+        Overridden by RedisStreamRegistry to check Redis on a local-cache miss,
+        enabling cross-replica SSE streaming.
+        """
+        return self.get(run_id)
+
     def remove(self, run_id: str) -> None:
         self._emitters.pop(run_id, None)
 
 
-stream_registry = StreamRegistry()
+def _make_stream_registry() -> "StreamRegistry":
+    if settings.state_backend == "redis":
+        from agentflow.core.redis_client import get_redis
+        from agentflow.orchestrator.stream_redis import RedisStreamRegistry
+        return RedisStreamRegistry(get_redis(), ttl=settings.redis_key_ttl)  # type: ignore[return-value]
+    return StreamRegistry()
+
+
+stream_registry = _make_stream_registry()

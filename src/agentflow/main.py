@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import os
 import logging
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,7 +34,22 @@ engine = OrchestratorEngine(registry)
 # FastAPI app
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="AgentFlow", version="0.1.0", description="Multi-agent orchestration system")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    yield
+    if settings.state_backend == "redis":
+        from agentflow.core.redis_client import close_redis
+        await close_redis()
+        logger.info("Redis connection pool closed")
+
+
+app = FastAPI(
+    title="AgentFlow",
+    version="0.1.0",
+    description="Multi-agent orchestration system",
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,

@@ -1,5 +1,4 @@
 """Tests for AgentRegistry."""
-import pytest
 from agentflow.core.models import AgentManifest
 from agentflow.core.registry import AgentRegistry
 
