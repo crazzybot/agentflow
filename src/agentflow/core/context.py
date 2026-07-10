@@ -35,8 +35,10 @@ class RunContext:
         self.human_input_lock = asyncio.Lock()
         self._human_input_event: asyncio.Event | None = None
         self._human_input_response: HumanInputResponse | None = None
-        # Mid-run user messages: buffered by the HTTP layer, drained by the agent loop.
-        self._user_message_queue: asyncio.Queue[str] = asyncio.Queue()
+        # Mid-run user messages: one queue per active agent so parallel agents all
+        # receive the message (fan-out).  Keyed by agent_id; populated by
+        # register_agent() and cleared by deregister_agent().
+        self._agent_queues: dict[str, asyncio.Queue[str]] = {}
 
     @property
     def is_awaiting_input(self) -> bool:
@@ -66,12 +68,25 @@ class RunContext:
         assert response is not None
         return response
 
-    def push_user_message(self, content: str) -> None:
-        self._user_message_queue.put_nowait(content)
+    async def register_agent(self, agent_id: str) -> None:
+        """Register an agent as active for this run; gives it its own message queue."""
+        self._agent_queues[agent_id] = asyncio.Queue()
 
-    async def pop_user_message(self) -> str | None:
+    async def deregister_agent(self, agent_id: str) -> None:
+        """Remove an agent's message queue when its subtask finishes."""
+        self._agent_queues.pop(agent_id, None)
+
+    async def push_user_message(self, content: str) -> None:
+        """Fan out a user message to every currently active agent."""
+        for q in self._agent_queues.values():
+            q.put_nowait(content)
+
+    async def pop_user_message(self, agent_id: str) -> str | None:
+        q = self._agent_queues.get(agent_id)
+        if q is None:
+            return None
         try:
-            return self._user_message_queue.get_nowait()
+            return q.get_nowait()
         except asyncio.QueueEmpty:
             return None
 

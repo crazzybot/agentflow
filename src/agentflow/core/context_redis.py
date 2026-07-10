@@ -1,10 +1,12 @@
 """Redis-backed RunContext and ContextStore.
 
 Key layout (all with a configurable TTL):
-  run:{run_id}:results        Redis hash  — subtask_id → JSON(AgentResult)
-  run:{run_id}:cost           String      — cumulative USD cost (INCRBYFLOAT)
-  run:{run_id}:hitl:pending   String      — "1" while awaiting human input
-  run:{run_id}:hitl:queue     List        — RPUSH to deliver, BLPOP to receive
+  run:{run_id}:results          Redis hash  — subtask_id → JSON(AgentResult)
+  run:{run_id}:cost             String      — cumulative USD cost (INCRBYFLOAT)
+  run:{run_id}:hitl:pending     String      — "1" while awaiting human input
+  run:{run_id}:hitl:queue       List        — RPUSH to deliver, BLPOP to receive
+  run:{run_id}:active_agents    Set         — agent_ids currently executing subtasks
+  run:{run_id}:msg:{agent_id}   List        — per-agent user-message queue (fan-out)
 
 Design notes
 ------------
@@ -81,7 +83,7 @@ class RedisRunContext:
         self._cost_key = f"run:{run_id}:cost"
         self._hitl_pending_key = f"run:{run_id}:hitl:pending"
         self._hitl_queue_key = f"run:{run_id}:hitl:queue"
-        self._user_messages_key = f"run:{run_id}:user_messages"
+        self._active_agents_key = f"run:{run_id}:active_agents"
         if results_file:
             os.makedirs(os.path.dirname(results_file), exist_ok=True)
 
@@ -141,12 +143,38 @@ class RedisRunContext:
     # Budget / cost tracking  (local + Redis)
     # ------------------------------------------------------------------
 
-    async def push_user_message(self, content: str) -> None:
-        await self._redis.rpush(self._user_messages_key, content)
-        await self._redis.expire(self._user_messages_key, self._ttl)
+    async def register_agent(self, agent_id: str) -> None:
+        async with self._redis.pipeline(transaction=False) as pipe:
+            pipe.sadd(self._active_agents_key, agent_id)
+            pipe.expire(self._active_agents_key, self._ttl)
+            await pipe.execute()
 
-    async def pop_user_message(self) -> str | None:
-        return await self._redis.lpop(self._user_messages_key)
+    async def deregister_agent(self, agent_id: str) -> None:
+        msg_key = f"run:{self.run_id}:msg:{agent_id}"
+        async with self._redis.pipeline(transaction=False) as pipe:
+            pipe.srem(self._active_agents_key, agent_id)
+            pipe.delete(msg_key)
+            await pipe.execute()
+
+    async def push_user_message(self, content: str) -> None:
+        """Fan out the message to every currently active agent's queue."""
+        agent_ids = await self._redis.smembers(self._active_agents_key)
+        if not agent_ids:
+            return
+        async with self._redis.pipeline(transaction=False) as pipe:
+            for raw in agent_ids:
+                agent_id = raw.decode() if isinstance(raw, bytes) else raw
+                msg_key = f"run:{self.run_id}:msg:{agent_id}"
+                pipe.rpush(msg_key, content)
+                pipe.expire(msg_key, self._ttl)
+            await pipe.execute()
+
+    async def pop_user_message(self, agent_id: str) -> str | None:
+        msg_key = f"run:{self.run_id}:msg:{agent_id}"
+        raw = await self._redis.lpop(msg_key)
+        if raw is None:
+            return None
+        return raw.decode() if isinstance(raw, bytes) else raw
 
     def add_result_cost(self, result: AgentResult) -> None:
         self._total_cost_usd_local += result.cost_usd

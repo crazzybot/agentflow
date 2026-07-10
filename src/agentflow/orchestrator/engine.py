@@ -322,85 +322,101 @@ class OrchestratorEngine:
             data={"subtask_id": subtask.id, "task_id": envelope.task_id},
         )
 
-        for attempt in range(1, settings.task_max_retries + 1):
-            try:
-                result = await asyncio.wait_for(
-                    agent.run(envelope, emitter, ctx=ctx),
-                    timeout=settings.task_timeout_ms / 1000,
-                )
-            except asyncio.TimeoutError:
-                logger.warning("[%s] Subtask %s timed out (attempt %d/%d)", run_id, subtask.id, attempt, settings.task_max_retries)
-                if attempt < settings.task_max_retries:
-                    await asyncio.sleep(2 ** attempt)
-                    continue
-                emitter.emit(
-                    SSEEventType.task_failed,
-                    agent_id=subtask.agent_id,
-                    message=f"Subtask {subtask.id} timed out after {settings.task_max_retries} attempts",
-                )
-                return False
-
-            ctx.add_result_cost(result)
-
-            if result.status == AgentStatus.failed:
-                if attempt < settings.task_max_retries:
-                    logger.warning(
-                        "[%s] Subtask %s failed (attempt %d/%d) — retrying in %ds",
-                        run_id, subtask.id, attempt, settings.task_max_retries, 2 ** attempt,
+        # Track which agent_id is currently registered so the finally block can
+        # deregister the right one.  Set to None when we explicitly deregister
+        # before switching to a fallback agent.
+        registered: str | None = subtask.agent_id
+        await ctx.register_agent(subtask.agent_id)
+        try:
+            for attempt in range(1, settings.task_max_retries + 1):
+                try:
+                    result = await asyncio.wait_for(
+                        agent.run(envelope, emitter, ctx=ctx),
+                        timeout=settings.task_timeout_ms / 1000,
                     )
-                    await asyncio.sleep(2 ** attempt)
-                    continue
-
-                await ctx.store_result(subtask.id, result)
-                fallback = self.registry.find_fallback(subtask.agent_id)
-                if fallback and fallback.agent_id in self._agent_instances:
-                    logger.info("[%s] Using fallback agent %s", run_id, fallback.agent_id)
-                    envelope.agent_id = fallback.agent_id
-                    fallback_result = await self._agent_instances[fallback.agent_id].run(envelope, emitter, ctx=ctx)
-                    ctx.add_result_cost(fallback_result)
-                    await ctx.store_result(subtask.id, fallback_result)
-                    emitter.emit(
-                        SSEEventType.task_complete,
-                        agent_id=fallback.agent_id,
-                        message=f"Subtask {subtask.id} complete via fallback",
-                        data={"subtask_id": subtask.id},
-                    )
-                    return fallback_result.status == AgentStatus.success
-                else:
+                except asyncio.TimeoutError:
+                    logger.warning("[%s] Subtask %s timed out (attempt %d/%d)", run_id, subtask.id, attempt, settings.task_max_retries)
+                    if attempt < settings.task_max_retries:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
                     emitter.emit(
                         SSEEventType.task_failed,
                         agent_id=subtask.agent_id,
-                        message=f"Subtask {subtask.id} failed: {result.error}",
-                        data={"subtask_id": subtask.id},
+                        message=f"Subtask {subtask.id} timed out after {settings.task_max_retries} attempts",
                     )
                     return False
 
-            if result.status == AgentStatus.partial:
-                if envelope.constraints.budget_usd is None:
-                    result = await self._continue_partial(run_id, subtask, envelope, result, ctx, emitter)
+                ctx.add_result_cost(result)
+
+                if result.status == AgentStatus.failed:
+                    if attempt < settings.task_max_retries:
+                        logger.warning(
+                            "[%s] Subtask %s failed (attempt %d/%d) — retrying in %ds",
+                            run_id, subtask.id, attempt, settings.task_max_retries, 2 ** attempt,
+                        )
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+
+                    await ctx.store_result(subtask.id, result)
+                    fallback = self.registry.find_fallback(subtask.agent_id)
+                    if fallback and fallback.agent_id in self._agent_instances:
+                        logger.info("[%s] Using fallback agent %s", run_id, fallback.agent_id)
+                        envelope.agent_id = fallback.agent_id
+                        # Swap message routing from primary to fallback agent.
+                        await ctx.deregister_agent(subtask.agent_id)
+                        registered = None
+                        await ctx.register_agent(fallback.agent_id)
+                        try:
+                            fallback_result = await self._agent_instances[fallback.agent_id].run(envelope, emitter, ctx=ctx)
+                        finally:
+                            await ctx.deregister_agent(fallback.agent_id)
+                        ctx.add_result_cost(fallback_result)
+                        await ctx.store_result(subtask.id, fallback_result)
+                        emitter.emit(
+                            SSEEventType.task_complete,
+                            agent_id=fallback.agent_id,
+                            message=f"Subtask {subtask.id} complete via fallback",
+                            data={"subtask_id": subtask.id},
+                        )
+                        return fallback_result.status == AgentStatus.success
+                    else:
+                        emitter.emit(
+                            SSEEventType.task_failed,
+                            agent_id=subtask.agent_id,
+                            message=f"Subtask {subtask.id} failed: {result.error}",
+                            data={"subtask_id": subtask.id},
+                        )
+                        return False
+
+                if result.status == AgentStatus.partial:
+                    if envelope.constraints.budget_usd is None:
+                        result = await self._continue_partial(run_id, subtask, envelope, result, ctx, emitter)
+                    else:
+                        # Per-task budget slice exhausted — ask the human before giving up.
+                        result = await self._handle_task_budget_exhausted(run_id, subtask, envelope, result, ctx, emitter)
+
+                await ctx.store_result(subtask.id, result)
+
+                if result.status == AgentStatus.partial:
+                    emitter.emit(
+                        SSEEventType.task_partial,
+                        agent_id=subtask.agent_id,
+                        message=f"Subtask {subtask.id} reached its limit — output may be incomplete",
+                        data={"subtask_id": subtask.id},
+                    )
                 else:
-                    # Per-task budget slice exhausted — ask the human before giving up.
-                    result = await self._handle_task_budget_exhausted(run_id, subtask, envelope, result, ctx, emitter)
+                    emitter.emit(
+                        SSEEventType.task_complete,
+                        agent_id=subtask.agent_id,
+                        message=f"Subtask {subtask.id} complete",
+                        data={"subtask_id": subtask.id},
+                    )
+                return True
 
-            await ctx.store_result(subtask.id, result)
-
-            if result.status == AgentStatus.partial:
-                emitter.emit(
-                    SSEEventType.task_partial,
-                    agent_id=subtask.agent_id,
-                    message=f"Subtask {subtask.id} reached its limit — output may be incomplete",
-                    data={"subtask_id": subtask.id},
-                )
-            else:
-                emitter.emit(
-                    SSEEventType.task_complete,
-                    agent_id=subtask.agent_id,
-                    message=f"Subtask {subtask.id} complete",
-                    data={"subtask_id": subtask.id},
-                )
-            return True
-
-        return False
+            return False
+        finally:
+            if registered is not None:
+                await ctx.deregister_agent(registered)
 
     async def _request_budget_increase(
         self,

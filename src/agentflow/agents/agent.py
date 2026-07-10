@@ -324,7 +324,7 @@ class Agent:
             # Inject any pending user message as an additional user turn before
             # the next API call, so the model sees it without a separate round-trip.
             if ctx is not None:
-                pending = await ctx.pop_user_message()
+                pending = await ctx.pop_user_message(self.agent_id)
                 if pending is not None:
                     from agentflow.core.models import SSEEventType as _SSE
                     messages.append({"role": "user", "content": pending})
