@@ -145,6 +145,7 @@ class SSEEventType(str, Enum):
     plan_created = "plan:created"
     task_dispatched = "task:dispatched"
     agent_progress = "agent:progress"
+    agent_thought = "agent:thought"
     agent_query = "agent:query"
     task_complete = "task:complete"
     task_partial = "task:partial"

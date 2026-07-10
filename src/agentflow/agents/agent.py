@@ -21,7 +21,7 @@ import anthropic
 from anthropic.types import TextBlock
 
 from agentflow.config import settings
-from agentflow.core.models import AgentManifest, AgentOutput, AgentResult, AgentStatus, TaskEnvelope
+from agentflow.core.models import AgentManifest, AgentOutput, AgentResult, AgentStatus, SSEEventType, TaskEnvelope
 from agentflow.llm import LLMClient
 from agentflow.tools import tool_registry
 from agentflow.tools.mcp_tools import mcp_session
@@ -102,8 +102,6 @@ class Agent:
         resume_messages: list | None = None,
         ctx: Any | None = None,
     ) -> AgentResult:
-        from agentflow.core.models import SSEEventType
-
         start_ms = int(time.time() * 1000)
         emitter.emit(
             SSEEventType.agent_progress,
@@ -313,6 +311,15 @@ class Agent:
                     hit_limit = True
                 break
 
+            # Emit any text the model produced alongside tool calls as a thought event
+            for block in response.content:
+                if isinstance(block, TextBlock) and block.text.strip():
+                    emitter.emit(
+                        SSEEventType.agent_thought,
+                        agent_id=self.agent_id,
+                        message=block.text,
+                    )
+
             # Execute all tool calls concurrently, then feed results back
             tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
             tool_results = await asyncio.gather(
@@ -326,9 +333,8 @@ class Agent:
             if ctx is not None:
                 pending = await ctx.pop_user_message(self.agent_id)
                 if pending is not None:
-                    from agentflow.core.models import SSEEventType as _SSE
                     messages.append({"role": "user", "content": pending})
-                    emitter.emit(_SSE.run_message_received, agent_id=self.agent_id, message=pending[:120])
+                    emitter.emit(SSEEventType.run_message_received, agent_id=self.agent_id, message=pending[:120])
 
         # Try to parse final text as JSON (many system prompts ask for JSON output)
         structured: dict[str, Any] = {}
@@ -361,8 +367,6 @@ class Agent:
         tools: list,
         emitter: "StreamEmitter",
     ) -> dict[str, Any]:
-        from agentflow.core.models import SSEEventType
-
         emitter.emit(
             SSEEventType.agent_progress,
             agent_id=self.agent_id,
