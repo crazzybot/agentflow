@@ -92,5 +92,5 @@ contradict the source):
 
 ## Related
 
-- [How-to](how-to.md) — task recipes.
-- [Codebase map](codebase-map.md) — where these modules live.
+- [Architecture](architecture.md) — how these modules fit together at runtime.
+- [`/how-to` skill](../../.claude/skills/how-to/SKILL.md) — step-by-step recipes for adding agents, tools, and skills.

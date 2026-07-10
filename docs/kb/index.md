@@ -1,7 +1,7 @@
 ---
 title: AgentFlow Knowledge Base — Index
-last_updated: 2026-07-09
-last_verified_sha: 1b92446
+last_updated: 2026-07-10
+last_verified_sha: b536d21
 sources:
   - src/agentflow/
   - manifests/
@@ -20,11 +20,8 @@ the doc(s) relevant to your change, before exploring source.
 
 ## Reading order
 
-1. [Architecture](architecture.md) — how AgentFlow works end-to-end.
-2. [Codebase map](codebase-map.md) — where everything lives.
-3. [Concepts](concepts.md) — domain glossary.
-4. [Conventions](conventions.md) — patterns, structure, testing.
-5. [How-to](how-to.md) — task recipes.
+1. [Architecture](architecture.md) — how AgentFlow works end-to-end; request lifecycle and component map.
+2. [Conventions](conventions.md) — patterns, code style, async rules, testing, anti-patterns.
 
 ## Subsystem deep-dives
 
@@ -33,6 +30,20 @@ the doc(s) relevant to your change, before exploring source.
 - [subsystems/redis-backend](subsystems/redis-backend.md) — the optional Redis state
   backend: bus, context store, and SSE registry variants selected by
   `STATE_BACKEND=redis`, plus cross-replica HITL and streaming.
+
+## On-demand skills (invoke instead of reading)
+
+These are available as `/skill-name` — they inject live context when needed rather
+than being loaded every session:
+
+- `/how-to` — step-by-step recipes: add an agent, add a tool, attach a skill, cancel/followup/message API
+- `/update-kb` — reconcile `docs/kb/` after an implementation task
+- `/session-wrap` — end-of-session KB review and session log entry
+
+## Related resources
+
+- [`docs/adr/`](../adr/README.md) — Architecture Decision Records (rationale for major decisions)
+- [`docs/session-log.md`](../session-log.md) — breadcrumb trail of per-session decisions
 
 ## Keeping this KB current
 

@@ -130,5 +130,4 @@ STATE_BACKEND=redis REDIS_URL=redis://localhost:6379 \
 ## Related
 
 - [architecture](../architecture.md) — where these components sit in the run lifecycle.
-- [concepts](../concepts.md) — `TaskBus`, `RunContext`, message bus definitions.
-- [codebase-map](../codebase-map.md) — file locations.
+- [conventions](../conventions.md) — code style and async patterns used in these modules.

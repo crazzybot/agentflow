@@ -146,8 +146,7 @@ Within one run, components talk through three mechanisms:
 
 ## Related
 
-- [codebase-map](codebase-map.md) — directory-by-directory map of the source tree.
-- [concepts](concepts.md) — definitions of `Subtask`, `ExecutionPlan`, `AgentManifest`,
-  `AgentResult`, and other core model types referenced above.
+- [conventions](conventions.md) — code style, async patterns, testing rules.
 - [subsystems/redis-backend](subsystems/redis-backend.md) — the optional Redis state
   backend (bus, context store, SSE registry) and cross-replica HITL/streaming.
+- [`/how-to` skill](../../.claude/skills/how-to/SKILL.md) — recipes for adding agents, tools, and skills.

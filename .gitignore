@@ -19,3 +19,10 @@ sandbox/.venv
 # Workspace
 workspace/
 .runs/
+
+# Claude Code personal overrides (never commit)
+CLAUDE.local.md
+
+# development environment
+.pytest_cache
+.ruff_cache
