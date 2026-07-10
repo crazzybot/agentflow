@@ -8,7 +8,7 @@ from agentflow.agents.agent import Agent, _with_message_cache_breakpoint
 from agentflow.core.models import AgentManifest, AgentStatus, TaskConstraints, TaskContext, TaskEnvelope
 
 
-def _make_manifest(tools: list[str] | None = None) -> AgentManifest:
+def _make_manifest(tools: list[str] | None = None, tool_limits: dict | None = None) -> AgentManifest:
     return AgentManifest(
         agent_id="TestAgent",
         domain="Testing",
@@ -16,6 +16,7 @@ def _make_manifest(tools: list[str] | None = None) -> AgentManifest:
         tools=tools or [],
         mcp_servers=[],
         system_prompt="You are a test agent. Return raw JSON: {\"result\": \"done\"}",
+        tool_limits=tool_limits,
     )
 
 
@@ -137,6 +138,108 @@ async def test_agent_tool_not_available_returns_error_message():
 
     # The loop completes — tool result is an error message, not an exception
     assert result.status == AgentStatus.success
+
+
+# ---------------------------------------------------------------------------
+# tool_limits enforcement tests
+# ---------------------------------------------------------------------------
+
+def _make_tool_use_response(tool_name: str, tool_id: str = "toolu_t1"):
+    block = MagicMock()
+    block.type = "tool_use"
+    block.id = tool_id
+    block.name = tool_name
+    block.input = {}
+    resp = MagicMock()
+    resp.stop_reason = "tool_use"
+    resp.content = [block]
+    resp.usage.input_tokens = 10
+    resp.usage.output_tokens = 5
+    resp.usage.cache_creation_input_tokens = 0
+    resp.usage.cache_read_input_tokens = 0
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_tool_limits_blocks_over_budget():
+    """After exhausting a tool's budget the agent receives an error result, not a real call."""
+    # Manifest allows python_exec but limits it to 1 call
+    manifest = _make_manifest(tools=["python_exec"], tool_limits={"python_exec": 1})
+
+    # LLM asks for the tool twice, then terminates
+    resp1 = _make_tool_use_response("python_exec", "toolu_1")
+    resp2 = _make_tool_use_response("python_exec", "toolu_2")
+    end = _mock_response()
+
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(side_effect=[resp1, resp2, end])
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    agent = Agent(manifest, mock_client)
+    result = await agent.run(_make_envelope(), emitter)
+
+    assert result.status == AgentStatus.success
+    # Three LLM calls: tool_use → tool_use → end_turn
+    assert mock_client.messages.create.call_count == 3
+
+    # Inspect the messages sent on the second tool-use round-trip: the tool
+    # result content for toolu_2 must contain the budget-exhausted message.
+    second_call_messages = mock_client.messages.create.call_args_list[2][1]["messages"]
+    # The last user message before the final LLM call contains the tool result for toolu_2
+    last_user = next(
+        m for m in reversed(second_call_messages) if m.get("role") == "user"
+    )
+    tool_results = last_user["content"]
+    over_budget_result = next(
+        (r for r in tool_results if r.get("tool_use_id") == "toolu_2"), None
+    )
+    assert over_budget_result is not None
+    assert "budget exhausted" in over_budget_result["content"].lower()
+
+
+@pytest.mark.asyncio
+async def test_tool_limits_allows_calls_within_budget():
+    """Calls within the limit go through normally."""
+    manifest = _make_manifest(tools=["python_exec"], tool_limits={"python_exec": 2})
+
+    resp1 = _make_tool_use_response("python_exec", "toolu_1")
+    resp2 = _make_tool_use_response("python_exec", "toolu_2")
+    end = _mock_response()
+
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(side_effect=[resp1, resp2, end])
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    agent = Agent(manifest, mock_client)
+    result = await agent.run(_make_envelope(), emitter)
+
+    assert result.status == AgentStatus.success
+    assert mock_client.messages.create.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_tool_limits_none_means_no_limit():
+    """tool_limits=None (default) imposes no restrictions."""
+    manifest = _make_manifest(tools=["python_exec"], tool_limits=None)
+
+    resps = [_make_tool_use_response("python_exec", f"toolu_{i}") for i in range(3)]
+    end = _mock_response()
+
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(side_effect=[*resps, end])
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    agent = Agent(manifest, mock_client)
+    result = await agent.run(_make_envelope(), emitter)
+
+    assert result.status == AgentStatus.success
+    assert mock_client.messages.create.call_count == 4
 
 
 # ---------------------------------------------------------------------------

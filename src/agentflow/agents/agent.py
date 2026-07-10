@@ -229,6 +229,8 @@ class Agent:
         max_iterations = self.manifest.max_iterations or settings.agent_max_iterations
         last_input_tokens = 0
         iteration = 0
+        tool_call_counts: dict[str, int] = {}
+        tool_limits: dict[str, int] = self.manifest.tool_limits or {}
 
         while True:
             # --- Determine max_tokens for this iteration ---
@@ -323,7 +325,8 @@ class Agent:
             # Execute all tool calls concurrently, then feed results back
             tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
             tool_results = await asyncio.gather(
-                *[self._call_tool(b, tools, emitter) for b in tool_use_blocks]
+                *[self._checked_call_tool(b, tools, emitter, tool_call_counts, tool_limits)
+                  for b in tool_use_blocks]
             )
 
             messages.append({"role": "user", "content": list(tool_results)})
@@ -393,3 +396,30 @@ class Agent:
             "tool_use_id": block.id,
             "content": result_text,
         }
+
+    async def _checked_call_tool(
+        self,
+        block: Any,
+        tools: list,
+        emitter: "StreamEmitter",
+        counts: dict[str, int],
+        limits: dict[str, int],
+    ) -> dict[str, Any]:
+        """Call a tool, enforcing manifest tool_limits before dispatch."""
+        if block.name in limits:
+            counts[block.name] = counts.get(block.name, 0) + 1
+            if counts[block.name] > limits[block.name]:
+                logger.warning(
+                    "[%s] Tool budget exhausted: '%s' limited to %d call(s), this would be call %d",
+                    self.agent_id, block.name, limits[block.name], counts[block.name],
+                )
+                return {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": (
+                        f"Tool budget exhausted: '{block.name}' is limited to "
+                        f"{limits[block.name]} call(s) per task. "
+                        "Use information already gathered instead of making additional calls."
+                    ),
+                }
+        return await self._call_tool(block, tools, emitter)

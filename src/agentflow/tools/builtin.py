@@ -256,13 +256,15 @@ async def _file_write(
         if mode == "overwrite":
             target.write_text(content, encoding="utf-8")
             await _record_artifact(path)
-            return f"Wrote {len(content)} chars to {path}"
+            line_count = len(content.splitlines())
+            return f"Wrote {line_count} lines ({len(content)} chars) to {path}"
 
         if mode == "append":
             with target.open("a", encoding="utf-8") as f:
                 f.write(content)
             await _record_artifact(path)
-            return f"Appended {len(content)} chars to {path}"
+            total_lines = len(target.read_text(encoding="utf-8").splitlines())
+            return f"Appended {len(content)} chars to {path} (total: {total_lines} lines)"
 
         # Remaining modes require an existing file
         try:
@@ -523,7 +525,7 @@ def _make_stub(tool_name: str, description: str, required_params: list[str], imp
     )
 
 
-async def _arxiv_search_handler(query: str, max_results: int = 10) -> str:
+async def _arxiv_search_handler(query: str, max_results: int = 5) -> str:
     from agentflow.tools.arxiv_search import arxiv_search as _arxiv_search
 
     try:
@@ -545,8 +547,8 @@ tool_registry.register(ToolDefinition(
             },
             "max_results": {
                 "type": "integer",
-                "description": "Maximum number of results to return (default 10)",
-                "default": 10,
+                "description": "Maximum number of results to return (default 5)",
+                "default": 5,
             },
         },
         "required": ["query"],

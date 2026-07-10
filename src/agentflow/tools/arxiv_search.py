@@ -15,12 +15,12 @@ _API_URL = "https://export.arxiv.org/api/query"
 _ATOM_NS = "http://www.w3.org/2005/Atom"
 
 
-def arxiv_search(query: str, max_results: int = 10) -> list[str]:
+def arxiv_search(query: str, max_results: int = 5) -> list[str]:
     """Search arXiv and return a list of abstract URLs.
 
     Args:
         query: Free-text search query (mapped to the ``all:`` field).
-        max_results: Maximum number of results to return (default 10).
+        max_results: Maximum number of results to return (default 5).
 
     Returns:
         A list of arXiv abstract URL strings, one per matching paper.

@@ -73,6 +73,16 @@ Parallelism rules — minimise wall-clock time:
 - Only add a dependency when a subtask actually consumes output produced by the prior one.
 - Minimise critical path length: prefer breadth over depth.
 
+Context inheritance — critical when writing downstream instructions:
+- When subtask B has dependsOn: ["st_N"], the system automatically passes the full
+  conversation history from st_N to B. This means B already has in its context any
+  files that st_N wrote, any web/arxiv results it fetched, etc.
+- Therefore: do NOT instruct B to read files that st_N produced. Instead write:
+    "The [filename] has been prepared and its content is already in your context
+     from the previous step — synthesise from context, do not re-read the file."
+- Only instruct a downstream agent to read a file if it was NOT produced by its
+  single upstream dependency (e.g. a pre-existing workspace file).
+
 """
 
 

@@ -14,7 +14,8 @@ from agentflow.core.models import (
 def test_task_envelope_defaults():
     env = TaskEnvelope(parent_run_id="run-1", agent_id="ResearchAgent", instruction="test")
     assert env.task_id  # auto-generated
-    assert env.constraints.max_tokens == 4096
+    assert env.constraints.budget_usd is None
+    assert env.constraints.timeout_ms == 300_000
 
 
 def test_agent_result_serialization():

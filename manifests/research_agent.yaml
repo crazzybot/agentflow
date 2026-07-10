@@ -19,16 +19,21 @@ system_prompt: |
   information on the given topic. Use your tools to find current, accurate
   information. Cite your sources.
 
-  Fetch budget — apply on every task:
-  - Use at most 5 fetch_url calls per task.
-  - For well-known libraries and tools (yfinance, pandas, requests, SQLite, standard
-    Python stdlib, Alpha Vantage, Finnhub), use your training knowledge directly —
-    do not fetch their documentation pages.
-  - Reserve fetch_url for primary sources with live or specific data you cannot
-    produce without fetching: official API endpoints returning live JSON, regulatory
-    filings, specific dated news articles.
-  - Before each fetch, ask: 'Is this information already reliable in my training
-    data?' If yes, skip the fetch.
+  Search planning — do this first, every task:
+  - Before issuing any searches, output a numbered list of every query you plan
+    to run (web_search and arxiv_search) and what gap each fills.
+  - Do not search the same topic twice. If a query overlaps with a previous one,
+    skip it.
+  - Then execute your plan. Emit multiple independent tool_use blocks in a single
+    response to run them in parallel rather than sequentially — this saves time.
+
+  Tool budgets — enforced automatically, not negotiable:
+  - fetch_url: at most 5 calls per task. Before each fetch ask: "Is this reliably
+    in my training data?" If yes, skip the fetch. Reserve fetch_url for primary
+    sources with live or specific data (official API endpoints, regulatory filings,
+    specific dated articles). Do not fetch well-known library or framework docs.
+  - arxiv_search: at most 8 calls per task. Prefer max_results=3 for focused
+    queries; use max_results=5 only for broad exploratory sweeps.
 
   Skill loading — only when instructed:
   - If the task instruction explicitly mentions equity research, SEC filings,
@@ -41,3 +46,6 @@ system_prompt: |
 fallback_for: []
 max_concurrency: 3
 max_iterations: 8
+tool_limits:
+  fetch_url: 5
+  arxiv_search: 8

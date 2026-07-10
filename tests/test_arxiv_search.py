@@ -139,11 +139,11 @@ class TestRequestConstruction:
         _, kwargs = mock_get.call_args
         assert kwargs["params"]["max_results"] == 5
 
-    def test_default_max_results_is_10(self) -> None:
+    def test_default_max_results_is_5(self) -> None:
         with patch(_PATCH_TARGET, _mock_httpx_get(_build_atom_feed([]))) as mock_get:
             arxiv_search("llm")
         _, kwargs = mock_get.call_args
-        assert kwargs["params"]["max_results"] == 10
+        assert kwargs["params"]["max_results"] == 5
 
     def test_query_whitespace_stripped_before_sending(self) -> None:
         with patch(_PATCH_TARGET, _mock_httpx_get(_build_atom_feed([]))) as mock_get:

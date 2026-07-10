@@ -1,7 +1,7 @@
 ---
 title: Redis-Backed State Backend
 last_updated: 2026-07-10
-last_verified_sha: 45e5fe8
+last_verified_sha: b328d65
 sources:
   - src/agentflow/config.py
   - src/agentflow/core/redis_client.py
@@ -33,6 +33,7 @@ interfaces either way.
 | `state_backend` | `STATE_BACKEND` | `memory` | `memory` or `redis`. |
 | `redis_url` | `REDIS_URL` | `redis://localhost:6379` | Connection URL. |
 | `redis_key_ttl` | `REDIS_KEY_TTL` | `86400` | TTL (s) on every run-scoped key. |
+| `redis_max_connections` | `REDIS_MAX_CONNECTIONS` | `10` | Connection pool size passed to `aioredis.from_url`. |
 
 Each of the three module-level singletons is built by a `_make_*()` factory that
 returns the Redis variant when `state_backend == "redis"`, otherwise the

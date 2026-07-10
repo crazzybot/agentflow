@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-07-10
-last_verified_sha: 0ee398e
+last_verified_sha: b328d65
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -72,7 +72,10 @@ variants so multiple API replicas can share a run — see
    [`agents/agent.py`](../../src/agentflow/agents/agent.py) drives Claude turn-by-turn
    (via the shared `LLMClient`) with the manifest's tools/MCP servers until `end_turn`,
    an iteration limit, or a budget limit is hit, executing any `tool_use` blocks
-   concurrently and feeding results back as `tool_result` messages. Text blocks the model
+   concurrently via `_checked_call_tool()` and feeding results back as `tool_result`
+   messages. Before each tool dispatch, `_checked_call_tool()` consults the per-loop
+   `tool_call_counts` dict against `AgentManifest.tool_limits` and short-circuits with
+   an error result if a per-tool call budget is exceeded. Text blocks the model
    emits alongside tool calls are streamed as `agent:thought` SSE events, making the
    agent's in-progress reasoning visible to clients (`end_turn` text is the final answer
    and is not re-emitted as a thought). After each tool-result batch the loop calls
@@ -102,7 +105,12 @@ variants so multiple API replicas can share a run — see
   runs, prior-run context keys (`prior_report`, `prior_task`, `prior_run_id`,
   `prior_subtask_outputs`) are extracted from `user_context` and formatted as a
   readable "Prior Run" prose section in the planner's first message; any remaining
-  user-supplied context keys appear as a separate JSON block.
+  user-supplied context keys appear as a separate JSON block. The planner's system
+  prompt includes context-inheritance guidance: when a subtask's `dependsOn` has
+  exactly one entry, the downstream agent receives the upstream agent's full
+  conversation via `prior_messages`, so the planner must NOT instruct that downstream
+  agent to re-read files written by the upstream agent — those files are already in
+  context.
 - **`orchestrator/decomposer.py` — `expand_plan()` / `decompose_subtask()`**: optionally
   splits a subtask into micro-subtasks using the agent manifest's own
   `decomposition_prompt`, run as a nested `Agent` loop.
@@ -119,7 +127,10 @@ variants so multiple API replicas can share a run — see
   also exposes an async `connect()` for cross-replica streaming.
 - **`agents/agent.py` — `Agent`**: single generic, manifest-driven class for every agent
   type; runs the tool-calling loop against Claude, tracks token/cost usage per call,
-  and returns an `AgentResult` (`success`/`partial`/`failed`).
+  and returns an `AgentResult` (`success`/`partial`/`failed`). The loop dispatches tool
+  calls through `_checked_call_tool()`, which enforces per-tool call budgets declared in
+  `AgentManifest.tool_limits` by incrementing an in-loop counter and returning a hard
+  error result (without invoking the tool) when the limit is exceeded.
 - **`core/bus.py` — `TaskBus`**: in-process asyncio-queue pair (dispatch/result) keyed
   by `run_id`. Not currently on the request's critical path (dispatch is direct-call via
   `_dispatch_subtask`), but the per-run channels are created/closed alongside the run. A
@@ -146,7 +157,8 @@ Within one run, components talk through three mechanisms:
   (optionally appended to `runs/<run_id>/results.jsonl`); downstream subtasks read
   dependency output via `ctx.build_prior_results()` (text-only summaries) or
   `ctx.build_prior_messages()` (full conversation replay when there is exactly one
-  dependency). `RunContext` also tracks `total_cost_usd()`/`remaining_budget_usd()` and
+  dependency — this means the downstream agent already has in its context any files
+  the upstream agent wrote, so the planner should not instruct it to re-read them). `RunContext` also tracks `total_cost_usd()`/`remaining_budget_usd()` and
   arbitrates human-input requests when a budget is exhausted. Mid-run user messages
   (from `POST …/message`) are stored in per-agent queues: `register_agent(agent_id)`
   creates a queue when a subtask starts; `push_user_message(content)` fans the message

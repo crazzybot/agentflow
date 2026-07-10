@@ -51,10 +51,31 @@ async def test_file_write_and_read(tmp_path, monkeypatch):
     monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path))
 
     result = await tool_registry.execute("file_write", {"path": "test.txt", "content": "hello world"})
-    assert "hello world" not in result or "Wrote" in result
+    assert "Wrote" in result
 
     result = await tool_registry.execute("file_read", {"path": "test.txt"})
     assert "hello world" in result
+
+
+@pytest.mark.asyncio
+async def test_file_write_returns_line_count(tmp_path, monkeypatch):
+    monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path))
+
+    content = "line one\nline two\nline three"
+    result = await tool_registry.execute("file_write", {"path": "lines.txt", "content": content})
+    assert "3 lines" in result
+    assert "Wrote" in result
+
+
+@pytest.mark.asyncio
+async def test_file_write_append_returns_total_line_count(tmp_path, monkeypatch):
+    monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path))
+
+    await tool_registry.execute("file_write", {"path": "app.txt", "content": "line1\nline2\n"})
+    result = await tool_registry.execute(
+        "file_write", {"path": "app.txt", "content": "line3\n", "mode": "append"}
+    )
+    assert "total: 3 lines" in result
 
 
 @pytest.mark.asyncio
