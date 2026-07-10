@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379"
     # TTL (seconds) applied to all run-scoped Redis keys.  Default: 24 hours.
     redis_key_ttl: int = 86_400
+    # Maximum connections in the shared Redis pool.
+    redis_max_connections: int = 50
 
 
 settings = Settings()

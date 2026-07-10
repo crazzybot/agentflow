@@ -33,6 +33,9 @@ from agentflow.orchestrator.stream import stream_registry
 
 router = APIRouter()
 
+# Cap concurrent Redis lookups in list_runs to avoid exhausting the connection pool.
+_LIST_RUNS_SEM = asyncio.Semaphore(10)
+
 
 def _get_engine():
     from agentflow.main import engine
@@ -207,7 +210,12 @@ async def list_runs():
     if not runs_dir.exists():
         return RunListResponse(runs=[])
     dirs = [d for d in runs_dir.iterdir() if d.is_dir()]
-    runs = list(await asyncio.gather(*[_run_info(d) for d in dirs]))
+
+    async def _run_info_guarded(d: Path) -> RunInfo:
+        async with _LIST_RUNS_SEM:
+            return await _run_info(d)
+
+    runs = list(await asyncio.gather(*[_run_info_guarded(d) for d in dirs]))
     runs.sort(key=lambda r: r.created_at or "", reverse=True)
     return RunListResponse(runs=runs)
 
