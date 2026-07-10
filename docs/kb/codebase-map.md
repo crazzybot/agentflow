@@ -1,7 +1,7 @@
 ---
 title: Codebase Map
 last_updated: 2026-07-09
-last_verified_sha: 1b92446
+last_verified_sha: 517f320
 sources:
   - src/agentflow/
   - manifests/
@@ -24,7 +24,7 @@ Where things live in `src/agentflow/`, `manifests/`, `skills/`, and `tests/`. Se
 | [orchestrator](../../src/agentflow/orchestrator/) | Turns one task into a plan, schedules/executes it as a DAG, and reports the outcome. | `engine.py` (`OrchestratorEngine`, top-level lifecycle), `planner.py` (`create_plan()`), `decomposer.py` (`expand_plan()`), `scheduler.py` (`DependencyGraph`), `reporter.py` (`compile_report()`), `stream.py` (`StreamEmitter`/`StreamRegistry` for SSE + backend factory), `stream_redis.py` (`RedisStreamEmitter`/`RedisStreamRegistry`, Redis Streams) |
 | [llm](../../src/agentflow/llm/) | Single point of contact with the Anthropic API. | `client.py` (`LLMClient` — wraps `AsyncAnthropic.messages.create()`, prompt-cache injection, `UsageStats`; retries delegated to the SDK's `max_retries`) |
 | [tools](../../src/agentflow/tools/) | Tool definitions agents can call, plus the registry they're looked up in. | `registry.py` (`ToolDefinition`/`ToolImpact`/`tool_registry`), `builtin.py` (built-ins: `bash_exec`, `python_exec`, `file_read`, `file_write`, `web_search`, `fetch_url`, …), `mcp_tools.py` (wraps remote MCP servers as `ToolDefinition`s), `skills.py` (`read_skill` tool), `arxiv_search.py` (arXiv API client), `artifact_tracker.py` (per-run `artifacts.jsonl` writer) |
-| [api](../../src/agentflow/api/) | HTTP surface. | `routes.py` (`POST /api/runs`, `GET /api/runs/{run_id}/stream` SSE, past-run query endpoints) |
+| [api](../../src/agentflow/api/) | HTTP surface. | `routes.py` — action endpoints: `POST /api/runs` (start), `GET …/stream` (SSE), `POST …/input` (HITL), `POST …/cancel` (cancel active run), `POST …/followup` (start new run with prior context), `POST …/message` (inject user message into active agent loop); query endpoints: `GET /api/runs`, `GET …/{id}`, `…/events`, `…/results`, `…/report`, `…/artifacts`, `…/artifacts/{aid}` |
 | [cli](../../src/agentflow/cli/) | Terminal client for the API. | `__init__.py` (`main()` entry point), `client.py` (async HTTP client), `display.py` (Rich terminal rendering of SSE events) |
 
 ## Top-level modules

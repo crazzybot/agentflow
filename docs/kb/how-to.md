@@ -1,7 +1,7 @@
 ---
 title: How-To Recipes
 last_updated: 2026-07-09
-last_verified_sha: ec54170
+last_verified_sha: 517f320
 sources:
   - manifests/
   - src/agentflow/core/registry.py
@@ -110,6 +110,58 @@ uv run pytest tests/test_tools.py -v -k test_name
 ```
 
 `asyncio_mode = "auto"` is set in `pyproject.toml`'s `[tool.pytest.ini_options]`, so `async def test_...` functions run without extra markers.
+
+## Cancel an active run
+
+`POST /api/runs/{run_id}/cancel` — returns `{"status": "cancelled"}` or HTTP 404 if the
+run is not active.
+
+Internally `engine.cancel_run(run_id)` calls `task.cancel()` on the asyncio Task stored
+in `OrchestratorEngine._run_tasks`. The scheduler catches `asyncio.CancelledError`,
+cancels all in-flight subtask tasks, and re-raises; `engine.run()` catches it, emits a
+`run:cancelled` SSE event, and runs the normal finally-block cleanup (emitter closed,
+context removed). **Cross-replica note:** `_run_tasks` is in-process only — the request
+must reach the replica that started the run, or you need sticky sessions.
+
+```bash
+curl -X POST http://localhost:8000/api/runs/<run_id>/cancel
+```
+
+## Start a follow-up run
+
+`POST /api/runs/{run_id}/followup` with body `{"task": "...", "context": {}, "budget_usd": null}`.
+Returns `{"run_id": "<new_run_id>", "status": "started"}`.
+
+The route reads the prior run's `report.md` and `results.jsonl` from disk and injects
+them as `prior_run_id`, `prior_task`, `prior_report`, and `prior_results` into
+`user_context`. These flow into the planner's prompt just like any `context` fields, so
+the new run's planner sees the full prior report and can build on it. A new `run_id` is
+generated; stream it normally with `GET /api/runs/<new_run_id>/stream`.
+
+```bash
+curl -X POST http://localhost:8000/api/runs/<run_id>/followup \
+  -H "Content-Type: application/json" \
+  -d '{"task": "Now expand section 3 with more detail"}'
+```
+
+## Inject a user message into a running agent
+
+`POST /api/runs/{run_id}/message` with body `{"content": "..."}`.
+Returns `{"status": "queued"}`, or HTTP 409 if the run is already finished, or HTTP 404
+if the run is not found.
+
+The message is pushed to `RunContext._user_message_queue` (an `asyncio.Queue` in-memory,
+a Redis list with `STATE_BACKEND=redis`). `Agent._agentic_loop()` drains one message
+after each tool-result batch and appends it as a user turn before the next API call, so
+the model sees it without an extra round-trip. A `run:message_received` SSE event is
+emitted when the message is consumed. Messages sent during the planning phase sit in the
+queue until the first agent loop picks them up.
+
+```bash
+curl -X POST http://localhost:8000/api/runs/<run_id>/message \
+  -H "Content-Type: application/json" \
+  -d '{"content": "Focus only on the European market"}'
+```
 
 ## Related
 

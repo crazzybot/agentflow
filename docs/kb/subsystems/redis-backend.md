@@ -1,7 +1,7 @@
 ---
 title: Redis-Backed State Backend
 last_updated: 2026-07-09
-last_verified_sha: 1b92446
+last_verified_sha: 517f320
 sources:
   - src/agentflow/config.py
   - src/agentflow/core/redis_client.py
@@ -75,6 +75,7 @@ All keys are `run:{run_id}:*` and carry `redis_key_ttl`:
 | `…:cost` | String | `RedisRunContext` | Cumulative USD cost (`INCRBYFLOAT`). |
 | `…:hitl:pending` | String | `RedisRunContext` | `"1"` while awaiting human input. |
 | `…:hitl:queue` | List | `RedisRunContext` | Human response delivery (`RPUSH`/`BLPOP`). |
+| `…:user_messages` | List | `RedisRunContext` | Mid-run user messages (`RPUSH`/`LPOP`); drained by agent loop. |
 | `…:dispatch` | List | `RedisTaskBus` | Orchestrator → worker (not yet wired). |
 | `…:result` | List | `RedisTaskBus` | Worker → orchestrator (not yet wired). |
 

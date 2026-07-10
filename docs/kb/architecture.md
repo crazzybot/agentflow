@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-07-09
-last_verified_sha: 1b92446
+last_verified_sha: 517f320
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -33,7 +33,8 @@ variants so multiple API replicas can share a run — see
    would only run after the response is sent). The endpoint returns the `run_id`
    immediately; clients poll/stream progress via `GET /api/runs/{run_id}/stream` (SSE).
 2. **Run setup** — `OrchestratorEngine.run()` (in
-   [`orchestrator/engine.py`](../../src/agentflow/orchestrator/engine.py)) creates a
+   [`orchestrator/engine.py`](../../src/agentflow/orchestrator/engine.py)) registers the
+   current asyncio Task in `self._run_tasks[run_id]` (used by `cancel_run()`), creates a
    `StreamEmitter` (`stream_registry.create`), a `RunContext` (`context_store.create`),
    and a bus channel (`task_bus.create_run`), then names the run via a cheap Haiku call
    and writes `runs/<run_id>/meta.json`.
@@ -54,27 +55,35 @@ variants so multiple API replicas can share a run — see
    `asyncio.Task` via `_dispatch_subtask()`, and reconcile with `asyncio.wait(...,
    FIRST_COMPLETED)` as tasks finish. `_dispatch_subtask()` builds a `TaskEnvelope`
    (instruction + prior results/messages + budget/timeout constraints) and calls
-   `Agent.run()`, handling retries with exponential backoff, fallback-agent routing on
-   final failure, and budget-exhaustion continuation (`_continue_partial`,
-   `_request_budget_increase`) which can pause the run for human input.
+   `Agent.run(envelope, emitter, ctx=ctx)`, handling retries with exponential backoff,
+   fallback-agent routing on final failure, and budget-exhaustion continuation
+   (`_continue_partial`, `_request_budget_increase`) which can pause the run for human
+   input. If the run is cancelled (`asyncio.CancelledError` propagates from
+   `asyncio.wait`), `_execute_plan` cancels all in-flight subtask tasks and re-raises;
+   `engine.run()` catches it, emits `run:cancelled`, and proceeds to normal cleanup.
 6. **Per-subtask agent execution** — `Agent._agentic_loop()` in
    [`agents/agent.py`](../../src/agentflow/agents/agent.py) drives Claude turn-by-turn
    (via the shared `LLMClient`) with the manifest's tools/MCP servers until `end_turn`,
    an iteration limit, or a budget limit is hit, executing any `tool_use` blocks
-   concurrently and feeding results back as `tool_result` messages.
+   concurrently and feeding results back as `tool_result` messages. After each tool-result
+   batch the loop calls `ctx.pop_user_message()` and — if a message is queued — appends
+   it as a user turn before the next API call, emitting `run:message_received`.
 7. **Report** — once all subtasks are `completed`/`failed`, the engine gathers
    `ctx.all_results()`, computes a cost summary, and calls `compile_report()` in
    [`orchestrator/reporter.py`](../../src/agentflow/orchestrator/reporter.py), which
    asks `settings.reporter_model` to synthesize leaf-node results (plus any partial/
    failed notes) into `runs/<run_id>/report.md`.
-8. **Completion** — the engine emits a `run_complete` (or `run_error`) SSE event via the
-   `StreamEmitter`, logs LLM usage stats, and tears down the run's bus/context entries.
+8. **Completion** — the engine emits `run_complete` (or `run_error`, or `run_cancelled`
+   if the run was cancelled mid-flight) via the `StreamEmitter`, logs LLM usage stats,
+   removes the task from `_run_tasks`, and tears down the run's bus/context entries.
 
 ## Components
 
 - **`orchestrator/engine.py` — `OrchestratorEngine`**: top-level coordinator; owns the
-  shared `LLMClient` and one `Agent` instance per registered manifest; runs the plan →
-  schedule → dispatch → report lifecycle and all retry/budget/fallback logic.
+  shared `LLMClient`, one `Agent` instance per registered manifest, and `_run_tasks`
+  (a `dict[run_id, asyncio.Task]` used by `cancel_run()` to cancel active runs); runs
+  the plan → schedule → dispatch → report lifecycle and all retry/budget/fallback/cancel
+  logic.
 - **`orchestrator/planner.py` — `create_plan()`**: turns a task string into an
   `ExecutionPlan` via an LLM ReAct loop with read-only exploration tools; also
   allocates `budget_fraction` per subtask when a run budget is set.

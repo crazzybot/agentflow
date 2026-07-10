@@ -1,7 +1,7 @@
 ---
 title: Concepts & Glossary
 last_updated: 2026-07-09
-last_verified_sha: 1b92446
+last_verified_sha: 517f320
 sources:
   - src/agentflow/core/models.py
   - src/agentflow/core/registry.py
@@ -113,13 +113,15 @@ it stores each subtask's `AgentResult` (`store_result()`/`get_result()`/
 `remaining_budget_usd()`, `within_budget()`), builds downstream input from
 completed dependencies (`build_prior_results()` for text,
 `build_prior_messages()` for full conversation replay when there is exactly
-one dependency), and arbitrates the human-in-the-loop handshake
-(`request_human_input()`/`await_human_input()`/async `provide_human_input()`). The
-`ContextStore` singleton keys one `RunContext` per `run_id`; its async
-`connect()` (a no-op delegating to `get()` in-process) is overridden by
-`RedisContextStore` (`src/agentflow/core/context_redis.py`) to resolve a run
-from Redis on a local miss for cross-replica HITL delivery. `_make_context_store()`
-selects the backend from `settings.state_backend` — see
+one dependency), arbitrates the human-in-the-loop handshake
+(`request_human_input()`/`await_human_input()`/async `provide_human_input()`),
+and holds a **user-message queue** (`push_user_message()`/`pop_user_message()`)
+drained by `Agent._agentic_loop()` between tool-use iterations. The `ContextStore`
+singleton keys one `RunContext` per `run_id`; its async `connect()` (a no-op
+delegating to `get()` in-process) is overridden by `RedisContextStore`
+(`src/agentflow/core/context_redis.py`) to resolve a run from Redis on a local
+miss for cross-replica HITL and message delivery. `_make_context_store()` selects
+the backend from `settings.state_backend` — see
 [subsystems/redis-backend](subsystems/redis-backend.md).
 
 ## Related
