@@ -148,12 +148,40 @@ async def create_plan(
     ]
 
     budget_note = f" (budget: ${budget_usd:.4f})" if budget_usd is not None else ""
-    context_note = (
-        f"\n\nUser Context:\n{json.dumps(user_context, indent=2)}" if user_context else ""
-    )
-    messages: list[dict] = [
-        {"role": "user", "content": f'Task: "{task}"{budget_note}{context_note}\n\nAvailable Agents:\n{agent_summary}'}
-    ]
+
+    # Separate prior-run context (only relevant to the planner) from any
+    # additional user-supplied context that should appear as a JSON block.
+    _PRIOR_RUN_KEYS = {"prior_run_id", "prior_task", "prior_report", "prior_subtask_outputs"}
+    prior_run = {k: v for k, v in (user_context or {}).items() if k in _PRIOR_RUN_KEYS}
+    extra_context = {k: v for k, v in (user_context or {}).items() if k not in _PRIOR_RUN_KEYS}
+
+    parts: list[str] = [f'Task: "{task}"{budget_note}']
+
+    if prior_run:
+        prior_parts: list[str] = []
+        if "prior_run_id" in prior_run:
+            prior_parts.append(f'Prior run ID: {prior_run["prior_run_id"]}')
+        if "prior_task" in prior_run:
+            prior_parts.append(f'Prior task: "{prior_run["prior_task"]}"')
+        if "prior_report" in prior_run:
+            prior_parts.append(f'Prior report:\n---\n{prior_run["prior_report"]}\n---')
+        if "prior_subtask_outputs" in prior_run:
+            outputs = prior_run["prior_subtask_outputs"]
+            lines = "\n".join(
+                f'  [{i["agent_id"]}] {i["output"][:400]}{"…" if len(i["output"]) > 400 else ""}'
+                for i in outputs
+                if i.get("output")
+            )
+            if lines:
+                prior_parts.append(f"Prior subtask outputs:\n{lines}")
+        parts.append("\n".join(prior_parts))
+
+    if extra_context:
+        parts.append(f"User Context:\n{json.dumps(extra_context, indent=2)}")
+
+    parts.append(f"Available Agents:\n{agent_summary}")
+
+    messages: list[dict] = [{"role": "user", "content": "\n\n".join(parts)}]
     last_response = None
 
     logger.info("[%s] Starting agentic planner (max %d iterations)", run_id, settings.planner_max_iterations)

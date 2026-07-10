@@ -25,6 +25,12 @@ from agentflow.tools.artifact_tracker import ArtifactSink, _current_sink
 
 logger = logging.getLogger(__name__)
 
+# Keys that belong in the planner's context only.  The planner embeds whatever
+# each agent needs into its subtask instruction; agents never need the raw blobs.
+_PLANNER_ONLY_CONTEXT_KEYS: frozenset[str] = frozenset(
+    {"prior_report", "prior_subtask_outputs", "prior_run_id", "prior_task"}
+)
+
 
 def _compute_subtask_budget(
     subtask: Subtask,
@@ -304,11 +310,15 @@ class OrchestratorEngine:
 
         prior_results = ctx.build_prior_results(subtask.depends_on)
         prior_messages = ctx.build_prior_messages(subtask.depends_on)
+        agent_user_context = {
+            k: v for k, v in ctx.user_context.items()
+            if k not in _PLANNER_ONLY_CONTEXT_KEYS
+        }
         envelope = TaskEnvelope(
             parent_run_id=run_id,
             agent_id=subtask.agent_id,
             instruction=subtask.instruction,
-            context=TaskContext(prior_results=prior_results, prior_messages=prior_messages, user_context=ctx.user_context),
+            context=TaskContext(prior_results=prior_results, prior_messages=prior_messages, user_context=agent_user_context),
             constraints=TaskConstraints(
                 budget_usd=task_budget_usd,
                 timeout_ms=settings.task_timeout_ms,

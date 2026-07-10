@@ -113,13 +113,17 @@ async def followup_run(run_id: str, request: FollowUpRequest):
 
     results_file = run_dir / "results.jsonl"
     if results_file.exists():
-        prior_context["prior_results"] = {
-            entry["subtask_id"]: entry.get("output", {}).get("text", "")
+        prior_context["prior_subtask_outputs"] = [
+            {
+                "subtask_id": entry["subtask_id"],
+                "agent_id": entry.get("agent_id", "unknown"),
+                "output": entry.get("output", {}).get("text", ""),
+            }
             for line in results_file.read_text().splitlines()
             if line.strip()
             for entry in (json.loads(line),)
             if "subtask_id" in entry
-        }
+        ]
 
     new_run_id = str(uuid.uuid4())
     engine = _get_engine()
