@@ -123,14 +123,16 @@ class _MessagesProxy:
             if cached_tools is not None:
                 kwargs["tools"] = cached_tools
 
-        response = await self._inner.messages.create(**kwargs)
+        betas = kwargs.pop("betas", None)
+        if betas:
+            response = await self._inner.beta.messages.create(betas=betas, **kwargs)
+        else:
+            response = await self._inner.messages.create(**kwargs)
 
         usage = response.usage
         input_tokens: int = usage.input_tokens
         output_tokens: int = usage.output_tokens
-        # thinking_output_tokens is not in the current SDK type but may be added;
-        # using getattr keeps us forward-compatible without runtime errors.
-        thinking_tokens: int = getattr(usage, "thinking_output_tokens", 0) or 0
+        thinking_tokens: int = getattr(usage, "thinking_tokens", 0) or 0
         cache_creation: int = getattr(usage, "cache_creation_input_tokens", 0) or 0
         cache_read: int = getattr(usage, "cache_read_input_tokens", 0) or 0
 

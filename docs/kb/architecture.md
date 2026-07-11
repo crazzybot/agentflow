@@ -140,11 +140,10 @@ variants so multiple API replicas can share a run — see
   `AgentManifest.thinking_budget_tokens` is set, extended thinking is enabled on every
   LLM call; thinking blocks are emitted as `agent:thought` SSE events and kept in the
   message history for subsequent turns. Thinking tokens are extracted via
-  `getattr(usage, "thinking_output_tokens", 0)` (forward-compatible — the Anthropic SDK
-  does not yet expose this field, so it defaults to 0 and all output tokens are billed
-  at `cost_per_1m_output_tokens`; once the API provides the breakdown, thinking tokens
-  are priced separately at `cost_per_1m_thinking_tokens`). `AgentResult` carries
-  `thinking_tokens` as a separate counter (a subset of `output_tokens`).
+  `usage.thinking_tokens` (via `getattr` for forward-compatibility). `AgentResult`
+  carries `thinking_tokens` as a separate counter (a subset of `output_tokens`); thinking
+  tokens are priced at `cost_per_1m_thinking_tokens` while regular output tokens use
+  `cost_per_1m_output_tokens`.
 - **`core/bus.py` — `TaskBus`**: in-process asyncio-queue pair (dispatch/result) keyed
   by `run_id`. Not currently on the request's critical path (dispatch is direct-call via
   `_dispatch_subtask`), but the per-run channels are created/closed alongside the run. A

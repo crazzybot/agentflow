@@ -224,6 +224,7 @@ class Agent:
         total_cache_read_tokens = 0
         total_cost_usd = 0.0
         final_text = ""
+        last_response_content: list = []
         hit_limit = False
 
         task_budget = envelope.constraints.budget_usd
@@ -288,9 +289,7 @@ class Agent:
             u = response.usage
             call_cache_write = u.cache_creation_input_tokens or 0
             call_cache_read = u.cache_read_input_tokens or 0
-            # thinking_output_tokens is not in the current SDK type; getattr keeps us
-            # forward-compatible — when the API starts returning it we'll use it automatically.
-            call_thinking = getattr(u, "thinking_output_tokens", 0) or 0
+            call_thinking = getattr(u, "thinking_tokens", 0) or 0
             call_regular_output = u.output_tokens - call_thinking
             last_input_tokens = u.input_tokens
             total_input_tokens += u.input_tokens
@@ -309,6 +308,7 @@ class Agent:
 
             # Append the assistant's full response (preserves tool_use and thinking blocks)
             messages.append({"role": "assistant", "content": response.content})
+            last_response_content = list(response.content)
 
             # Emit thinking blocks as thought events so clients can display live reasoning
             if thinking_budget:
@@ -358,6 +358,15 @@ class Agent:
                 if pending is not None:
                     messages.append({"role": "user", "content": pending})
                     emitter.emit(SSEEventType.run_message_received, agent_id=self.agent_id, message=pending[:120])
+
+        # With extended thinking the model may end via ThinkingBlocks + tool use without
+        # ever producing a TextBlock.  Fall back to the last thinking block so the
+        # reporter receives a meaningful summary instead of an empty string.
+        if not final_text and thinking_budget:
+            for block in reversed(last_response_content):
+                if isinstance(block, ThinkingBlock) and block.thinking.strip():
+                    final_text = block.thinking
+                    break
 
         # Try to parse final text as JSON (many system prompts ask for JSON output)
         structured: dict[str, Any] = {}
