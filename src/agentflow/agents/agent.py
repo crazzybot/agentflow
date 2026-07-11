@@ -339,6 +339,16 @@ class Agent:
                 )
                 if response.stop_reason == "max_tokens":
                     hit_limit = True
+                # Execute any tool_use blocks that are present before stopping so the
+                # message history stays valid for continuation (every tool_use must be
+                # immediately followed by a tool_result in the next message).
+                pending_tool_use = [b for b in response.content if b.type == "tool_use"]
+                if pending_tool_use:
+                    pending_results = await asyncio.gather(
+                        *[self._checked_call_tool(b, tools, emitter, tool_call_counts, tool_limits)
+                          for b in pending_tool_use]
+                    )
+                    messages.append({"role": "user", "content": list(pending_results)})
                 break
 
             # Emit any text the model produced alongside tool calls as a thought event
