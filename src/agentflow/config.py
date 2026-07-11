@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     cost_per_1m_output_tokens: float = 15.0
     cost_per_1m_cache_write_tokens: float = 3.75
     cost_per_1m_cache_read_tokens: float = 0.30
+    # Extended thinking tokens are output tokens billed separately.
+    # Defaults to the output token rate (correct for current Anthropic pricing).
+    # Override via COST_PER_1M_THINKING_TOKENS in .env if the model charges differently.
+    cost_per_1m_thinking_tokens: float = 15.0
 
     # Max times a partial result triggers a continuation before accepting it
     max_continuations: int = 3

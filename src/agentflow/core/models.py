@@ -94,6 +94,7 @@ class AgentResult(BaseModel):
     error: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
+    thinking_tokens: int = 0        # extended thinking tokens (subset of output_tokens)
     cache_creation_tokens: int = 0
     cache_read_tokens: int = 0
     tokens_used: int = 0  # kept for backward compat; equals sum of all token types

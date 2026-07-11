@@ -219,6 +219,7 @@ class Agent:
         anthropic_tools = [t.to_anthropic_param() for t in tools]
         total_input_tokens = 0
         total_output_tokens = 0
+        total_thinking_tokens = 0
         total_cache_creation_tokens = 0
         total_cache_read_tokens = 0
         total_cost_usd = 0.0
@@ -287,14 +288,20 @@ class Agent:
             u = response.usage
             call_cache_write = u.cache_creation_input_tokens or 0
             call_cache_read = u.cache_read_input_tokens or 0
+            # thinking_output_tokens is not in the current SDK type; getattr keeps us
+            # forward-compatible — when the API starts returning it we'll use it automatically.
+            call_thinking = getattr(u, "thinking_output_tokens", 0) or 0
+            call_regular_output = u.output_tokens - call_thinking
             last_input_tokens = u.input_tokens
             total_input_tokens += u.input_tokens
             total_output_tokens += u.output_tokens
+            total_thinking_tokens += call_thinking
             total_cache_creation_tokens += call_cache_write
             total_cache_read_tokens += call_cache_read
             total_cost_usd += (
                 u.input_tokens * settings.cost_per_1m_input_tokens
-                + u.output_tokens * settings.cost_per_1m_output_tokens
+                + call_regular_output * settings.cost_per_1m_output_tokens
+                + call_thinking * settings.cost_per_1m_thinking_tokens
                 + call_cache_write * settings.cost_per_1m_cache_write_tokens
                 + call_cache_read * settings.cost_per_1m_cache_read_tokens
             ) / 1_000_000
@@ -366,6 +373,7 @@ class Agent:
             output=AgentOutput(structured=structured, text=final_text),
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
+            thinking_tokens=total_thinking_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
             cache_read_tokens=total_cache_read_tokens,
             tokens_used=total_input_tokens + total_output_tokens + total_cache_creation_tokens + total_cache_read_tokens,

@@ -1,7 +1,7 @@
 ---
 title: Conventions & Patterns
 last_updated: 2026-07-10
-last_verified_sha: bb0bacd
+last_verified_sha: 5da537c
 sources:
   - pyproject.toml
   - src/agentflow/config.py
@@ -45,7 +45,10 @@ contradict the source):
   `enum.Enum`/`StrEnum` for choices. `src/agentflow/config.py` follows the config case:
   `Settings(BaseSettings)` from `pydantic_settings`, loaded from `.env` via
   `SettingsConfigDict(env_file=".env", ...)`, instantiated once as a module-level
-  `settings = Settings()` singleton.
+  `settings = Settings()` singleton. Pricing fields (`cost_per_1m_input_tokens`,
+  `cost_per_1m_output_tokens`, `cost_per_1m_cache_write_tokens`,
+  `cost_per_1m_cache_read_tokens`, `cost_per_1m_thinking_tokens`) default to
+  claude-sonnet-4-6 rates and can be overridden in `.env`.
 - **Error handling**: raise specific, narrow exception types; never swallow exceptions
   silently; add context with `raise SomeError(...) from exc` when re-wrapping.
 - **Logging**: standard `logging` module, never `print()`. `logging_config.py` centralizes

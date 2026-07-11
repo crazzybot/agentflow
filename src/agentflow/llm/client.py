@@ -32,7 +32,8 @@ class UsageStats:
     """Cumulative token usage and prompt-cache metrics across all API calls."""
     total_requests: int = 0
     total_input_tokens: int = 0      # non-cached input tokens billed at full rate
-    total_output_tokens: int = 0
+    total_output_tokens: int = 0     # includes thinking tokens when API bundles them
+    total_thinking_tokens: int = 0   # extended thinking tokens (subset of output_tokens)
     cache_creation_tokens: int = 0   # tokens written to the cache (25 % cost)
     cache_read_tokens: int = 0       # tokens served from cache (10 % cost)
 
@@ -43,11 +44,12 @@ class UsageStats:
 
     def log_summary(self) -> None:
         logger.info(
-            "LLM usage — requests=%d in=%d out=%d "
+            "LLM usage — requests=%d in=%d out=%d thinking=%d "
             "cache_written=%d cache_read=%d hit_rate=%.1f%%",
             self.total_requests,
             self.total_input_tokens,
             self.total_output_tokens,
+            self.total_thinking_tokens,
             self.cache_creation_tokens,
             self.cache_read_tokens,
             self.cache_hit_rate * 100,
@@ -126,18 +128,22 @@ class _MessagesProxy:
         usage = response.usage
         input_tokens: int = usage.input_tokens
         output_tokens: int = usage.output_tokens
+        # thinking_output_tokens is not in the current SDK type but may be added;
+        # using getattr keeps us forward-compatible without runtime errors.
+        thinking_tokens: int = getattr(usage, "thinking_output_tokens", 0) or 0
         cache_creation: int = getattr(usage, "cache_creation_input_tokens", 0) or 0
         cache_read: int = getattr(usage, "cache_read_input_tokens", 0) or 0
 
         self._stats.total_requests += 1
         self._stats.total_input_tokens += input_tokens
         self._stats.total_output_tokens += output_tokens
+        self._stats.total_thinking_tokens += thinking_tokens
         self._stats.cache_creation_tokens += cache_creation
         self._stats.cache_read_tokens += cache_read
 
         logger.debug(
-            "model=%s in=%d out=%d cache_read=%d cache_create=%d",
-            kwargs.get("model", ""), input_tokens, output_tokens, cache_read, cache_creation,
+            "model=%s in=%d out=%d thinking=%d cache_read=%d cache_create=%d",
+            kwargs.get("model", ""), input_tokens, output_tokens, thinking_tokens, cache_read, cache_creation,
         )
 
         return response
