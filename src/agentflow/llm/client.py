@@ -132,7 +132,11 @@ class _MessagesProxy:
         usage = response.usage
         input_tokens: int = usage.input_tokens
         output_tokens: int = usage.output_tokens
-        thinking_tokens: int = getattr(usage, "thinking_tokens", 0) or 0
+        thinking_tokens: int = getattr(usage, "thinking_tokens", 0) or sum(
+            len(getattr(block, "thinking", "")) // 4
+            for block in response.content
+            if getattr(block, "type", "") == "thinking"
+        )
         cache_creation: int = getattr(usage, "cache_creation_input_tokens", 0) or 0
         cache_read: int = getattr(usage, "cache_read_input_tokens", 0) or 0
 

@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import anthropic
-from anthropic.types import TextBlock, ThinkingBlock
+from anthropic.types import TextBlock, ThinkingBlock  # also matched via block.type for beta variants
 
 from agentflow.config import settings
 from agentflow.core.models import AgentManifest, AgentOutput, AgentResult, AgentStatus, SSEEventType, TaskEnvelope
@@ -289,7 +289,12 @@ class Agent:
             u = response.usage
             call_cache_write = u.cache_creation_input_tokens or 0
             call_cache_read = u.cache_read_input_tokens or 0
-            call_thinking = getattr(u, "thinking_tokens", 0) or 0
+            # The API doesn't expose a thinking token breakdown in usage; estimate from blocks.
+            call_thinking = getattr(u, "thinking_tokens", 0) or sum(
+                len(getattr(block, "thinking", "")) // 4
+                for block in response.content
+                if block.type == "thinking"
+            )
             call_regular_output = u.output_tokens - call_thinking
             last_input_tokens = u.input_tokens
             total_input_tokens += u.input_tokens
@@ -310,16 +315,19 @@ class Agent:
             messages.append({"role": "assistant", "content": response.content})
             last_response_content = list(response.content)
 
-            # Emit thinking blocks as thought events so clients can display live reasoning
+            # Emit thinking blocks as thought events so clients can display live reasoning.
+            # Use block.type rather than isinstance so BetaThinkingBlock (beta endpoint)
+            # and ThinkingBlock (standard endpoint) are both matched.
             if thinking_budget:
                 for block in response.content:
-                    if isinstance(block, ThinkingBlock) and block.thinking.strip():
-                        emitter.emit(SSEEventType.agent_thought, agent_id=self.agent_id, message=block.thinking)
+                    thinking_text = getattr(block, "thinking", None)
+                    if block.type == "thinking" and thinking_text and thinking_text.strip():
+                        emitter.emit(SSEEventType.agent_thought, agent_id=self.agent_id, message=thinking_text)
 
-            # Collect any text the model produced this turn
+            # Collect any text the model produced this turn (BetaTextBlock or TextBlock)
             for block in response.content:
-                if isinstance(block, TextBlock):
-                    final_text = block.text
+                if block.type == "text":
+                    final_text = getattr(block, "text", "")
 
             if response.stop_reason == "end_turn":
                 break
@@ -335,11 +343,12 @@ class Agent:
 
             # Emit any text the model produced alongside tool calls as a thought event
             for block in response.content:
-                if isinstance(block, TextBlock) and block.text.strip():
+                text = getattr(block, "text", None)
+                if block.type == "text" and text and text.strip():
                     emitter.emit(
                         SSEEventType.agent_thought,
                         agent_id=self.agent_id,
-                        message=block.text,
+                        message=text,
                     )
 
             # Execute all tool calls concurrently, then feed results back
@@ -359,13 +368,14 @@ class Agent:
                     messages.append({"role": "user", "content": pending})
                     emitter.emit(SSEEventType.run_message_received, agent_id=self.agent_id, message=pending[:120])
 
-        # With extended thinking the model may end via ThinkingBlocks + tool use without
-        # ever producing a TextBlock.  Fall back to the last thinking block so the
-        # reporter receives a meaningful summary instead of an empty string.
+        # With extended thinking the model may end via thinking + tool use without ever
+        # producing a text block.  Fall back to the last thinking block so the reporter
+        # receives a meaningful summary instead of an empty string.
         if not final_text and thinking_budget:
             for block in reversed(last_response_content):
-                if isinstance(block, ThinkingBlock) and block.thinking.strip():
-                    final_text = block.thinking
+                thinking_text = getattr(block, "thinking", None)
+                if block.type == "thinking" and thinking_text and thinking_text.strip():
+                    final_text = thinking_text
                     break
 
         # Try to parse final text as JSON (many system prompts ask for JSON output)
