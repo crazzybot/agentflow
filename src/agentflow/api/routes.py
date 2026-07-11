@@ -6,6 +6,20 @@ import json
 import uuid
 from pathlib import Path
 
+
+def _iter_json_objects(text: str):
+    """Yield all JSON objects from text, tolerating both compact JSONL and pretty-printed."""
+    decoder = json.JSONDecoder()
+    idx = 0
+    while idx < len(text):
+        while idx < len(text) and text[idx] in " \t\n\r":
+            idx += 1
+        if idx >= len(text):
+            break
+        obj, end = decoder.raw_decode(text, idx)
+        yield obj
+        idx = end
+
 from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
@@ -122,9 +136,7 @@ async def followup_run(run_id: str, request: FollowUpRequest):
                 "agent_id": entry.get("agent_id", "unknown"),
                 "output": entry.get("output", {}).get("text", ""),
             }
-            for line in results_file.read_text().splitlines()
-            if line.strip()
-            for entry in (json.loads(line),)
+            for entry in _iter_json_objects(results_file.read_text())
             if "subtask_id" in entry
         ]
 
@@ -247,9 +259,8 @@ async def get_run_results(run_id: str):
     if not results_file.exists():
         raise HTTPException(status_code=404, detail="No results captured for this run")
     results = [
-        SubtaskResult.model_validate(json.loads(line))
-        for line in results_file.read_text().splitlines()
-        if line.strip()
+        SubtaskResult.model_validate(entry)
+        for entry in _iter_json_objects(results_file.read_text())
     ]
     return RunResultsResponse(run_id=run_id, results=results)
 
