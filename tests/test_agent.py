@@ -2,13 +2,17 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from anthropic.types import TextBlock
+from anthropic.types import TextBlock, ThinkingBlock
 
 from agentflow.agents.agent import Agent, _with_message_cache_breakpoint
 from agentflow.core.models import AgentManifest, AgentStatus, TaskConstraints, TaskContext, TaskEnvelope
 
 
-def _make_manifest(tools: list[str] | None = None, tool_limits: dict | None = None) -> AgentManifest:
+def _make_manifest(
+    tools: list[str] | None = None,
+    tool_limits: dict | None = None,
+    thinking_budget_tokens: int | None = None,
+) -> AgentManifest:
     return AgentManifest(
         agent_id="TestAgent",
         domain="Testing",
@@ -17,6 +21,7 @@ def _make_manifest(tools: list[str] | None = None, tool_limits: dict | None = No
         mcp_servers=[],
         system_prompt="You are a test agent. Return raw JSON: {\"result\": \"done\"}",
         tool_limits=tool_limits,
+        thinking_budget_tokens=thinking_budget_tokens,
     )
 
 
@@ -276,6 +281,110 @@ def test_cache_breakpoint_targets_last_user_message():
     assert result[0]["content"] == "first"
     # Last user message should have cache_control
     assert result[2]["content"][-1].get("cache_control") == {"type": "ephemeral"}
+
+
+# ---------------------------------------------------------------------------
+# Extended thinking tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_thinking_config_passed_to_llm():
+    """When thinking_budget_tokens is set, the create call includes thinking= param."""
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+
+    agent = Agent(_make_manifest(thinking_budget_tokens=2048), mock_client)
+    await agent.run(_make_envelope(), MagicMock())
+
+    call_kwargs = mock_client.messages.create.call_args[1]
+    assert call_kwargs["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+
+
+@pytest.mark.asyncio
+async def test_thinking_max_tokens_enforced():
+    """max_tokens is bumped to at least thinking_budget + 1024."""
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+
+    agent = Agent(_make_manifest(thinking_budget_tokens=4096), mock_client)
+    await agent.run(_make_envelope(), MagicMock())
+
+    call_kwargs = mock_client.messages.create.call_args[1]
+    assert call_kwargs["max_tokens"] >= 4096 + 1024
+
+
+@pytest.mark.asyncio
+async def test_thinking_betas_added_when_tools_present():
+    """betas header is included when thinking is enabled alongside tools."""
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+
+    agent = Agent(_make_manifest(tools=["file_read"], thinking_budget_tokens=1024), mock_client)
+    await agent.run(_make_envelope(), MagicMock())
+
+    call_kwargs = mock_client.messages.create.call_args[1]
+    assert "betas" in call_kwargs
+    assert "interleaved-thinking-2025-05-14" in call_kwargs["betas"]
+
+
+@pytest.mark.asyncio
+async def test_thinking_no_betas_without_tools():
+    """betas header is omitted when thinking is enabled but the manifest has no tools."""
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+
+    agent = Agent(_make_manifest(tools=[], thinking_budget_tokens=1024), mock_client)
+    await agent.run(_make_envelope(), MagicMock())
+
+    call_kwargs = mock_client.messages.create.call_args[1]
+    assert "betas" not in call_kwargs
+
+
+@pytest.mark.asyncio
+async def test_thinking_blocks_emitted_as_thought_events():
+    """ThinkingBlock content is emitted as agent:thought SSE events."""
+    thinking_block = ThinkingBlock(
+        type="thinking",
+        thinking="I need to reason step by step about this.",
+        signature="sig-abc",
+    )
+    response = MagicMock()
+    response.stop_reason = "end_turn"
+    response.content = [thinking_block, TextBlock(type="text", text='{"result": "done"}')]
+    response.usage.input_tokens = 100
+    response.usage.output_tokens = 60
+    response.usage.cache_creation_input_tokens = 0
+    response.usage.cache_read_input_tokens = 0
+
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=response)
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    agent = Agent(_make_manifest(thinking_budget_tokens=1024), mock_client)
+    result = await agent.run(_make_envelope(), emitter)
+
+    assert result.status == AgentStatus.success
+    thought_calls = [
+        c for c in emitter.emit.call_args_list
+        if c[1].get("message") == "I need to reason step by step about this."
+    ]
+    assert len(thought_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_thinking_disabled_by_default():
+    """Without thinking_budget_tokens, no thinking= param is sent."""
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+
+    agent = Agent(_make_manifest(), mock_client)
+    await agent.run(_make_envelope(), MagicMock())
+
+    call_kwargs = mock_client.messages.create.call_args[1]
+    assert "thinking" not in call_kwargs
+    assert "betas" not in call_kwargs
 
 
 def test_cache_breakpoint_no_double_marking():

@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-07-10
-last_verified_sha: b328d65
+last_verified_sha: bb0bacd
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -75,14 +75,20 @@ variants so multiple API replicas can share a run — see
    concurrently via `_checked_call_tool()` and feeding results back as `tool_result`
    messages. Before each tool dispatch, `_checked_call_tool()` consults the per-loop
    `tool_call_counts` dict against `AgentManifest.tool_limits` and short-circuits with
-   an error result if a per-tool call budget is exceeded. Text blocks the model
-   emits alongside tool calls are streamed as `agent:thought` SSE events, making the
-   agent's in-progress reasoning visible to clients (`end_turn` text is the final answer
-   and is not re-emitted as a thought). After each tool-result batch the loop calls
-   `ctx.pop_user_message(self.agent_id)` and — if a message is queued for this agent —
-   appends it as a user turn before the next API call, emitting `run:message_received`.
-   Because `push_user_message()` fans out to every registered agent's queue, all agents
-   running in parallel receive the same injected message.
+   an error result if a per-tool call budget is exceeded. If
+   `AgentManifest.thinking_budget_tokens` is set, each `messages.create()` call
+   includes `thinking={"type": "enabled", "budget_tokens": N}` and — when the manifest
+   also has tools — `betas=["interleaved-thinking-2025-05-14"]`; `max_tokens` is
+   automatically clamped to at least `thinking_budget_tokens + 1024`. `ThinkingBlock`
+   objects in the response are emitted immediately as `agent:thought` SSE events
+   (regardless of stop reason) and preserved verbatim in the message history so
+   subsequent API calls receive them back intact. Text blocks the model emits
+   alongside tool calls are also streamed as `agent:thought` events; `end_turn` text
+   is the final answer and is not re-emitted. After each tool-result batch the loop
+   calls `ctx.pop_user_message(self.agent_id)` and — if a message is queued for this
+   agent — appends it as a user turn before the next API call, emitting
+   `run:message_received`. Because `push_user_message()` fans out to every registered
+   agent's queue, all agents running in parallel receive the same injected message.
 7. **Report** — once all subtasks are `completed`/`failed`, the engine gathers
    `ctx.all_results()`, computes a cost summary, and calls `compile_report()` in
    [`orchestrator/reporter.py`](../../src/agentflow/orchestrator/reporter.py), which
@@ -130,7 +136,11 @@ variants so multiple API replicas can share a run — see
   and returns an `AgentResult` (`success`/`partial`/`failed`). The loop dispatches tool
   calls through `_checked_call_tool()`, which enforces per-tool call budgets declared in
   `AgentManifest.tool_limits` by incrementing an in-loop counter and returning a hard
-  error result (without invoking the tool) when the limit is exceeded.
+  error result (without invoking the tool) when the limit is exceeded. When
+  `AgentManifest.thinking_budget_tokens` is set, extended thinking is enabled on every
+  LLM call; thinking blocks are emitted as `agent:thought` SSE events and kept in the
+  message history for subsequent turns. Thinking tokens are billed at the output token
+  rate and are included in `AgentResult.output_tokens`.
 - **`core/bus.py` — `TaskBus`**: in-process asyncio-queue pair (dispatch/result) keyed
   by `run_id`. Not currently on the request's critical path (dispatch is direct-call via
   `_dispatch_subtask`), but the per-run channels are created/closed alongside the run. A

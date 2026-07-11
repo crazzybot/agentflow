@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import anthropic
-from anthropic.types import TextBlock
+from anthropic.types import TextBlock, ThinkingBlock
 
 from agentflow.config import settings
 from agentflow.core.models import AgentManifest, AgentOutput, AgentResult, AgentStatus, SSEEventType, TaskEnvelope
@@ -231,6 +231,7 @@ class Agent:
         iteration = 0
         tool_call_counts: dict[str, int] = {}
         tool_limits: dict[str, int] = self.manifest.tool_limits or {}
+        thinking_budget = self.manifest.thinking_budget_tokens
 
         while True:
             # --- Determine max_tokens for this iteration ---
@@ -263,6 +264,12 @@ class Agent:
             if anthropic_tools:
                 create_kwargs["tools"] = anthropic_tools
 
+            if thinking_budget:
+                create_kwargs["max_tokens"] = max(create_kwargs["max_tokens"], thinking_budget + 1024)
+                create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
+                if anthropic_tools:
+                    create_kwargs["betas"] = ["interleaved-thinking-2025-05-14"]
+
             try:
                 response = await self.client.messages.create(**create_kwargs)
             except anthropic.BadRequestError as exc:
@@ -293,8 +300,14 @@ class Agent:
             ) / 1_000_000
             iteration += 1
 
-            # Append the assistant's full response (preserves tool_use blocks)
+            # Append the assistant's full response (preserves tool_use and thinking blocks)
             messages.append({"role": "assistant", "content": response.content})
+
+            # Emit thinking blocks as thought events so clients can display live reasoning
+            if thinking_budget:
+                for block in response.content:
+                    if isinstance(block, ThinkingBlock) and block.thinking.strip():
+                        emitter.emit(SSEEventType.agent_thought, agent_id=self.agent_id, message=block.thinking)
 
             # Collect any text the model produced this turn
             for block in response.content:
