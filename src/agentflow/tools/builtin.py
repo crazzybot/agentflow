@@ -292,9 +292,18 @@ async def _file_write(
             hi = min(total, end_line)
             block = (content if content.endswith("\n") else content + "\n") if content else ""
             lines[lo:hi] = [block] if block else []
-            target.write_text("".join(lines), encoding="utf-8")
+            new_text = "".join(lines)
+            target.write_text(new_text, encoding="utf-8")
             await _record_artifact(path)
-            return f"Replaced lines {start_line}-{end_line} in {path}"
+            new_total = len(new_text.splitlines())
+            new_line_count = len(block.splitlines()) if block else 0
+            new_end = lo + new_line_count
+            preview = content[:3000] + ("…" if len(content) > 3000 else "")
+            return (
+                f"Replaced lines {start_line}-{end_line} in {path} "
+                f"(file now {new_total} lines; new content at lines {lo + 1}-{new_end}):\n"
+                f"{preview}"
+            )
 
         if mode == "replace_pattern":
             if pattern is None:
@@ -322,9 +331,18 @@ async def _file_write(
                 return f"End pattern {end_pattern!r} not found after line {start_idx + 1} in {path}"
             block = (content if content.endswith("\n") else content + "\n") if content else ""
             lines[start_idx + 1:end_idx] = [block] if block else []
-            target.write_text("".join(lines), encoding="utf-8")
+            new_text = "".join(lines)
+            target.write_text(new_text, encoding="utf-8")
             await _record_artifact(path)
-            return f"Replaced content between lines {start_idx + 1} and {end_idx + 1} in {path}"
+            new_total = len(new_text.splitlines())
+            new_line_count = len(block.splitlines()) if block else 0
+            new_end = start_idx + 1 + new_line_count
+            preview = content[:3000] + ("…" if len(content) > 3000 else "")
+            return (
+                f"Replaced content between lines {start_idx + 1} and {end_idx + 1} in {path} "
+                f"(file now {new_total} lines; new content at lines {start_idx + 2}-{new_end}):\n"
+                f"{preview}"
+            )
 
         return f"Error: unknown mode {mode!r}"
 
