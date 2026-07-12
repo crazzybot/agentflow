@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
-last_updated: 2026-07-10
-last_verified_sha: 5da537c
+last_updated: 2026-07-11
+last_verified_sha: 1cf7104
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -45,11 +45,11 @@ variants so multiple API replicas can share a run — see
    `ExecutionPlan` of `Subtask`s (agent id, instruction, `depends_on`, optional
    `budget_fraction`). During exploration turns, text blocks the model produces
    alongside tool calls are emitted as `agent:thought` events (with `agent_id="planner"`).
-4. **Decompose** — `expand_plan()` in
-   [`orchestrator/decomposer.py`](../../src/agentflow/orchestrator/decomposer.py)
-   expands any subtask whose target `AgentManifest` declares a `decomposition_prompt`
-   into several micro-subtasks (again via a scoped `Agent` ReAct loop), and rewires
-   `depends_on` edges onto the new tail subtasks.
+4. **Decompose** — decomposition is now **lazy**: `engine.run()` no longer calls
+   `expand_plan()` eagerly. Instead, `_dispatch_subtask()` calls `decompose_subtask()`
+   for any manifest with a `decomposition_prompt` at dispatch time — after the subtask's
+   `depends_on` are satisfied — so the decomposer sees the workspace in its completed
+   state (see step 5 and the decomposer component entry below).
 5. **Schedule + execute** — `OrchestratorEngine._execute_plan()` builds a
    `DependencyGraph` (`orchestrator/scheduler.py`) over the plan and loops: ask the
    graph for `ready()` subtasks (deps satisfied, not failed), dispatch each as an
@@ -117,9 +117,17 @@ variants so multiple API replicas can share a run — see
   conversation via `prior_messages`, so the planner must NOT instruct that downstream
   agent to re-read files written by the upstream agent — those files are already in
   context.
-- **`orchestrator/decomposer.py` — `expand_plan()` / `decompose_subtask()`**: optionally
-  splits a subtask into micro-subtasks using the agent manifest's own
-  `decomposition_prompt`, run as a nested `Agent` loop.
+- **`orchestrator/decomposer.py` — `decompose_subtask()` / `expand_plan()`**: splits a
+  subtask into micro-subtasks using the manifest's `decomposition_prompt`, run as a
+  nested `Agent` ReAct loop. Invoked **lazily** inside `_dispatch_subtask()` (not
+  eagerly at plan time) so the decomposer always sees completed upstream workspace state.
+  `_DECOMPOSER_TOOLS` is restricted to `frozenset({"file_read"})` — `bash_exec` is
+  excluded because it is not constrained to read-only commands and previously caused the
+  decomposer to implement the task rather than analyse it. When decomposition produces
+  N > 1 micro-subtasks, `_run_micro_subtasks()` runs them sequentially through the normal
+  retry/budget/fallback path, then promotes the last result to the parent subtask ID so
+  downstream tasks can find their prior results. A `_skip_decompose=True` flag on
+  `_dispatch_subtask` prevents recursive decomposition when micro-subtasks are dispatched.
 - **`orchestrator/scheduler.py` — `DependencyGraph`**: wraps a `networkx.DiGraph` built
   from `Subtask.depends_on`; validates the plan is acyclic and exposes `ready()`
   (dependency-satisfied, non-failed nodes) for the execution loop.
@@ -143,7 +151,17 @@ variants so multiple API replicas can share a run — see
   `usage.thinking_tokens` (via `getattr` for forward-compatibility). `AgentResult`
   carries `thinking_tokens` as a separate counter (a subset of `output_tokens`); thinking
   tokens are priced at `cost_per_1m_thinking_tokens` while regular output tokens use
-  `cost_per_1m_output_tokens`.
+  `cost_per_1m_output_tokens`. Three additional helpers manage token efficiency and
+  output parsing: `_to_dict_content()` converts SDK response blocks to plain dicts on
+  storage (preserving thinking-block `signature` fields) so the history can be
+  post-processed without SDK coupling; `_compact_file_writes()` replaces successful
+  `file_write` tool_use inputs in the last stored assistant message with a compact
+  `{path, _chars}` stub immediately after each tool batch, preventing large file contents
+  from accumulating in the cache prefix across subsequent turns; `_parse_final_output()`
+  splits the model's final text into `(structured: dict, prose: str)` — it handles raw
+  JSON, markdown-fenced JSON (the common case where the model prepends a summary), and
+  inline JSON without a fence, so `AgentResult.output.structured` is reliably populated
+  and `output.text` contains only the human-readable prose.
 - **`core/bus.py` — `TaskBus`**: in-process asyncio-queue pair (dispatch/result) keyed
   by `run_id`. Not currently on the request's critical path (dispatch is direct-call via
   `_dispatch_subtask`), but the per-run channels are created/closed alongside the run. A

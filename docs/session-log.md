@@ -5,6 +5,51 @@ Maintained by the `/session-wrap` skill. Newest entries at the top.
 
 ---
 
+## Session: 2026-07-11 (token optimization + structured output fix)
+
+**Branch:** `opt/token-reduction-issues-1-2-3`
+
+**Files changed:**
+- `src/agentflow/agents/agent.py` — added `_to_dict_content`, `_compact_file_writes`,
+  `_successful_write_ids`, `_parse_final_output`; agentic loop stores plain dicts,
+  applies file_write compaction after each tool batch, uses new output parser
+- `src/agentflow/orchestrator/decomposer.py` — `_DECOMPOSER_TOOLS` reduced to
+  `frozenset({"file_read"})`; `bash_exec` removed
+- `src/agentflow/orchestrator/engine.py` — removed eager `expand_plan()` call;
+  added `_run_micro_subtasks()`; `_dispatch_subtask()` now does lazy decomposition
+  with `_skip_decompose` guard
+- `tests/test_agent.py` — added 6 `_parse_final_output` unit tests
+
+**Decisions:**
+- Decomposer tools restricted to `file_read` only: `bash_exec` caused the decomposer
+  to implement the task (create files, run uv commands) rather than analyse it
+- Decomposition moved from eager (pre-execution in `engine.run()`) to lazy (at
+  dispatch time in `_dispatch_subtask()`) so the decomposer sees the workspace after
+  upstream deps complete
+- `file_write` tool_use inputs compacted immediately after successful writes to prevent
+  file contents accumulating in the LLM cache prefix across subsequent turns — the
+  compacted version is what gets cached, so subsequent turns read the stub
+- `_parse_final_output` handles prose+fenced-JSON pattern (all three agents in the
+  analysed run used this pattern); `output.structured` is now reliably populated and
+  `output.text` is prose-only
+- Run artifacts live in `.runs/<run_id>/` (dot-prefixed, gitignored), not `runs/`
+
+**Open questions:**
+- Issues 4–7 from the run analysis not yet implemented: verbose agent output (4),
+  FrontendAgent npm timeout guidance (5), planner exploration heuristic (6), thinking
+  budget tuning for impl tasks (7)
+- `pyproject.toml` / `uv.lock` gained a workspace member for
+  `workspace/markdown-previewer/backend` (written by the CodeAgent during the analysed
+  run); these are currently unstaged and should be reviewed before merging the branch
+
+**KB updates applied:**
+- `docs/kb/architecture.md` — updated request lifecycle step 4 (lazy decomposition),
+  decomposer component entry (read-only tools, lazy invocation, `_run_micro_subtasks`,
+  `_skip_decompose`), agent component entry (`_to_dict_content`, `_compact_file_writes`,
+  `_parse_final_output`); bumped `last_verified_sha` to `1cf7104`
+
+---
+
 ## Session: 2026-07-10 (agent:thought streaming)
 
 **Files changed:**
