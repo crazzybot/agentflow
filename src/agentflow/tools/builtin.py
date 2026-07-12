@@ -115,12 +115,22 @@ async def _web_search(query: str, max_results: int = 5) -> str:
                 if t.get("FirstURL"):
                     lines.append(f"  {t['FirstURL']}")
 
-    return "\n".join(lines) if lines else f"No results for: {query!r}"
+    return "\n".join(lines) if lines else (
+        f"DuckDuckGo Instant Answers returned no results for: {query!r}. "
+        "This tool only covers DuckDuckGo's instant-answer topics (entity lookups, simple factual queries). "
+        "It is not a general web search and does not browse the open web. "
+        "Use fetch_url with a specific URL to retrieve page content directly."
+    )
 
 
 tool_registry.register(ToolDefinition(
     name="web_search",
-    description="Search the web using DuckDuckGo instant answers. Returns abstracts and related topics.",
+    description=(
+        "Look up a topic using DuckDuckGo Instant Answers. Returns an abstract and related topics "
+        "for well-known entities and simple factual queries. "
+        "NOT a general web search — does not browse arbitrary pages or return search-result lists. "
+        "Use fetch_url to retrieve content from a specific URL."
+    ),
     input_schema={
         "type": "object",
         "properties": {
