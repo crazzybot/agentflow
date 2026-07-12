@@ -16,7 +16,7 @@ from agentflow.core.models import (AgentResult, AgentStatus, ExecutionPlan,
                                    TaskConstraints, TaskContext, TaskEnvelope)
 from agentflow.core.registry import AgentRegistry
 from agentflow.llm import LLMClient
-from agentflow.orchestrator.decomposer import expand_plan
+from agentflow.orchestrator.decomposer import decompose_subtask, expand_plan
 from agentflow.orchestrator.planner import create_plan
 from agentflow.orchestrator.reporter import compile_report
 from agentflow.orchestrator.scheduler import DependencyGraph
@@ -161,9 +161,9 @@ class OrchestratorEngine:
         try:
             # Step 02: LLM planning pass
             plan = await create_plan(run_id, task, self.registry, self._client, budget_usd=budget_usd, user_context=user_context, emitter=emitter)
-
-            # Step 02b: expand subtasks for agents that declare a decomposition_prompt
-            plan = await expand_plan(plan, self.registry, self._client, emitter, task=task, user_context=user_context)
+            # Decomposition is now lazy: each subtask is decomposed at dispatch
+            # time (inside _dispatch_subtask) so the decomposer sees a workspace
+            # that reflects completed upstream dependencies.
 
             emitter.emit(
                 SSEEventType.plan_created,
@@ -289,6 +289,52 @@ class OrchestratorEngine:
     # Single subtask dispatch with retry
     # ------------------------------------------------------------------
 
+    async def _run_micro_subtasks(
+        self,
+        run_id: str,
+        parent: Subtask,
+        micro: list[Subtask],
+        ctx: RunContext,
+        emitter: StreamEmitter,
+        task_budget_usd: float | None,
+    ) -> bool:
+        """Run decomposed micro-subtasks in sequence and promote the last result to the parent ID.
+
+        Each micro-task is dispatched through the normal retry/budget/fallback path.
+        Running sequentially respects the dependency chain the decomposer declared
+        and ensures each step sees the completed output of the previous one.
+        """
+        n = len(micro)
+        micro_budget = (task_budget_usd / n) if task_budget_usd else None
+
+        for ms in micro:
+            ok = await self._dispatch_subtask(
+                run_id, ms, ctx, emitter, micro_budget, _skip_decompose=True
+            )
+            if not ok:
+                emitter.emit(
+                    SSEEventType.task_failed,
+                    agent_id=parent.agent_id,
+                    message=f"Subtask {parent.id} failed at micro-step {ms.id}",
+                    data={"subtask_id": parent.id},
+                )
+                return False
+
+        # Promote the last micro-task's result under the parent ID so downstream
+        # subtasks that depend on this one can find their prior results / messages.
+        all_results = await ctx.all_results()
+        last_result = all_results.get(micro[-1].id)
+        if last_result is not None:
+            await ctx.store_result(parent.id, last_result)
+
+        emitter.emit(
+            SSEEventType.task_complete,
+            agent_id=parent.agent_id,
+            message=f"Subtask {parent.id} complete ({n} micro-steps)",
+            data={"subtask_id": parent.id},
+        )
+        return True
+
     async def _dispatch_subtask(
         self,
         run_id: str,
@@ -296,6 +342,7 @@ class OrchestratorEngine:
         ctx: RunContext,
         emitter: StreamEmitter,
         task_budget_usd: float | None = None,
+        _skip_decompose: bool = False,
     ) -> bool:
         """Dispatch a subtask with retry and continuation logic. Returns True on success/partial."""
         agent = self._agent_instances.get(subtask.agent_id)
@@ -308,12 +355,35 @@ class OrchestratorEngine:
             )
             return False
 
-        prior_results = ctx.build_prior_results(subtask.depends_on)
-        prior_messages = ctx.build_prior_messages(subtask.depends_on)
+        # Compute agent_user_context early — needed both for the decomposer and
+        # for the TaskEnvelope further below.
         agent_user_context = {
             k: v for k, v in ctx.user_context.items()
             if k not in _PLANNER_ONLY_CONTEXT_KEYS
         }
+
+        # Lazy decomposition: run at dispatch time so the decomposer sees the
+        # workspace after all upstream dependencies have completed.
+        # _skip_decompose is set when we are already running a micro-subtask to
+        # prevent infinite recursion.
+        if not _skip_decompose:
+            manifest = self.registry.get(subtask.agent_id)
+            if manifest and manifest.decomposition_prompt:
+                micro = await decompose_subtask(
+                    subtask, manifest, run_id, self._client, emitter,
+                    user_context=agent_user_context,
+                )
+                if len(micro) > 1:
+                    logger.info(
+                        "[%s] Decomposed %s → %d micro-subtasks: %s",
+                        run_id, subtask.id, len(micro), [m.id for m in micro],
+                    )
+                    return await self._run_micro_subtasks(
+                        run_id, subtask, micro, ctx, emitter, task_budget_usd
+                    )
+
+        prior_results = ctx.build_prior_results(subtask.depends_on)
+        prior_messages = ctx.build_prior_messages(subtask.depends_on)
         envelope = TaskEnvelope(
             parent_run_id=run_id,
             agent_id=subtask.agent_id,

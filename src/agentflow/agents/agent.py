@@ -64,6 +64,109 @@ def _with_message_cache_breakpoint(messages: list[dict]) -> list[dict]:
     return messages
 
 
+def _to_dict_content(content: list) -> list[dict]:
+    """Convert Anthropic SDK response blocks to plain dicts for message storage.
+
+    Storing plain dicts lets us post-process the history (e.g. compact large
+    file_write inputs) without relying on SDK internals.  Thinking-block
+    signatures are preserved exactly — the API requires them to be echoed back
+    unchanged on subsequent calls.
+    """
+    result: list[dict] = []
+    for block in content:
+        if isinstance(block, dict):
+            result.append(block)
+            continue
+        block_type: str = getattr(block, "type", "")
+        if not block_type:
+            continue
+        d: dict = {"type": block_type}
+        if block_type == "text":
+            d["text"] = getattr(block, "text", "")
+        elif block_type == "thinking":
+            d["thinking"] = getattr(block, "thinking", "")
+            sig = getattr(block, "signature", None)
+            if sig is not None:
+                d["signature"] = sig
+        elif block_type == "tool_use":
+            d["id"] = getattr(block, "id", "")
+            d["name"] = getattr(block, "name", "")
+            d["input"] = dict(getattr(block, "input", None) or {})
+        else:
+            # Beta or future block variants — copy any known attributes
+            for attr in ("id", "name", "input", "text", "thinking", "signature"):
+                val = getattr(block, attr, None)
+                if val is not None:
+                    d[attr] = val
+        result.append(d)
+    return result
+
+
+def _compact_file_writes(messages: list[dict], successful_ids: set[str]) -> None:
+    """In-place: replace file_write tool_use inputs with compact stubs.
+
+    Large file contents in ``tool_use`` input blocks accumulate in the cache
+    prefix and are re-read on every subsequent turn.  Once a write has succeeded
+    the content is on disk and doesn't need to remain in context.  Replacing it
+    with a path + size stub keeps the prefix compact without losing any
+    information the model needs to continue.
+
+    Only the most recent assistant message is scanned — earlier messages were
+    already cached in their original form and changing them would cause a miss.
+    """
+    if not successful_ids:
+        return
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            return
+        new_content: list = []
+        changed = False
+        for block in content:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and block.get("name") == "file_write"
+                and block.get("id") in successful_ids
+            ):
+                path = (block.get("input") or {}).get("path", "?")
+                chars = len(str((block.get("input") or {}).get("content", "")))
+                new_content.append({
+                    "type": "tool_use",
+                    "id": block["id"],
+                    "name": "file_write",
+                    "input": {"path": path, "_written": True, "_chars": chars},
+                })
+                changed = True
+            else:
+                new_content.append(block)
+        if changed:
+            messages[i] = {**msg, "content": new_content}
+        return  # only process the most recent assistant message
+
+
+def _successful_write_ids(tool_use_blocks: list, tool_results: list[dict]) -> set[str]:
+    """Return tool_use IDs for file_write calls that succeeded this turn."""
+    write_ids = {
+        getattr(b, "id", b.get("id") if isinstance(b, dict) else None)
+        for b in tool_use_blocks
+        if getattr(b, "name", b.get("name") if isinstance(b, dict) else "") == "file_write"
+    }
+    write_ids.discard(None)
+    return {
+        r["tool_use_id"]
+        for r in tool_results
+        if isinstance(r, dict)
+        and r.get("type") == "tool_result"
+        and r.get("tool_use_id") in write_ids
+        and isinstance(r.get("content"), str)
+        and not r["content"].lower().startswith("error")
+    }
+
+
 def _budget_to_max_tokens(remaining_budget: float, last_input_tokens: int) -> int:
     """Compute how many output tokens we can afford with *remaining_budget*.
 
@@ -311,8 +414,9 @@ class Agent:
             ) / 1_000_000
             iteration += 1
 
-            # Append the assistant's full response (preserves tool_use and thinking blocks)
-            messages.append({"role": "assistant", "content": response.content})
+            # Store the assistant response as plain dicts so the history can be
+            # post-processed (e.g. file_write compaction) without SDK coupling.
+            messages.append({"role": "assistant", "content": _to_dict_content(response.content)})
             last_response_content = list(response.content)
 
             # Emit thinking blocks as thought events so clients can display live reasoning.
@@ -349,6 +453,10 @@ class Agent:
                           for b in pending_tool_use]
                     )
                     messages.append({"role": "user", "content": list(pending_results)})
+                    _compact_file_writes(
+                        messages,
+                        _successful_write_ids(pending_tool_use, list(pending_results)),
+                    )
                 break
 
             # Emit any text the model produced alongside tool calls as a thought event
@@ -369,6 +477,12 @@ class Agent:
             )
 
             messages.append({"role": "user", "content": list(tool_results)})
+            # Compact successful file_write inputs so large file contents don't
+            # accumulate in the cache prefix across subsequent turns.
+            _compact_file_writes(
+                messages,
+                _successful_write_ids(tool_use_blocks, list(tool_results)),
+            )
 
             # Inject any pending user message as an additional user turn before
             # the next API call, so the model sees it without a separate round-trip.
