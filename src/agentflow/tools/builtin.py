@@ -470,6 +470,77 @@ tool_registry.register(ToolDefinition(
 
 
 # ---------------------------------------------------------------------------
+# bash_exec_readonly — safe subset of bash_exec for planning / decomposition
+# ---------------------------------------------------------------------------
+
+# Commands that are safe to run during read-only exploration.  Deliberately
+# conservative: no interpreters (python3, node), no network tools (curl, wget),
+# no editors, no process managers.
+_READONLY_COMMANDS = frozenset({
+    "find", "grep", "egrep", "fgrep",
+    "ls", "cat", "head", "tail", "wc",
+    "sort", "uniq", "diff", "comm",
+    "echo", "printf", "test",
+    "awk", "sed", "cut", "tr",
+    "tree", "du", "stat", "file",
+    "which", "basename", "dirname", "realpath", "pwd",
+    "env", "printenv",
+    "jq", "xargs",
+})
+
+
+def _check_readonly_command(command: str) -> str | None:
+    """Return an error message if *command* is not safe for read-only use, else None."""
+    # Block any output redirection
+    if re.search(r'(?<![<&2])>{1,2}', command):
+        return "Output redirections (> and >>) are not allowed in bash_exec_readonly"
+    # Block sed in-place edits
+    if re.search(r'\bsed\b[^|;]*-[a-zA-Z]*i', command):
+        return "sed -i (in-place edit) is not allowed in bash_exec_readonly"
+    # Split on shell operators to get individual pipeline stages
+    segments = re.split(r'[|;&]+', command)
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+        first_word = seg.split()[0] if seg.split() else ""
+        cmd = os.path.basename(first_word)
+        if cmd and cmd not in _READONLY_COMMANDS:
+            allowed = ", ".join(sorted(_READONLY_COMMANDS))
+            return f"Command '{cmd}' is not allowed in bash_exec_readonly. Allowed: {allowed}"
+    return None
+
+
+async def _bash_exec_readonly(command: str, purpose: str, timeout_seconds: int = 30) -> str:
+    err = _check_readonly_command(command)
+    if err:
+        return f"Error: {err}"
+    return await _bash_exec(command, purpose, timeout_seconds)
+
+
+tool_registry.register(ToolDefinition(
+    name="bash_exec_readonly",
+    description=(
+        "Execute a read-only bash command in the workspace. "
+        "Suitable for workspace exploration: find, grep, ls, cat, wc, diff, etc. "
+        "Write operations, output redirections, and arbitrary interpreters are blocked. "
+        "Use only relative paths — '~' and absolute paths are not permitted."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "command": {"type": "string", "description": "Read-only shell command to run"},
+            "purpose": {"type": "string", "description": "Short explanation of why this command is being run"},
+            "timeout_seconds": {"type": "integer", "description": "Timeout in seconds (default 30)", "default": 30},
+        },
+        "required": ["command", "purpose"],
+    },
+    handler=_bash_exec_readonly,
+    impact=ToolImpact.read_only,
+))
+
+
+# ---------------------------------------------------------------------------
 # python_exec
 # ---------------------------------------------------------------------------
 

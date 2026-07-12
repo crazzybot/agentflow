@@ -21,11 +21,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Tools the decomposer is allowed to use — strictly read-only so it can inspect
-# the workspace without executing commands or writing files.  bash_exec is
-# intentionally excluded: it is not restricted to safe commands and in practice
-# causes the decomposer to start implementing the task rather than analysing it.
-_DECOMPOSER_TOOLS = frozenset({"file_read"})
+# Tools the decomposer is allowed to use — read-only exploration only.
+# bash_exec_readonly enforces the allowlist at the tool level so the decomposer
+# can run find/grep/ls without risking writes or arbitrary code execution.
+_DECOMPOSER_TOOLS = frozenset({"file_read", "bash_exec_readonly"})
 
 
 def _extract_json_array(text: str) -> str:
