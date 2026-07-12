@@ -167,6 +167,64 @@ def _successful_write_ids(tool_use_blocks: list, tool_results: list[dict]) -> se
     }
 
 
+def _parse_final_output(text: str) -> tuple[dict[str, Any], str]:
+    """Split model output into (structured JSON dict, prose text).
+
+    System prompts instruct agents to return raw JSON, but the model often
+    prepends a prose summary and wraps the JSON in a markdown fence.  This
+    function extracts the JSON into ``structured`` and returns only the
+    non-JSON prose as ``text`` so downstream consumers (reporter,
+    prior_results) receive a readable summary rather than a raw blob.
+
+    Extraction order:
+      1. Direct JSON parse  — text IS the JSON; keep text as-is for display.
+      2. Fenced code block  — strip the fence, return prose before it.
+      3. Outermost { … }   — last resort; return prose before the brace.
+
+    If no JSON is found both fields are returned unchanged.
+    """
+    if not text:
+        return {}, text
+
+    # 1. Direct parse — the whole text is JSON (model followed instructions).
+    #    Preserve text so the reporter can display the formatted JSON string.
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed, text
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # 2. Fenced code block: ```[json]\n { ... } \n```
+    tick_open = text.find("```")
+    if tick_open != -1:
+        newline_after_tick = text.find("\n", tick_open)
+        tick_close = text.find("```", tick_open + 3)
+        if newline_after_tick != -1 and tick_close > newline_after_tick:
+            fenced = text[newline_after_tick + 1 : tick_close].strip()
+            try:
+                parsed = json.loads(fenced)
+                if isinstance(parsed, dict):
+                    prose = text[:tick_open].rstrip(" \n\r-")
+                    return parsed, prose
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    # 3. Outermost { … } span — handles mixed prose + inline JSON with no fence.
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        try:
+            parsed = json.loads(text[start : end + 1])
+            if isinstance(parsed, dict):
+                prose = text[:start].rstrip(" \n\r-")
+                return parsed, prose
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    return {}, text
+
+
 def _budget_to_max_tokens(remaining_budget: float, last_input_tokens: int) -> int:
     """Compute how many output tokens we can afford with *remaining_budget*.
 
@@ -502,12 +560,11 @@ class Agent:
                     final_text = thinking_text
                     break
 
-        # Try to parse final text as JSON (many system prompts ask for JSON output)
-        structured: dict[str, Any] = {}
-        try:
-            structured = json.loads(final_text)
-        except (json.JSONDecodeError, TypeError):
-            pass
+        # Extract structured JSON and clean prose from the final model output.
+        # Agents are instructed to return raw JSON, but often prepend a summary
+        # and wrap the JSON in a markdown fence; _parse_final_output handles all
+        # three cases and strips the JSON block from the prose text.
+        structured, final_text = _parse_final_output(final_text)
 
         return AgentResult(
             task_id=envelope.task_id,

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from anthropic.types import TextBlock, ThinkingBlock
 
-from agentflow.agents.agent import Agent, _with_message_cache_breakpoint
+from agentflow.agents.agent import Agent, _with_message_cache_breakpoint, _parse_final_output
 from agentflow.core.models import AgentManifest, AgentStatus, TaskConstraints, TaskContext, TaskEnvelope
 
 
@@ -393,3 +393,53 @@ def test_cache_breakpoint_no_double_marking():
     result = _with_message_cache_breakpoint(messages)
     # setdefault should not overwrite existing cache_control
     assert result[0]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+# ---------------------------------------------------------------------------
+# _parse_final_output tests
+# ---------------------------------------------------------------------------
+
+def test_parse_final_output_pure_json():
+    """Direct JSON parse: structured populated, text preserved as-is."""
+    payload = '{"code": "x", "language": "Python"}'
+    structured, text = _parse_final_output(payload)
+    assert structured == {"code": "x", "language": "Python"}
+    assert text == payload  # kept for reporter display
+
+
+def test_parse_final_output_fenced_json():
+    """Prose + fenced JSON: structured populated, text is prose only."""
+    raw = "All done.\n\n---\n\n```json\n{\"code\": \"x\", \"language\": \"Python\"}\n```"
+    structured, text = _parse_final_output(raw)
+    assert structured == {"code": "x", "language": "Python"}
+    assert text == "All done."
+
+
+def test_parse_final_output_fenced_no_lang_tag():
+    """Fence without 'json' tag still extracted correctly."""
+    raw = "Summary.\n\n```\n{\"k\": \"v\"}\n```"
+    structured, text = _parse_final_output(raw)
+    assert structured == {"k": "v"}
+    assert text == "Summary."
+
+
+def test_parse_final_output_outermost_brace():
+    """Fallback: outermost { } extraction when no fence is present."""
+    raw = 'Here is the result: {"result": "ok"} — done.'
+    structured, text = _parse_final_output(raw)
+    assert structured == {"result": "ok"}
+    assert text == "Here is the result:"
+
+
+def test_parse_final_output_no_json():
+    """No JSON found: structured is empty, text unchanged."""
+    raw = "I could not complete the task."
+    structured, text = _parse_final_output(raw)
+    assert structured == {}
+    assert text == raw
+
+
+def test_parse_final_output_empty():
+    structured, text = _parse_final_output("")
+    assert structured == {}
+    assert text == ""
