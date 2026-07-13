@@ -59,7 +59,29 @@ def _truncate(text: str, label: str = "") -> str:
 # fetch_url
 # ---------------------------------------------------------------------------
 
+_ARXIV_ABS_RE = re.compile(r"arxiv\.org/abs/([\w./]+)", re.IGNORECASE)
+
 async def _fetch_url(url: str) -> str:
+    # Redirect arxiv abstract page URLs to the Atom API so we get structured
+    # text (title + abstract) instead of raw JavaScript-heavy HTML.
+    if m := _ARXIV_ABS_RE.search(url):
+        paper_id = m.group(1).rstrip("/")
+        api_url = f"https://export.arxiv.org/api/query?id_list={paper_id}&max_results=1"
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+            try:
+                resp = await client.get(api_url, headers=_HTTP_HEADERS)
+                resp.raise_for_status()
+                import xml.etree.ElementTree as ET
+                root = ET.fromstring(resp.text)
+                ns = "http://www.w3.org/2005/Atom"
+                entry = root.find(f"{{{ns}}}entry")
+                if entry is not None:
+                    title = (entry.findtext(f"{{{ns}}}title") or "").strip()
+                    summary = " ".join((entry.findtext(f"{{{ns}}}summary") or "").split())
+                    return _truncate(f"**{title}**\n\n{summary}", label=url)
+            except Exception:
+                pass  # fall through to raw fetch on any error
+
     async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
         try:
             resp = await client.get(url, headers=_HTTP_HEADERS)
@@ -73,7 +95,10 @@ async def _fetch_url(url: str) -> str:
 
 tool_registry.register(ToolDefinition(
     name="fetch_url",
-    description="Fetch the raw text content of any URL (HTML, JSON, plain text). Returns up to 8 000 characters.",
+    description=(
+        "Fetch the raw text content of any URL (HTML, JSON, plain text). Returns up to 8 000 characters. "
+        "arxiv.org/abs/ URLs are automatically resolved to title + abstract via the Atom API."
+    ),
     input_schema={
         "type": "object",
         "properties": {
@@ -645,11 +670,11 @@ def _make_stub(tool_name: str, description: str, required_params: list[str], imp
     )
 
 
-async def _arxiv_search_handler(query: str, max_results: int = 5) -> str:
+async def _arxiv_search_handler(query: str, max_results: int = 5, category: str | None = None) -> str:
     from agentflow.tools.arxiv_search import arxiv_search as _arxiv_search
 
     try:
-        papers = await asyncio.to_thread(_arxiv_search, query, max_results)
+        papers = await asyncio.to_thread(_arxiv_search, query, max_results, category)
     except (ValueError, RuntimeError) as exc:
         return f"arXiv search error: {exc}"
     if not papers:
@@ -669,7 +694,9 @@ tool_registry.register(ToolDefinition(
     description=(
         "Search academic papers on arXiv. Returns title, abstract, and URL for each result. "
         "Use this to get paper content directly — you do NOT need to fetch_url arxiv links "
-        "afterwards. Reserve fetch_url for non-arXiv sources."
+        "afterwards. Reserve fetch_url for non-arXiv sources. "
+        "Use the category parameter to restrict results to a subject area and avoid off-topic hits "
+        "(e.g. category='cs.LG' for ML, 'q-fin.TR' for trading, 'stat.ML' for statistical ML)."
     ),
     input_schema={
         "type": "object",
@@ -682,6 +709,14 @@ tool_registry.register(ToolDefinition(
                 "type": "integer",
                 "description": "Maximum number of results to return (default 5)",
                 "default": 5,
+            },
+            "category": {
+                "type": "string",
+                "description": (
+                    "Optional arXiv subject category filter to reduce off-topic results. "
+                    "Examples: 'cs.LG' (machine learning), 'cs.AI', 'q-fin.TR' (trading), "
+                    "'q-fin.PM' (portfolio management), 'stat.ML', 'econ.EM'."
+                ),
             },
         },
         "required": ["query"],

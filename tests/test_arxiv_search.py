@@ -133,6 +133,18 @@ class TestRequestConstruction:
         _, kwargs = mock_get.call_args
         assert kwargs["params"]["search_query"] == "all:neural networks"
 
+    def test_category_prefixes_search_query(self) -> None:
+        with patch(_PATCH_TARGET, _mock_httpx_get(_build_atom_feed([]))) as mock_get:
+            arxiv_search("stock trading", category="cs.LG")
+        _, kwargs = mock_get.call_args
+        assert kwargs["params"]["search_query"] == "cat:cs.LG AND all:stock trading"
+
+    def test_no_category_omits_cat_prefix(self) -> None:
+        with patch(_PATCH_TARGET, _mock_httpx_get(_build_atom_feed([]))) as mock_get:
+            arxiv_search("transformers")
+        _, kwargs = mock_get.call_args
+        assert "cat:" not in kwargs["params"]["search_query"]
+
     def test_max_results_forwarded(self) -> None:
         with patch(_PATCH_TARGET, _mock_httpx_get(_build_atom_feed([]))) as mock_get:
             arxiv_search("diffusion models", max_results=5)

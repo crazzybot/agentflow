@@ -15,12 +15,19 @@ _API_URL = "https://export.arxiv.org/api/query"
 _ATOM_NS = "http://www.w3.org/2005/Atom"
 
 
-def arxiv_search(query: str, max_results: int = 5) -> list[dict[str, str]]:
+def arxiv_search(
+    query: str,
+    max_results: int = 5,
+    category: str | None = None,
+) -> list[dict[str, str]]:
     """Search arXiv and return paper metadata including title, abstract, and URL.
 
     Args:
         query: Free-text search query (mapped to the ``all:`` field).
         max_results: Maximum number of results to return (default 5).
+        category: Optional arXiv subject category filter, e.g. ``"cs.LG"``,
+            ``"q-fin.TR"``, ``"stat.ML"``.  When set, only papers in that
+            category are returned, which sharply reduces off-topic results.
 
     Returns:
         A list of dicts with keys: "title", "abstract", "url".
@@ -34,8 +41,12 @@ def arxiv_search(query: str, max_results: int = 5) -> list[dict[str, str]]:
     if max_results < 1:
         raise ValueError("max_results must be a positive integer")
 
+    search_query = f"all:{query.strip()}"
+    if category:
+        search_query = f"cat:{category.strip()} AND {search_query}"
+
     params = {
-        "search_query": f"all:{query.strip()}",
+        "search_query": search_query,
         "max_results": max_results,
     }
 
@@ -78,5 +89,5 @@ def arxiv_search(query: str, max_results: int = 5) -> list[dict[str, str]]:
             "abstract": " ".join((summary_el.text or "").split()) if summary_el is not None else "",
         })
 
-    logger.info("arxiv_search(%r, max_results=%d) → %d results", query, max_results, len(results))
+    logger.info("arxiv_search(%r, cat=%r, max_results=%d) → %d results", query, category, max_results, len(results))
     return results

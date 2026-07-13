@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 from anthropic.types import TextBlock, ThinkingBlock
 
-from agentflow.agents.agent import Agent, _with_message_cache_breakpoint, _parse_final_output
+from agentflow.agents.agent import Agent, _compact_file_writes, _with_message_cache_breakpoint, _parse_final_output
 from agentflow.core.models import AgentManifest, AgentStatus, SSEEventType, TaskConstraints, TaskContext, TaskEnvelope
 
 
@@ -627,3 +627,67 @@ async def test_turn_index_increments_across_turns():
     assert len(result_calls) == 2
     assert result_calls[0].kwargs["turn_index"] == 1
     assert result_calls[1].kwargs["turn_index"] == 2
+
+
+# ---------------------------------------------------------------------------
+# _compact_file_writes — stub format
+# ---------------------------------------------------------------------------
+
+def _make_file_write_block(tool_id: str, path: str, content: str) -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "file_write", "input": {"path": path, "content": content}}
+
+
+def _make_tool_result_msg(tool_id: str, result_text: str) -> dict:
+    return {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": result_text}]}
+
+
+def _messages_with_file_write(tool_id: str, path: str, content: str) -> list[dict]:
+    return [
+        {"role": "user", "content": "write a file"},
+        {"role": "assistant", "content": [_make_file_write_block(tool_id, path, content)]},
+        _make_tool_result_msg(tool_id, f"Wrote {len(content.splitlines())} lines ({len(content)} chars) to {path}"),
+    ]
+
+
+def test_compact_short_content_kept_verbatim():
+    """Content ≤ 1 500 chars is not altered."""
+    messages = _messages_with_file_write("tid1", "out.md", "short content")
+    _compact_file_writes(messages, {"tid1"})
+    stub = messages[1]["content"][0]["input"]["content"]
+    assert stub == "short content"
+    assert "[…" not in stub
+
+
+def test_compact_long_content_truncated_with_ellipsis_marker():
+    """Content > 1 500 chars gets a '[… +N chars]' suffix, not <TRUNCATED>."""
+    long_content = "x" * 3000
+    messages = _messages_with_file_write("tid2", "big.md", long_content)
+    _compact_file_writes(messages, {"tid2"})
+    stub = messages[1]["content"][0]["input"]["content"]
+    assert stub.startswith("x" * 1500)
+    assert stub.endswith("[… +1500 chars]")
+    assert "<TRUNCATED" not in stub
+    assert "TRUNCATED" not in stub
+
+
+def test_compact_marker_includes_correct_remaining_count():
+    content = "a" * 2000
+    messages = _messages_with_file_write("tid3", "f.md", content)
+    _compact_file_writes(messages, {"tid3"})
+    stub = messages[1]["content"][0]["input"]["content"]
+    assert "[… +500 chars]" in stub
+
+
+def test_compact_path_preserved():
+    messages = _messages_with_file_write("tid4", "docs/guide.md", "y" * 2000)
+    _compact_file_writes(messages, {"tid4"})
+    assert messages[1]["content"][0]["input"]["path"] == "docs/guide.md"
+
+
+def test_compact_only_affects_successful_ids():
+    """A tool_use ID not in successful_ids is left untouched."""
+    long_content = "z" * 3000
+    messages = _messages_with_file_write("tid5", "file.md", long_content)
+    _compact_file_writes(messages, {"other_id"})
+    stub = messages[1]["content"][0]["input"]["content"]
+    assert stub == long_content  # unchanged

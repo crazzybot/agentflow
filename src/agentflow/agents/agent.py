@@ -109,8 +109,8 @@ def _compact_file_writes(messages: list[dict], successful_ids: set[str]) -> None
     preview keeps the cache footprint small while giving the model enough
     context to know what it already wrote (preventing pointless rewrites).
     If the content fits in 1 500 chars it is kept verbatim; otherwise it is
-    followed by ``<TRUNCATED writtenChars=N>`` so the model knows the file is
-    longer than the preview shown.
+    followed by ``[… +N chars]`` — a display-truncation marker the model reads
+    as "more content follows" rather than a write-operation failure.
 
     Only the most recent assistant message is scanned — earlier messages are
     already part of the cached prefix and modifying them would cause a miss.
@@ -138,7 +138,7 @@ def _compact_file_writes(messages: list[dict], successful_ids: set[str]) -> None
                 raw = str(inp.get("content", ""))
                 chars = len(raw)
                 if chars > 1500:
-                    stub_content = raw[:1500] + f"<TRUNCATED writtenChars={chars}>"
+                    stub_content = raw[:1500] + f"[… +{chars - 1500} chars]"
                 else:
                     stub_content = raw
                 new_content.append({
