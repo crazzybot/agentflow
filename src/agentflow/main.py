@@ -37,6 +37,9 @@ engine = OrchestratorEngine(registry)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    count = engine.reconcile_orphaned_runs()
+    if count:
+        logger.warning("Reconciled %d orphaned run(s) from previous instance", count)
     yield
     if settings.state_backend == "redis":
         from agentflow.core.redis_client import close_redis

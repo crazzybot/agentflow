@@ -12,8 +12,8 @@ from agentflow.core.bus import task_bus
 from agentflow.core.context import RunContext, context_store
 from agentflow.core.models import (AgentResult, AgentStatus, ExecutionPlan,
                                    HumanInputRequest, HumanInputResponse,
-                                   RunMeta, SSEEventType, Subtask,
-                                   TaskConstraints, TaskContext, TaskEnvelope)
+                                   RunMeta, SSEEvent, SSEEventType, SSEPayload,
+                                   Subtask, TaskConstraints, TaskContext, TaskEnvelope)
 from agentflow.core.registry import AgentRegistry
 from agentflow.llm import LLMClient
 from agentflow.orchestrator.decomposer import decompose_subtask, expand_plan
@@ -83,6 +83,49 @@ class OrchestratorEngine:
             return False
         task.cancel()
         return True
+
+    def reconcile_orphaned_runs(self) -> int:
+        """Mark runs that have no report.md as interrupted (called once at startup).
+
+        Any run directory with a meta.json but no report.md was in-flight when
+        the previous process exited.  Write a tombstone report so the run shows
+        as complete (failed) rather than perpetually in-progress.
+        """
+        runs_dir = Path(settings.runs_dir)
+        if not runs_dir.exists():
+            return 0
+        count = 0
+        for run_dir in runs_dir.iterdir():
+            if not run_dir.is_dir():
+                continue
+            if not (run_dir / "meta.json").exists():
+                continue
+            report_file = run_dir / "report.md"
+            if report_file.exists():
+                continue
+
+            run_id = run_dir.name
+
+            events_file = run_dir / "events.jsonl"
+            if events_file.exists():
+                lines = [l for l in events_file.read_text(encoding="utf-8").splitlines() if l.strip()]
+                event = SSEEvent(
+                    run_id=run_id,
+                    seq=len(lines),
+                    type=SSEEventType.run_error,
+                    payload=SSEPayload(message="Run interrupted: service restarted"),
+                )
+                with events_file.open("a", encoding="utf-8") as f:
+                    f.write(event.model_dump_json() + "\n")
+
+            report_file.write_text(
+                "# Run Interrupted\n\n"
+                "This run did not complete — the service restarted while it was in progress.\n",
+                encoding="utf-8",
+            )
+            logger.warning("Reconciled orphaned run %s", run_id)
+            count += 1
+        return count
 
     def _build_agents(self) -> None:
         """Instantiate one generic Agent per registered manifest."""
