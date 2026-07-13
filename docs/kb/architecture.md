@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-07-13
-last_verified_sha: 92129f9
+last_verified_sha: 5a2832d
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -175,7 +175,7 @@ variants so multiple API replicas can share a run — see
   storage (preserving thinking-block `signature` fields) so the history can be
   post-processed without SDK coupling; `_compact_file_writes()` replaces successful
   `file_write` tool_use inputs in the last stored assistant message with a compact
-  `{path, _chars}` stub immediately after each tool batch, preventing large file contents
+  `{path, content: "[compacted — N chars written to disk]"}` stub immediately after each tool batch, preventing large file contents
   from accumulating in the cache prefix across subsequent turns; `_parse_final_output()`
   splits the model's final text into `(structured: dict, prose: str)` — it handles raw
   JSON, markdown-fenced JSON (the common case where the model prepends a summary), and

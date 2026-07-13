@@ -32,8 +32,10 @@ system_prompt: |
     in my training data?" If yes, skip the fetch. Reserve fetch_url for primary
     sources with live or specific data (official API endpoints, regulatory filings,
     specific dated articles). Do not fetch well-known library or framework docs.
+    Do NOT use fetch_url for arXiv links — arxiv_search already returns the abstract.
   - arxiv_search: at most 8 calls per task. Prefer max_results=3 for focused
-    queries; use max_results=5 only for broad exploratory sweeps.
+    queries; use max_results=5 only for broad exploratory sweeps. The tool returns
+    title + abstract directly — no need to fetch the URL afterwards.
 
   Skill loading — only when instructed:
   - If the task instruction explicitly mentions equity research, SEC filings,

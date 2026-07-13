@@ -177,23 +177,28 @@ class TestRequestConstruction:
 # ---------------------------------------------------------------------------
 
 class TestResponseParsing:
-    def test_returns_list_of_abstract_urls(self) -> None:
-        expected = [
+    def test_returns_list_of_dicts_with_expected_keys(self) -> None:
+        urls = [
             "https://arxiv.org/abs/2301.00001",
             "https://arxiv.org/abs/2301.00002",
             "https://arxiv.org/abs/2301.00003",
         ]
-        atom = _build_atom_feed(expected)
+        atom = _build_atom_feed(urls, titles=["T0", "T1", "T2"], summaries=["S0", "S1", "S2"])
         with patch(_PATCH_TARGET, _mock_httpx_get(atom)):
             result = arxiv_search("quantum computing", max_results=3)
-        assert result == expected
+        assert len(result) == 3
+        for item in result:
+            assert set(item.keys()) == {"url", "title", "abstract"}
+        assert [r["url"] for r in result] == urls
+        assert result[0]["title"] == "T0"
+        assert result[0]["abstract"] == "S0"
 
     def test_result_order_matches_feed_order(self) -> None:
         urls = [f"https://arxiv.org/abs/2401.{i:05d}" for i in range(1, 6)]
         atom = _build_atom_feed(urls)
         with patch(_PATCH_TARGET, _mock_httpx_get(atom)):
             result = arxiv_search("ordering test", max_results=5)
-        assert result == urls
+        assert [r["url"] for r in result] == urls
 
     def test_empty_feed_returns_empty_list(self) -> None:
         atom = _build_atom_feed([])
@@ -206,7 +211,8 @@ class TestResponseParsing:
         atom = _build_atom_feed([paper_url])
         with patch(_PATCH_TARGET, _mock_httpx_get(atom)):
             result = arxiv_search("single paper")
-        assert result == [paper_url]
+        assert len(result) == 1
+        assert result[0]["url"] == paper_url
 
     def test_whitespace_around_id_text_is_stripped(self) -> None:
         atom = (
@@ -220,14 +226,17 @@ class TestResponseParsing:
         )
         with patch(_PATCH_TARGET, _mock_httpx_get(atom)):
             result = arxiv_search("whitespace")
-        assert result == ["https://arxiv.org/abs/2301.99999"]
+        assert result[0]["url"] == "https://arxiv.org/abs/2301.99999"
 
-    def test_single_result(self) -> None:
+    def test_single_result_includes_title_and_abstract(self) -> None:
         url = "https://arxiv.org/abs/1706.03762"
-        atom = _build_atom_feed([url], titles=["Attention Is All You Need"])
+        atom = _build_atom_feed([url], titles=["Attention Is All You Need"], summaries=["We propose..."])
         with patch(_PATCH_TARGET, _mock_httpx_get(atom)):
             result = arxiv_search("attention is all you need", max_results=1)
-        assert result == [url]
+        assert len(result) == 1
+        assert result[0]["url"] == url
+        assert result[0]["title"] == "Attention Is All You Need"
+        assert result[0]["abstract"] == "We propose..."
 
 
 # ---------------------------------------------------------------------------
@@ -312,12 +321,13 @@ def test_integration_attention_is_all_you_need(request: pytest.FixtureRequest) -
     assert isinstance(results, list), "Result must be a list"
     assert len(results) > 0, "Expected at least one result from arXiv"
 
-    for url in results:
-        assert isinstance(url, str), f"Each result must be a str, got {type(url)}"
-        assert url.startswith("https://arxiv.org/abs/"), (
-            f"URL does not start with expected prefix: {url!r}"
+    for item in results:
+        assert isinstance(item, dict), f"Each result must be a dict, got {type(item)}"
+        assert "url" in item and "title" in item and "abstract" in item
+        assert item["url"].startswith("https://arxiv.org/abs/"), (
+            f"URL does not start with expected prefix: {item['url']!r}"
         )
 
-    assert any("1706.03762" in url for url in results), (
+    assert any("1706.03762" in item["url"] for item in results), (
         f"Expected 1706.03762 in results, got: {results}"
     )

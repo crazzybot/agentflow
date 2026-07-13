@@ -87,49 +87,69 @@ tool_registry.register(ToolDefinition(
 
 
 # ---------------------------------------------------------------------------
-# web_search  (DuckDuckGo Instant Answers — no API key required)
+# web_search  (Tavily if TAVILY_API_KEY is set, else DuckDuckGo HTML fallback)
 # ---------------------------------------------------------------------------
 
-async def _web_search(query: str, max_results: int = 5) -> str:
-    params = {"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"}
-    async with httpx.AsyncClient(timeout=15) as client:
+async def _web_search_tavily(query: str, max_results: int) -> str:
+    payload = {"api_key": settings.tavily_api_key, "query": query, "max_results": max_results}
+    async with httpx.AsyncClient(timeout=20) as client:
         try:
-            resp = await client.get("https://api.duckduckgo.com/", params=params, headers=_HTTP_HEADERS)
+            resp = await client.post("https://api.tavily.com/search", json=payload)
+            resp.raise_for_status()
             data: dict[str, Any] = resp.json()
         except Exception as exc:
             return f"Search error: {exc}"
 
     lines: list[str] = []
-    if data.get("Abstract"):
-        lines.append(f"Abstract: {data['Abstract']}")
-        if data.get("AbstractURL"):
-            lines.append(f"Source: {data['AbstractURL']}")
-    for item in data.get("RelatedTopics", [])[:max_results]:
-        if not isinstance(item, dict):
-            continue
-        # RelatedTopics can nest topic groups
-        topics = item.get("Topics") or [item]
-        for t in topics[:2]:
-            if t.get("Text"):
-                lines.append(f"• {t['Text']}")
-                if t.get("FirstURL"):
-                    lines.append(f"  {t['FirstURL']}")
+    if answer := data.get("answer"):
+        lines.append(f"Summary: {answer}\n")
+    for r in data.get("results", []):
+        lines.append(f"• {r.get('title', '(no title)')}")
+        lines.append(f"  {r.get('url', '')}")
+        if content := r.get("content", ""):
+            lines.append(f"  {content[:400]}")
+        lines.append("")
+    return "\n".join(lines) if lines else f"No results for: {query!r}"
 
-    return "\n".join(lines) if lines else (
-        f"DuckDuckGo Instant Answers returned no results for: {query!r}. "
-        "This tool only covers DuckDuckGo's instant-answer topics (entity lookups, simple factual queries). "
-        "It is not a general web search and does not browse the open web. "
-        "Use fetch_url with a specific URL to retrieve page content directly."
-    )
+
+async def _web_search_ddg(query: str, max_results: int) -> str:
+    headers = {**_HTTP_HEADERS, "Accept": "text/html,application/xhtml+xml"}
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        try:
+            resp = await client.get(
+                "https://html.duckduckgo.com/html/",
+                params={"q": query},
+                headers=headers,
+            )
+            html = resp.text
+        except Exception as exc:
+            return f"Search error: {exc}"
+
+    titles = re.findall(r'class="result__a"[^>]*>(.+?)</a>', html)
+    urls = re.findall(r'class="result__url"[^>]*>\s*(.+?)\s*</', html)
+    snippets = re.findall(r'class="result__snippet"[^>]*>(.+?)</a>', html, re.DOTALL)
+
+    lines: list[str] = []
+    for title, url, snippet in list(zip(titles, urls, snippets))[:max_results]:
+        lines.append(f"• {re.sub(r'<[^>]+>', '', title).strip()}")
+        lines.append(f"  {url.strip()}")
+        if clean := re.sub(r'<[^>]+>', '', snippet).strip():
+            lines.append(f"  {clean[:400]}")
+        lines.append("")
+    return "\n".join(lines) if lines else f"No results for: {query!r}"
+
+
+async def _web_search(query: str, max_results: int = 5) -> str:
+    if settings.tavily_api_key:
+        return await _web_search_tavily(query, max_results)
+    return await _web_search_ddg(query, max_results)
 
 
 tool_registry.register(ToolDefinition(
     name="web_search",
     description=(
-        "Look up a topic using DuckDuckGo Instant Answers. Returns an abstract and related topics "
-        "for well-known entities and simple factual queries. "
-        "NOT a general web search — does not browse arbitrary pages or return search-result lists. "
-        "Use fetch_url to retrieve content from a specific URL."
+        "Search the web for information on any topic. Returns titles, URLs, and content snippets. "
+        "Uses Tavily when TAVILY_API_KEY is configured; falls back to DuckDuckGo HTML search otherwise."
     ),
     input_schema={
         "type": "object",
@@ -393,12 +413,13 @@ tool_registry.register(ToolDefinition(
     name="file_write",
     description=(
         "Write content to a file in the agent workspace. Creates parent directories automatically. "
-        "mode='overwrite' (default): replace entire file. "
-        "mode='append': add content at end of file. "
+        "mode='overwrite' (default): REPLACES THE ENTIRE FILE — use only for the first write or a deliberate full rewrite. "
+        "mode='append': add content at end of file — preferred for adding sections to an existing file. "
         "mode='insert_at_line': insert content before the given line number (requires line). "
         "mode='replace_lines': replace a range of lines (requires start_line and end_line). "
         "mode='replace_pattern': find-and-replace using a regex (requires pattern; replaces all occurrences). "
-        "mode='replace_between': replace text between two regex markers, keeping the marker lines (requires start_pattern and end_pattern)."
+        "mode='replace_between': replace text between two regex markers, keeping the marker lines (requires start_pattern and end_pattern). "
+        "IMPORTANT: Do not call overwrite on the same file multiple times in one task — use append or a targeted mode to add or update content."
     ),
     input_schema={
         "type": "object",
@@ -628,15 +649,28 @@ async def _arxiv_search_handler(query: str, max_results: int = 5) -> str:
     from agentflow.tools.arxiv_search import arxiv_search as _arxiv_search
 
     try:
-        urls = await asyncio.to_thread(_arxiv_search, query, max_results)
+        papers = await asyncio.to_thread(_arxiv_search, query, max_results)
     except (ValueError, RuntimeError) as exc:
         return f"arXiv search error: {exc}"
-    return "\n".join(urls) if urls else "No results found."
+    if not papers:
+        return "No results found."
+    lines: list[str] = []
+    for p in papers:
+        lines.append(f"**{p['title']}**")
+        lines.append(f"URL: {p['url']}")
+        if p["abstract"]:
+            lines.append(f"Abstract: {p['abstract'][:600]}")
+        lines.append("")
+    return "\n".join(lines)
 
 
 tool_registry.register(ToolDefinition(
     name="arxiv_search",
-    description="Search academic papers on arXiv and return a list of abstract URLs.",
+    description=(
+        "Search academic papers on arXiv. Returns title, abstract, and URL for each result. "
+        "Use this to get paper content directly — you do NOT need to fetch_url arxiv links "
+        "afterwards. Reserve fetch_url for non-arXiv sources."
+    ),
     input_schema={
         "type": "object",
         "properties": {

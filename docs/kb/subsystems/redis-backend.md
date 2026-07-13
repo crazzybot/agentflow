@@ -1,7 +1,7 @@
 ---
 title: Redis-Backed State Backend
 last_updated: 2026-07-13
-last_verified_sha: 92129f9
+last_verified_sha: 5a2832d
 sources:
   - src/agentflow/config.py
   - src/agentflow/core/redis_client.py

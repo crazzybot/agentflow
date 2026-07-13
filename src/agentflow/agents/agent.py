@@ -102,16 +102,18 @@ def _to_dict_content(content: list) -> list[dict]:
 
 
 def _compact_file_writes(messages: list[dict], successful_ids: set[str]) -> None:
-    """In-place: replace file_write tool_use inputs with compact stubs.
+    """In-place: truncate large file_write tool_use content to a preview stub.
 
-    Large file contents in ``tool_use`` input blocks accumulate in the cache
-    prefix and are re-read on every subsequent turn.  Once a write has succeeded
-    the content is on disk and doesn't need to remain in context.  Replacing it
-    with a path + size stub keeps the prefix compact without losing any
-    information the model needs to continue.
+    Large file contents accumulate in the cache prefix and are re-billed at
+    cache-creation rate on every subsequent turn.  Truncating to a 1 500-char
+    preview keeps the cache footprint small while giving the model enough
+    context to know what it already wrote (preventing pointless rewrites).
+    If the content fits in 1 500 chars it is kept verbatim; otherwise it is
+    followed by ``<TRUNCATED writtenChars=N>`` so the model knows the file is
+    longer than the preview shown.
 
-    Only the most recent assistant message is scanned — earlier messages were
-    already cached in their original form and changing them would cause a miss.
+    Only the most recent assistant message is scanned — earlier messages are
+    already part of the cached prefix and modifying them would cause a miss.
     """
     if not successful_ids:
         return
@@ -131,13 +133,19 @@ def _compact_file_writes(messages: list[dict], successful_ids: set[str]) -> None
                 and block.get("name") == "file_write"
                 and block.get("id") in successful_ids
             ):
-                path = (block.get("input") or {}).get("path", "?")
-                chars = len(str((block.get("input") or {}).get("content", "")))
+                inp = block.get("input") or {}
+                path = inp.get("path", "?")
+                raw = str(inp.get("content", ""))
+                chars = len(raw)
+                if chars > 1500:
+                    stub_content = raw[:1500] + f"<TRUNCATED writtenChars={chars}>"
+                else:
+                    stub_content = raw
                 new_content.append({
                     "type": "tool_use",
                     "id": block["id"],
                     "name": "file_write",
-                    "input": {"path": path, "content": f"[compacted — {chars} chars written to disk]"},
+                    "input": {"path": path, "content": stub_content},
                 })
                 changed = True
             else:

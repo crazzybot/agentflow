@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     # accepting the partial result.  Default: 30 minutes.
     human_input_timeout_s: float = 1800
 
+    tavily_api_key: str = ""
+
     # State backend: "memory" (default) or "redis"
     # Set STATE_BACKEND=redis to enable Redis-backed state.
     state_backend: str = "memory"

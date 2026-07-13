@@ -37,9 +37,13 @@ def test_tool_definition_to_anthropic_param():
 
 
 def test_stubs_registered():
-    stub_names = ["arxiv_search", "sql_query", "lint", "spell_check"]
+    stub_names = ["sql_query", "lint", "spell_check"]
     for name in stub_names:
         assert tool_registry.get(name) is not None, f"Stub {name!r} not registered"
+
+
+def test_arxiv_search_registered():
+    assert tool_registry.get("arxiv_search") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -91,11 +95,6 @@ async def test_python_exec():
     assert "42" in result
     assert "exit_code=0" in result
 
-
-@pytest.mark.asyncio
-async def test_stub_returns_informative_message():
-    result = await tool_registry.execute("arxiv_search", {"query": "transformers"})
-    assert "not yet integrated" in result.lower() or "stub" in result.lower() or "not" in result.lower()
 
 
 @pytest.mark.asyncio
