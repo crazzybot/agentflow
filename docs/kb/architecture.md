@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
-last_updated: 2026-07-11
-last_verified_sha: 1cf7104
+last_updated: 2026-07-13
+last_verified_sha: 92129f9
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -89,6 +89,15 @@ variants so multiple API replicas can share a run — see
    agent — appends it as a user turn before the next API call, emitting
    `run:message_received`. Because `push_user_message()` fans out to every registered
    agent's queue, all agents running in parallel receive the same injected message.
+   **Event correlation**: every event emitted inside the agentic loop carries a
+   `turn_index` equal to the 1-based LLM call iteration (the pre-loop
+   `agent:progress` "Starting:" event uses `turn_index=0`); tool call
+   `agent:progress` events also carry `tool_call_id` (the Anthropic `tool_use` block
+   ID); once the tool returns, a matching `agent:tool_result` event is emitted with
+   the same `tool_call_id` and `turn_index`, letting clients pair call and result and
+   group all events from one LLM turn together. The budget-exhausted short-circuit
+   path also emits an `agent:tool_result` event (with `data.budget_exhausted=true`)
+   so the client always sees a paired result.
 7. **Report** — once all subtasks are `completed`/`failed`, the engine gathers
    `ctx.all_results()`, computes a cost summary, and calls `compile_report()` in
    [`orchestrator/reporter.py`](../../src/agentflow/orchestrator/reporter.py), which
@@ -134,11 +143,16 @@ variants so multiple API replicas can share a run — see
 - **`orchestrator/reporter.py` — `compile_report()`**: synthesizes leaf-subtask results
   (plus partial/failed sections) into the final `report.md` via one more LLM call.
 - **`orchestrator/stream.py` — `StreamEmitter` / `StreamRegistry`**: per-run SSE event
-  buffer; `emit()` queues an `SSEEvent` for the `/stream` endpoint and optionally
-  appends it to `runs/<run_id>/events.jsonl`. `stream_registry` is built by a
-  `_make_stream_registry()` factory that returns a Redis-Streams-backed
-  `RedisStreamRegistry` (`stream_redis.py`) when `STATE_BACKEND=redis`; the registry
-  also exposes an async `connect()` for cross-replica streaming.
+  buffer; `emit()` appends an `SSEEvent` to an in-memory list and signals an
+  `asyncio.Event` so waiting consumers are unblocked without polling (multiple
+  consumers replay independently from position 0). `emit()` accepts optional
+  `turn_index` (1-based LLM call iteration) and `tool_call_id` (Anthropic
+  `tool_use` block ID) which are stored directly on `SSEEvent`; events are also
+  appended to `runs/<run_id>/events.jsonl` when `settings.capture_events` is set.
+  `stream_registry` is built by a `_make_stream_registry()` factory that returns a
+  Redis-Streams-backed `RedisStreamRegistry` (`stream_redis.py`) when
+  `STATE_BACKEND=redis`; the registry also exposes an async `connect()` for
+  cross-replica streaming.
 - **`agents/agent.py` — `Agent`**: single generic, manifest-driven class for every agent
   type; runs the tool-calling loop against Claude, tracks token/cost usage per call,
   and returns an `AgentResult` (`success`/`partial`/`failed`). The loop dispatches tool
@@ -151,7 +165,12 @@ variants so multiple API replicas can share a run — see
   `usage.thinking_tokens` (via `getattr` for forward-compatibility). `AgentResult`
   carries `thinking_tokens` as a separate counter (a subset of `output_tokens`); thinking
   tokens are priced at `cost_per_1m_thinking_tokens` while regular output tokens use
-  `cost_per_1m_output_tokens`. Three additional helpers manage token efficiency and
+  `cost_per_1m_output_tokens`. SSE events emitted during the loop carry `turn_index`
+  (1-based LLM call counter); `agent:progress` tool-call events carry `tool_call_id`
+  (the Anthropic `tool_use` block ID); `_call_tool()` emits a matching
+  `agent:tool_result` event (same `tool_call_id`) after the tool returns so clients can
+  pair call and result; the budget-exhausted path also emits `agent:tool_result` with
+  `data.budget_exhausted=true`. Three additional helpers manage token efficiency and
   output parsing: `_to_dict_content()` converts SDK response blocks to plain dicts on
   storage (preserving thinking-block `signature` fields) so the history can be
   post-processed without SDK coupling; `_compact_file_writes()` replaces successful

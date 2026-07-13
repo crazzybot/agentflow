@@ -42,12 +42,16 @@ class StreamEmitter:
         agent_id: str | None = None,
         message: str = "",
         data: Any = None,
+        turn_index: int | None = None,
+        tool_call_id: str | None = None,
     ) -> None:
         event = SSEEvent(
             run_id=self.run_id,
             seq=self._next_seq(),
             type=event_type,
             agent_id=agent_id,
+            turn_index=turn_index,
+            tool_call_id=tool_call_id,
             payload=SSEPayload(message=message, data=data),
         )
         self._buffer.append(event)

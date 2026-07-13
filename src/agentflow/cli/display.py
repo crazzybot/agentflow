@@ -76,6 +76,13 @@ class RunDisplay:
             if self.verbose and message:
                 self._print(event_type, agent_id, message)
 
+        elif event_type == "agent:tool_result":
+            if self.verbose and data and isinstance(data, dict):
+                tool = data.get("tool", "")
+                result = data.get("result", "")
+                preview = result[:120].replace("\n", " ")
+                self._print(event_type, agent_id, f"← {tool}: {preview}")
+
         elif event_type == "agent:query":
             self._print(event_type, agent_id, message)
 

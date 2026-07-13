@@ -267,6 +267,7 @@ class Agent:
             SSEEventType.agent_progress,
             agent_id=self.agent_id,
             message=f"Starting: {envelope.instruction[:80]}",
+            turn_index=0,
         )
         try:
             result = await self._execute(envelope, emitter, resume_messages=resume_messages, ctx=ctx)
@@ -483,7 +484,7 @@ class Agent:
                 for block in response.content:
                     thinking_text = getattr(block, "thinking", None)
                     if block.type == "thinking" and thinking_text and thinking_text.strip():
-                        emitter.emit(SSEEventType.agent_thought, agent_id=self.agent_id, message=thinking_text)
+                        emitter.emit(SSEEventType.agent_thought, agent_id=self.agent_id, message=thinking_text, turn_index=iteration)
 
             # Collect any text the model produced this turn (BetaTextBlock or TextBlock)
             for block in response.content:
@@ -506,7 +507,7 @@ class Agent:
                 pending_tool_use = [b for b in response.content if b.type == "tool_use"]
                 if pending_tool_use:
                     pending_results = await asyncio.gather(
-                        *[self._checked_call_tool(b, tools, emitter, tool_call_counts, tool_limits)
+                        *[self._checked_call_tool(b, tools, emitter, tool_call_counts, tool_limits, iteration)
                           for b in pending_tool_use]
                     )
                     messages.append({"role": "user", "content": list(pending_results)})
@@ -524,12 +525,13 @@ class Agent:
                         SSEEventType.agent_thought,
                         agent_id=self.agent_id,
                         message=text,
+                        turn_index=iteration,
                     )
 
             # Execute all tool calls concurrently, then feed results back
             tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
             tool_results = await asyncio.gather(
-                *[self._checked_call_tool(b, tools, emitter, tool_call_counts, tool_limits)
+                *[self._checked_call_tool(b, tools, emitter, tool_call_counts, tool_limits, iteration)
                   for b in tool_use_blocks]
             )
 
@@ -547,7 +549,7 @@ class Agent:
                 pending = await ctx.pop_user_message(self.agent_id)
                 if pending is not None:
                     messages.append({"role": "user", "content": pending})
-                    emitter.emit(SSEEventType.run_message_received, agent_id=self.agent_id, message=pending[:120])
+                    emitter.emit(SSEEventType.run_message_received, agent_id=self.agent_id, message=pending[:120], turn_index=iteration)
 
         # With extended thinking the model may end via thinking + tool use without ever
         # producing a text block.  Fall back to the last thinking block so the reporter
@@ -589,12 +591,15 @@ class Agent:
         block: Any,
         tools: list,
         emitter: "StreamEmitter",
+        turn_index: int,
     ) -> dict[str, Any]:
         emitter.emit(
             SSEEventType.agent_progress,
             agent_id=self.agent_id,
             message=f"Calling tool: {block.name}",
             data={"tool": block.name, "input": block.input},
+            turn_index=turn_index,
+            tool_call_id=block.id,
         )
 
         # Find in the tools list for this invocation (built-in + MCP)
@@ -611,6 +616,14 @@ class Agent:
             result_text = result_text[:_MAX_TOOL_RESULT_CHARS] + "\n… [truncated]"
 
         logger.debug("[%s] Tool %r → %s…", self.agent_id, block.name, result_text[:80])
+        emitter.emit(
+            SSEEventType.agent_tool_result,
+            agent_id=self.agent_id,
+            message=result_text[:200],
+            data={"tool": block.name, "result": result_text},
+            turn_index=turn_index,
+            tool_call_id=block.id,
+        )
         return {
             "type": "tool_result",
             "tool_use_id": block.id,
@@ -624,6 +637,7 @@ class Agent:
         emitter: "StreamEmitter",
         counts: dict[str, int],
         limits: dict[str, int],
+        turn_index: int,
     ) -> dict[str, Any]:
         """Call a tool, enforcing manifest tool_limits before dispatch."""
         if block.name in limits:
@@ -633,13 +647,22 @@ class Agent:
                     "[%s] Tool budget exhausted: '%s' limited to %d call(s), this would be call %d",
                     self.agent_id, block.name, limits[block.name], counts[block.name],
                 )
+                budget_error = (
+                    f"Tool budget exhausted: '{block.name}' is limited to "
+                    f"{limits[block.name]} call(s) per task. "
+                    "Use information already gathered instead of making additional calls."
+                )
+                emitter.emit(
+                    SSEEventType.agent_tool_result,
+                    agent_id=self.agent_id,
+                    message=budget_error,
+                    data={"tool": block.name, "result": budget_error, "budget_exhausted": True},
+                    turn_index=turn_index,
+                    tool_call_id=block.id,
+                )
                 return {
                     "type": "tool_result",
                     "tool_use_id": block.id,
-                    "content": (
-                        f"Tool budget exhausted: '{block.name}' is limited to "
-                        f"{limits[block.name]} call(s) per task. "
-                        "Use information already gathered instead of making additional calls."
-                    ),
+                    "content": budget_error,
                 }
-        return await self._call_tool(block, tools, emitter)
+        return await self._call_tool(block, tools, emitter, turn_index)

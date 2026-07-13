@@ -149,6 +149,7 @@ class SSEEventType(str, Enum):
     task_dispatched = "task:dispatched"
     agent_progress = "agent:progress"
     agent_thought = "agent:thought"
+    agent_tool_result = "agent:tool_result"
     agent_query = "agent:query"
     task_complete = "task:complete"
     task_partial = "task:partial"
@@ -174,6 +175,8 @@ class SSEEvent(BaseModel):
     ts: int = Field(default_factory=lambda: int(time.time() * 1000))
     type: SSEEventType
     agent_id: str | None = None
+    turn_index: int | None = None
+    tool_call_id: str | None = None
     payload: SSEPayload = Field(default_factory=SSEPayload)
 
 

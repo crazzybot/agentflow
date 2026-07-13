@@ -1,11 +1,11 @@
 """Tests for the generic Agent class (without live LLM or MCP calls)."""
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 from anthropic.types import TextBlock, ThinkingBlock
 
 from agentflow.agents.agent import Agent, _with_message_cache_breakpoint, _parse_final_output
-from agentflow.core.models import AgentManifest, AgentStatus, TaskConstraints, TaskContext, TaskEnvelope
+from agentflow.core.models import AgentManifest, AgentStatus, SSEEventType, TaskConstraints, TaskContext, TaskEnvelope
 
 
 def _make_manifest(
@@ -443,3 +443,187 @@ def test_parse_final_output_empty():
     structured, text = _parse_final_output("")
     assert structured == {}
     assert text == ""
+
+
+# ---------------------------------------------------------------------------
+# turn_index / tool_call_id / agent:tool_result event tests
+# ---------------------------------------------------------------------------
+
+def _make_tool_use_block(name: str = "file_read", tool_id: str = "toolu_t1", input_: dict | None = None):
+    block = MagicMock()
+    block.type = "tool_use"
+    block.id = tool_id
+    block.name = name
+    block.input = input_ or {}
+    return block
+
+
+def _make_tool_use_resp(block, input_tokens: int = 10, output_tokens: int = 5):
+    resp = MagicMock()
+    resp.stop_reason = "tool_use"
+    resp.content = [block]
+    resp.usage.input_tokens = input_tokens
+    resp.usage.output_tokens = output_tokens
+    resp.usage.cache_creation_input_tokens = 0
+    resp.usage.cache_read_input_tokens = 0
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_tool_call_event_carries_tool_call_id_and_turn_index():
+    """agent:progress for a tool call must include tool_call_id and turn_index."""
+    tool_block = _make_tool_use_block("file_read", "toolu_x1")
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(
+        side_effect=[_make_tool_use_resp(tool_block), _mock_response()]
+    )
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    agent = Agent(_make_manifest(tools=["file_read"]), mock_client)
+    await agent.run(_make_envelope(), emitter)
+
+    # Find the agent:progress call that announces the tool invocation
+    progress_calls = [
+        c for c in emitter.emit.call_args_list
+        if c.args[0] == SSEEventType.agent_progress
+        and "file_read" in c.kwargs.get("message", "")
+    ]
+    assert progress_calls, "Expected at least one agent:progress for tool call"
+    kw = progress_calls[0].kwargs
+    assert kw["tool_call_id"] == "toolu_x1"
+    assert kw["turn_index"] == 1  # first LLM turn → iteration=1
+
+
+@pytest.mark.asyncio
+async def test_tool_result_event_emitted_with_matching_tool_call_id():
+    """agent:tool_result must be emitted after the tool executes, with matching tool_call_id."""
+    tool_block = _make_tool_use_block("file_read", "toolu_y2")
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(
+        side_effect=[_make_tool_use_resp(tool_block), _mock_response()]
+    )
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    agent = Agent(_make_manifest(tools=["file_read"]), mock_client)
+    await agent.run(_make_envelope(), emitter)
+
+    result_calls = [
+        c for c in emitter.emit.call_args_list
+        if c.args[0] == SSEEventType.agent_tool_result
+    ]
+    assert result_calls, "Expected agent:tool_result event"
+    kw = result_calls[0].kwargs
+    assert kw["tool_call_id"] == "toolu_y2"
+    assert kw["turn_index"] == 1
+    assert "tool" in (kw.get("data") or {})
+
+
+@pytest.mark.asyncio
+async def test_tool_result_event_ordering_relative_to_progress():
+    """agent:tool_result must come after its matching agent:progress in the emit sequence."""
+    tool_block = _make_tool_use_block("file_read", "toolu_z3")
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(
+        side_effect=[_make_tool_use_resp(tool_block), _mock_response()]
+    )
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    agent = Agent(_make_manifest(tools=["file_read"]), mock_client)
+    await agent.run(_make_envelope(), emitter)
+
+    types_in_order = [c.args[0] for c in emitter.emit.call_args_list]
+    progress_idx = next(
+        (i for i, t in enumerate(types_in_order) if t == SSEEventType.agent_progress and "file_read" in emitter.emit.call_args_list[i].kwargs.get("message", "")),
+        None,
+    )
+    result_idx = next(
+        (i for i, t in enumerate(types_in_order) if t == SSEEventType.agent_tool_result),
+        None,
+    )
+    assert progress_idx is not None
+    assert result_idx is not None
+    assert result_idx > progress_idx
+
+
+@pytest.mark.asyncio
+async def test_budget_exhausted_tool_emits_tool_result_event():
+    """When a tool's budget is exhausted, an agent:tool_result event is still emitted."""
+    manifest = _make_manifest(tools=["file_read"], tool_limits={"file_read": 1})
+    b1 = _make_tool_use_block("file_read", "toolu_a1")
+    b2 = _make_tool_use_block("file_read", "toolu_a2")
+
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(
+        side_effect=[_make_tool_use_resp(b1), _make_tool_use_resp(b2), _mock_response()]
+    )
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    agent = Agent(manifest, mock_client)
+    await agent.run(_make_envelope(), emitter)
+
+    result_calls = [
+        c for c in emitter.emit.call_args_list
+        if c.args[0] == SSEEventType.agent_tool_result
+    ]
+    # Should have one result for the allowed call and one for the budget-exhausted call
+    assert len(result_calls) == 2
+    exhausted_call = next(
+        (c for c in result_calls if (c.kwargs.get("data") or {}).get("budget_exhausted")),
+        None,
+    )
+    assert exhausted_call is not None
+    assert exhausted_call.kwargs["tool_call_id"] == "toolu_a2"
+
+
+@pytest.mark.asyncio
+async def test_turn_index_zero_for_start_event():
+    """The initial agent:progress 'Starting:' event must carry turn_index=0."""
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    agent = Agent(_make_manifest(), mock_client)
+    await agent.run(_make_envelope(), emitter)
+
+    start_calls = [
+        c for c in emitter.emit.call_args_list
+        if c.kwargs.get("message", "").startswith("Starting:")
+    ]
+    assert start_calls
+    assert start_calls[0].kwargs["turn_index"] == 0
+
+
+@pytest.mark.asyncio
+async def test_turn_index_increments_across_turns():
+    """Successive LLM turns produce turn_index values 1, 2, ... on tool call events."""
+    b1 = _make_tool_use_block("file_read", "toolu_b1")
+    b2 = _make_tool_use_block("file_read", "toolu_b2")
+
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(
+        side_effect=[_make_tool_use_resp(b1), _make_tool_use_resp(b2), _mock_response()]
+    )
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    agent = Agent(_make_manifest(tools=["file_read"]), mock_client)
+    await agent.run(_make_envelope(), emitter)
+
+    result_calls = [
+        c for c in emitter.emit.call_args_list
+        if c.args[0] == SSEEventType.agent_tool_result
+    ]
+    assert len(result_calls) == 2
+    assert result_calls[0].kwargs["turn_index"] == 1
+    assert result_calls[1].kwargs["turn_index"] == 2

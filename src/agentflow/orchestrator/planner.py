@@ -229,10 +229,11 @@ async def create_plan(
                 SSEEventType.agent_progress,
                 agent_id="planner",
                 message=f"Exploring workspace: {', '.join(tool_names)}",
+                turn_index=iteration + 1,
             )
             for block in response.content:
                 if isinstance(block, TextBlock) and block.text.strip():
-                    emitter.emit(SSEEventType.agent_thought, agent_id="planner", message=block.text)
+                    emitter.emit(SSEEventType.agent_thought, agent_id="planner", message=block.text, turn_index=iteration + 1)
 
         tool_results = await asyncio.gather(
             *[_call_planner_tool(b, planner_tools) for b in tool_use_blocks]
