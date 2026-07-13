@@ -137,7 +137,7 @@ def _compact_file_writes(messages: list[dict], successful_ids: set[str]) -> None
                     "type": "tool_use",
                     "id": block["id"],
                     "name": "file_write",
-                    "input": {"path": path, "_written": True, "_chars": chars},
+                    "input": {"path": path, "content": f"[compacted — {chars} chars written to disk]"},
                 })
                 changed = True
             else:
