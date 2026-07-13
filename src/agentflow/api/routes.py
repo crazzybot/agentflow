@@ -6,20 +6,6 @@ import json
 import uuid
 from pathlib import Path
 
-
-def _iter_json_objects(text: str):
-    """Yield all JSON objects from text, tolerating both compact JSONL and pretty-printed."""
-    decoder = json.JSONDecoder()
-    idx = 0
-    while idx < len(text):
-        while idx < len(text) and text[idx] in " \t\n\r":
-            idx += 1
-        if idx >= len(text):
-            break
-        obj, end = decoder.raw_decode(text, idx)
-        yield obj
-        idx = end
-
 from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
@@ -44,6 +30,20 @@ from agentflow.core.models import (
     UserMessage,
 )
 from agentflow.orchestrator.stream import stream_registry
+
+
+def _iter_json_objects(text: str):
+    """Yield all JSON objects from text, tolerating both compact JSONL and pretty-printed."""
+    decoder = json.JSONDecoder()
+    idx = 0
+    while idx < len(text):
+        while idx < len(text) and text[idx] in " \t\n\r":
+            idx += 1
+        if idx >= len(text):
+            break
+        obj, end = decoder.raw_decode(text, idx)
+        yield obj
+        idx = end
 
 router = APIRouter()
 

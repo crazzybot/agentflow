@@ -16,7 +16,7 @@ from agentflow.core.models import (AgentResult, AgentStatus, ExecutionPlan,
                                    Subtask, TaskConstraints, TaskContext, TaskEnvelope)
 from agentflow.core.registry import AgentRegistry
 from agentflow.llm import LLMClient
-from agentflow.orchestrator.decomposer import decompose_subtask, expand_plan
+from agentflow.orchestrator.decomposer import decompose_subtask
 from agentflow.orchestrator.planner import create_plan
 from agentflow.orchestrator.reporter import compile_report
 from agentflow.orchestrator.scheduler import DependencyGraph
@@ -108,7 +108,7 @@ class OrchestratorEngine:
 
             events_file = run_dir / "events.jsonl"
             if events_file.exists():
-                lines = [l for l in events_file.read_text(encoding="utf-8").splitlines() if l.strip()]
+                lines = [line for line in events_file.read_text(encoding="utf-8").splitlines() if line.strip()]
                 event = SSEEvent(
                     run_id=run_id,
                     seq=len(lines),
