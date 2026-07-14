@@ -11,7 +11,7 @@ Key layout (all with a configurable TTL):
 Design notes
 ------------
 * Results are written through to Redis AND kept in a local dict so that the
-  synchronous helpers build_prior_results / build_prior_messages still work
+  synchronous helpers build_prior_results / build_upstream_artifacts still work
   without requiring an async call.  Cross-replica reads use get_result() /
   all_results() which go to Redis directly.
 
@@ -252,14 +252,13 @@ class RedisRunContext:
             if dep_id in self._local_results
         }
 
-    def build_prior_messages(self, dep_ids: list[str]) -> list[Any]:
-        if len(dep_ids) != 1:
-            return []
-        dep_id = dep_ids[0]
-        result = self._local_results.get(dep_id)
-        if result is None or not result.messages:
-            return []
-        return result.messages
+    def build_upstream_artifacts(self, dep_ids: list[str]) -> dict[str, list[str]]:
+        """Return file paths written by completed dependencies, keyed by task ID."""
+        return {
+            dep_id: self._local_results[dep_id].files_written
+            for dep_id in dep_ids
+            if dep_id in self._local_results and self._local_results[dep_id].files_written
+        }
 
 
 class RedisContextStore:

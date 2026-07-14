@@ -56,9 +56,9 @@ class TaskContext(BaseModel):
     prior_results: dict[str, Any] = Field(default_factory=dict)
     shared_memory: dict[str, Any] = Field(default_factory=dict)
     user_context: dict[str, Any] = Field(default_factory=dict)
-    # Full message history from a single dependency — injected when there is exactly one
-    # upstream subtask so the agent inherits prior tool results without re-reading files.
-    prior_messages: list[Any] = Field(default_factory=list, exclude=True)
+    # File paths written by each upstream dependency — agents use these to read
+    # upstream outputs rather than receiving the full conversation history.
+    upstream_artifacts: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class TaskEnvelope(BaseModel):
@@ -100,8 +100,10 @@ class AgentResult(BaseModel):
     tokens_used: int = 0  # kept for backward compat; equals sum of all token types
     cost_usd: float = 0.0
     duration_ms: int = 0
-    # Full conversation messages — not serialised, used in-memory for continuation
-    # (Fix 3) and downstream context injection (Fix 2).
+    # Relative paths of every file successfully written during this agent's run.
+    files_written: list[str] = Field(default_factory=list)
+    # Full conversation messages — not serialised, used in-memory for same-agent
+    # continuation when the iteration limit is hit.
     messages: list[Any] = Field(default_factory=list, exclude=True)
 
 

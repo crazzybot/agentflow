@@ -362,34 +362,75 @@ class OrchestratorEngine:
         emitter: StreamEmitter,
         task_budget_usd: float | None,
     ) -> bool:
-        """Run decomposed micro-subtasks in sequence and promote the last result to the parent ID.
+        """Run decomposed micro-subtasks with DAG scheduling and promote the sink result.
 
-        Each micro-task is dispatched through the normal retry/budget/fallback path.
-        Running sequentially respects the dependency chain the decomposer declared
-        and ensures each step sees the completed output of the previous one.
+        Uses the same DependencyGraph scheduler as the top-level plan so parallel
+        branches within a decomposed subtask run concurrently.  The sink micro-task
+        (the one no other micro-task depends on) is promoted to the parent subtask ID
+        so downstream subtasks can find the aggregated result.
         """
         n = len(micro)
         micro_budget = (task_budget_usd / n) if task_budget_usd else None
 
-        for ms in micro:
-            ok = await self._dispatch_subtask(
-                run_id, ms, ctx, emitter, micro_budget, _skip_decompose=True
-            )
-            if not ok:
-                emitter.emit(
-                    SSEEventType.task_failed,
-                    agent_id=parent.agent_id,
-                    message=f"Subtask {parent.id} failed at micro-step {ms.id}",
-                    data={"subtask_id": parent.id},
-                )
-                return False
+        micro_plan = ExecutionPlan(run_id=run_id, subtasks=micro)
+        graph = DependencyGraph(micro_plan)
+        completed: set[str] = set()
+        failed: set[str] = set()
+        in_flight: dict[str, asyncio.Task[bool]] = {}
 
-        # Promote the last micro-task's result under the parent ID so downstream
-        # subtasks that depend on this one can find their prior results / messages.
+        try:
+            while len(completed) + len(failed) < n:
+                ready = [
+                    ms for ms in graph.ready(completed, failed)
+                    if ms.id not in in_flight
+                ]
+                for ms in ready:
+                    in_flight[ms.id] = asyncio.create_task(
+                        self._dispatch_subtask(run_id, ms, ctx, emitter, micro_budget, _skip_decompose=True)
+                    )
+
+                if not in_flight:
+                    for ms in micro:
+                        if ms.id not in completed and ms.id not in failed:
+                            failed.add(ms.id)
+                    break
+
+                done, _ = await asyncio.wait(in_flight.values(), return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    micro_id = next(k for k, v in in_flight.items() if v is task)
+                    in_flight.pop(micro_id)
+                    try:
+                        succeeded: bool = task.result()
+                    except Exception:
+                        succeeded = False
+                    if succeeded:
+                        completed.add(micro_id)
+                    else:
+                        failed.add(micro_id)
+        except asyncio.CancelledError:
+            for task in in_flight.values():
+                task.cancel()
+            raise
+
+        if failed:
+            emitter.emit(
+                SSEEventType.task_failed,
+                agent_id=parent.agent_id,
+                message=f"Subtask {parent.id} failed at micro-step(s): {sorted(failed)}",
+                data={"subtask_id": parent.id},
+            )
+            return False
+
+        # Promote the sink micro-task's result (the one no other micro-task depends on)
+        # so downstream subtasks that depend on parent.id find the aggregated output.
+        all_dep_ids = {dep for ms in micro for dep in ms.depends_on}
+        sinks = [ms for ms in micro if ms.id not in all_dep_ids]
+        sink = sinks[-1] if sinks else micro[-1]
+
         all_results = await ctx.all_results()
-        last_result = all_results.get(micro[-1].id)
-        if last_result is not None:
-            await ctx.store_result(parent.id, last_result)
+        sink_result = all_results.get(sink.id)
+        if sink_result is not None:
+            await ctx.store_result(parent.id, sink_result)
 
         emitter.emit(
             SSEEventType.task_complete,
@@ -447,12 +488,12 @@ class OrchestratorEngine:
                     )
 
         prior_results = ctx.build_prior_results(subtask.depends_on)
-        prior_messages = ctx.build_prior_messages(subtask.depends_on)
+        upstream_artifacts = ctx.build_upstream_artifacts(subtask.depends_on)
         envelope = TaskEnvelope(
             parent_run_id=run_id,
             agent_id=subtask.agent_id,
             instruction=subtask.instruction,
-            context=TaskContext(prior_results=prior_results, prior_messages=prior_messages, user_context=agent_user_context),
+            context=TaskContext(prior_results=prior_results, upstream_artifacts=upstream_artifacts, user_context=agent_user_context),
             constraints=TaskConstraints(
                 budget_usd=task_budget_usd,
                 timeout_ms=settings.task_timeout_ms,

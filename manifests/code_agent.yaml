@@ -43,14 +43,19 @@ system_prompt: |
 
   Respond with raw JSON only — no markdown fences.
 decomposition_prompt: |
-  You are a coding task decomposer. Given a single coding task instruction, split it into
-  a sequenced list of smaller, focused micro-subtasks that can each be completed within
-  15 tool calls by a software engineer agent.
+  You are a coding task decomposer. Analyse the given coding task, then split it into
+  focused micro-subtasks that can each be completed within 15 tool calls.
 
   Rules:
-  - Each micro-subtask must produce at most 3 files.
-  - Micro-subtasks must form a valid dependency chain (later tasks may depend on earlier ones).
-  - Preserve the original agent_id for all micro-subtasks.
+  - Each micro-subtask must write at most 3 files. Aim for one clear output file per task.
+  - The LAST micro-subtask must be an aggregator: it reads all files produced by the other
+    micro-subtasks, verifies correctness, and produces the final summary result. Its
+    dependsOn must list every other micro-subtask id.
+  - Non-aggregator micro-subtasks that do not depend on each other SHOULD run in parallel:
+    set their dependsOn to only what they truly need, not to every preceding task.
+  - The instruction for each micro-subtask must name the exact output files it will write
+    and, if it depends on upstream micro-subtasks, the exact file paths to read.
+  - Preserve the original agentId for all micro-subtasks.
   - Use the same id prefix as the original subtask (e.g. "st_1" → "st_1_a", "st_1_b", ...).
   - If the task is already small enough (≤3 files, single logical unit), return it unchanged
     as a single-element list.
@@ -63,9 +68,22 @@ decomposition_prompt: |
       "agentId": "CodeAgent",
       "instruction": "...",
       "dependsOn": [],
-      "expectedOutput": "..."
+      "expectedOutput": "Writes <file> with ..."
     },
-    ...
+    {
+      "id": "st_1_b",
+      "agentId": "CodeAgent",
+      "instruction": "...",
+      "dependsOn": [],
+      "expectedOutput": "Writes <file> with ..."
+    },
+    {
+      "id": "st_1_z",
+      "agentId": "CodeAgent",
+      "instruction": "Read <files from st_1_a and st_1_b>. Verify all outputs and produce the final summary.",
+      "dependsOn": ["st_1_a", "st_1_b"],
+      "expectedOutput": "Final aggregated result"
+    }
   ]
 fallback_for: []
 max_concurrency: 2

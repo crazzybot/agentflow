@@ -1,7 +1,7 @@
 ---
 title: Redis-Backed State Backend
-last_updated: 2026-07-13
-last_verified_sha: 1c1cfeb
+last_updated: 2026-07-14
+last_verified_sha: 2878fae
 sources:
   - src/agentflow/config.py
   - src/agentflow/core/redis_client.py
@@ -96,7 +96,7 @@ already-finished runs done.
 
 [`context_redis.py`](../../../src/agentflow/core/context_redis.py) is
 **write-through**: `store_result()` writes to the Redis hash *and* a local dict,
-so the synchronous `build_prior_results()`/`build_prior_messages()` helpers work
+so the synchronous `build_prior_results()`/`build_upstream_artifacts()` helpers work
 without an async call, while `get_result()`/`all_results()` fall back to Redis
 for cross-replica reads. Cost is tracked both locally (authoritative for
 `within_budget()`) and in Redis (`INCRBYFLOAT`); `budget_usd` and `user_context`

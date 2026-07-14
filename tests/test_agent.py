@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 from anthropic.types import TextBlock, ThinkingBlock
 
-from agentflow.agents.agent import Agent, _compact_file_writes, _with_message_cache_breakpoint, _parse_final_output
+from agentflow.agents.agent import Agent, _with_message_cache_breakpoint, _parse_final_output
 from agentflow.core.models import AgentManifest, AgentStatus, SSEEventType, TaskConstraints, TaskContext, TaskEnvelope
 
 
@@ -630,64 +630,120 @@ async def test_turn_index_increments_across_turns():
 
 
 # ---------------------------------------------------------------------------
-# _compact_file_writes — stub format
+# files_written tracking
 # ---------------------------------------------------------------------------
 
-def _make_file_write_block(tool_id: str, path: str, content: str) -> dict:
-    return {"type": "tool_use", "id": tool_id, "name": "file_write", "input": {"path": path, "content": content}}
+def _make_file_write_tool_block(tool_id: str, path: str):
+    block = MagicMock()
+    block.type = "tool_use"
+    block.id = tool_id
+    block.name = "file_write"
+    block.input = {"path": path, "content": "file content"}
+    return block
 
 
-def _make_tool_result_msg(tool_id: str, result_text: str) -> dict:
-    return {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": result_text}]}
+def _make_file_write_response(tool_id: str, path: str):
+    block = _make_file_write_tool_block(tool_id, path)
+    resp = MagicMock()
+    resp.stop_reason = "tool_use"
+    resp.content = [block]
+    resp.usage.input_tokens = 10
+    resp.usage.output_tokens = 5
+    resp.usage.cache_creation_input_tokens = 0
+    resp.usage.cache_read_input_tokens = 0
+    return resp
 
 
-def _messages_with_file_write(tool_id: str, path: str, content: str) -> list[dict]:
-    return [
-        {"role": "user", "content": "write a file"},
-        {"role": "assistant", "content": [_make_file_write_block(tool_id, path, content)]},
-        _make_tool_result_msg(tool_id, f"Wrote {len(content.splitlines())} lines ({len(content)} chars) to {path}"),
-    ]
+@pytest.mark.asyncio
+async def test_files_written_populated_on_successful_write():
+    """AgentResult.files_written contains paths of files the agent wrote."""
+    from unittest.mock import patch
+
+    write_resp = _make_file_write_response("toolu_fw1", "src/main.py")
+    end_resp = _mock_response()
+
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(side_effect=[write_resp, end_resp])
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    with patch("agentflow.tools.tool_registry.execute", new=AsyncMock(return_value="Wrote 1 lines to src/main.py")):
+        agent = Agent(_make_manifest(tools=["file_write"]), mock_client)
+        result = await agent.run(_make_envelope(), emitter)
+
+    assert result.status == AgentStatus.success
+    assert "src/main.py" in result.files_written
 
 
-def test_compact_short_content_kept_verbatim():
-    """Content ≤ 1 500 chars is not altered."""
-    messages = _messages_with_file_write("tid1", "out.md", "short content")
-    _compact_file_writes(messages, {"tid1"})
-    stub = messages[1]["content"][0]["input"]["content"]
-    assert stub == "short content"
-    assert "[…" not in stub
+@pytest.mark.asyncio
+async def test_files_written_empty_when_no_writes():
+    """AgentResult.files_written is empty when the agent makes no file_write calls."""
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+
+    agent = Agent(_make_manifest(), mock_client)
+    result = await agent.run(_make_envelope(), emitter=MagicMock())
+
+    assert result.files_written == []
 
 
-def test_compact_long_content_truncated_with_ellipsis_marker():
-    """Content > 1 500 chars gets a '[… +N chars]' suffix, not <TRUNCATED>."""
-    long_content = "x" * 3000
-    messages = _messages_with_file_write("tid2", "big.md", long_content)
-    _compact_file_writes(messages, {"tid2"})
-    stub = messages[1]["content"][0]["input"]["content"]
-    assert stub.startswith("x" * 1500)
-    assert stub.endswith("[… +1500 chars]")
-    assert "<TRUNCATED" not in stub
-    assert "TRUNCATED" not in stub
+# ---------------------------------------------------------------------------
+# upstream_artifacts context injection
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_upstream_artifacts_included_in_initial_message():
+    """When upstream_artifacts is set, the initial user message contains an upstream_context block."""
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    envelope = TaskEnvelope(
+        parent_run_id="run-1",
+        agent_id="TestAgent",
+        instruction="Aggregate results",
+        context=TaskContext(
+            prior_results={"st_1_a": "Wrote models"},
+            upstream_artifacts={"st_1_a": ["src/models.py"]},
+        ),
+        constraints=TaskConstraints(),
+    )
+
+    agent = Agent(_make_manifest(), mock_client)
+    await agent.run(envelope, emitter)
+
+    call_messages = mock_client.messages.create.call_args[1]["messages"]
+    # _with_message_cache_breakpoint wraps string content in a list block.
+    raw = call_messages[0]["content"]
+    initial_text = raw if isinstance(raw, str) else next(
+        (b["text"] for b in raw if isinstance(b, dict) and b.get("type") == "text"), ""
+    )
+    assert "<upstream_context>" in initial_text
+    assert "src/models.py" in initial_text
+    assert "Wrote models" in initial_text
 
 
-def test_compact_marker_includes_correct_remaining_count():
-    content = "a" * 2000
-    messages = _messages_with_file_write("tid3", "f.md", content)
-    _compact_file_writes(messages, {"tid3"})
-    stub = messages[1]["content"][0]["input"]["content"]
-    assert "[… +500 chars]" in stub
+@pytest.mark.asyncio
+async def test_no_prior_messages_injection():
+    """Agents always start with a fresh message thread; prior conversation history is never injected."""
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
 
+    envelope = TaskEnvelope(
+        parent_run_id="run-1",
+        agent_id="TestAgent",
+        instruction="Do something",
+        context=TaskContext(),
+        constraints=TaskConstraints(),
+    )
 
-def test_compact_path_preserved():
-    messages = _messages_with_file_write("tid4", "docs/guide.md", "y" * 2000)
-    _compact_file_writes(messages, {"tid4"})
-    assert messages[1]["content"][0]["input"]["path"] == "docs/guide.md"
+    agent = Agent(_make_manifest(), mock_client)
+    await agent.run(envelope, MagicMock())
 
-
-def test_compact_only_affects_successful_ids():
-    """A tool_use ID not in successful_ids is left untouched."""
-    long_content = "z" * 3000
-    messages = _messages_with_file_write("tid5", "file.md", long_content)
-    _compact_file_writes(messages, {"other_id"})
-    stub = messages[1]["content"][0]["input"]["content"]
-    assert stub == long_content  # unchanged
+    call_messages = mock_client.messages.create.call_args[1]["messages"]
+    # Fresh start: only one user message
+    assert len(call_messages) == 1
+    assert call_messages[0]["role"] == "user"

@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-07-14
-last_verified_sha: 8b9e787
+last_verified_sha: 2878fae
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -131,23 +131,22 @@ variants so multiple API replicas can share a run — see
   runs, prior-run context keys (`prior_report`, `prior_task`, `prior_run_id`,
   `prior_subtask_outputs`) are extracted from `user_context` and formatted as a
   readable "Prior Run" prose section in the planner's first message; any remaining
-  user-supplied context keys appear as a separate JSON block. The planner's system
-  prompt includes context-inheritance guidance: when a subtask's `dependsOn` has
-  exactly one entry, the downstream agent receives the upstream agent's full
-  conversation via `prior_messages`, so the planner must NOT instruct that downstream
-  agent to re-read files written by the upstream agent — those files are already in
-  context.
+  user-supplied context keys appear as a separate JSON block.
 - **`orchestrator/decomposer.py` — `decompose_subtask()` / `expand_plan()`**: splits a
   subtask into micro-subtasks using the manifest's `decomposition_prompt`, run as a
   nested `Agent` ReAct loop. Invoked **lazily** inside `_dispatch_subtask()` (not
   eagerly at plan time) so the decomposer always sees completed upstream workspace state.
-  `_DECOMPOSER_TOOLS` is restricted to `frozenset({"file_read"})` — `bash_exec` is
-  excluded because it is not constrained to read-only commands and previously caused the
-  decomposer to implement the task rather than analyse it. When decomposition produces
-  N > 1 micro-subtasks, `_run_micro_subtasks()` runs them sequentially through the normal
-  retry/budget/fallback path, then promotes the last result to the parent subtask ID so
-  downstream tasks can find their prior results. A `_skip_decompose=True` flag on
+  `_DECOMPOSER_TOOLS` is `frozenset({"file_read", "bash_exec_readonly"})` — read-only
+  exploration only; no writes or arbitrary code execution. When decomposition produces
+  N > 1 micro-subtasks, `_run_micro_subtasks()` schedules them as a **DAG** (using the
+  same `DependencyGraph` scheduler as the top-level plan) so parallel branches within a
+  decomposed subtask run concurrently. The sink micro-task — the one no other
+  micro-task declares as a dependency — is promoted to the parent subtask ID so
+  downstream tasks find the aggregated result. A `_skip_decompose=True` flag on
   `_dispatch_subtask` prevents recursive decomposition when micro-subtasks are dispatched.
+  Decomposition prompts should produce: (a) parallel branches for independent work,
+  (b) each micro-task writing ≤ 3 files, and (c) a final aggregator micro-task whose
+  `dependsOn` lists every other micro-task ID.
 - **`orchestrator/scheduler.py` — `DependencyGraph`**: wraps a `networkx.DiGraph` built
   from `Subtask.depends_on`; validates the plan is acyclic and exposes `ready()`
   (dependency-satisfied, non-failed nodes) for the execution loop.
@@ -181,25 +180,23 @@ variants so multiple API replicas can share a run — see
   (the Anthropic `tool_use` block ID); `_call_tool()` emits a matching
   `agent:tool_result` event (same `tool_call_id`) after the tool returns so clients can
   pair call and result; the budget-exhausted path also emits `agent:tool_result` with
-  `data.budget_exhausted=true`. Four additional helpers manage token efficiency and
-  output parsing: `_to_dict_content()` converts SDK response blocks to plain dicts on
+  `data.budget_exhausted=true`. Three additional helpers manage output tracking and
+  parsing: `_to_dict_content()` converts SDK response blocks to plain dicts on
   storage (preserving thinking-block `signature` fields) so the history can be
-  post-processed without SDK coupling; `_successful_write_ids()` identifies which
-  `file_write` tool_use IDs succeeded this turn (by cross-referencing `file_write`
-  blocks against tool results that lack an `"error"` prefix) and feeds that set to
-  `_compact_file_writes()`; `_compact_file_writes()` replaces successful
-  `file_write` tool_use inputs in the **last stored assistant message only** (earlier
-  messages are the cached prefix and must not be mutated) with a preview stub: the first
-  1 500 chars of the written content are kept verbatim and, when the content exceeded that
-  limit, a `[… +N chars]` display-truncation marker is appended. This preserves enough
-  context for the model to know what it wrote while capping the footprint of large file
-  writes in the accumulated history. The marker intentionally does NOT use XML-style tags
-  (`<TRUNCATED>`) because those were found to confuse the model into thinking the
-  tool had a size limit; `_parse_final_output()`
-  splits the model's final text into `(structured: dict, prose: str)` — it handles raw
-  JSON, markdown-fenced JSON (the common case where the model prepends a summary), and
-  inline JSON without a fence, so `AgentResult.output.structured` is reliably populated
-  and `output.text` contains only the human-readable prose.
+  inspected without SDK coupling; `_collect_written_paths()` identifies file paths
+  from successful `file_write` tool calls this turn (cross-referencing blocks
+  against tool results that lack an `"error"` prefix) and appends them to the
+  per-run `all_files_written` accumulator, which is returned as
+  `AgentResult.files_written` — the full written content is kept verbatim in the
+  message history (no truncation or compaction); `_format_upstream_context()` builds
+  the `<upstream_context>` XML block injected into a downstream agent's initial user
+  message, combining text summaries from `prior_results` with file paths from
+  `upstream_artifacts` so the agent knows both what happened and which files to read;
+  `_parse_final_output()` splits the model's final text into
+  `(structured: dict, prose: str)` — it handles raw JSON, markdown-fenced JSON (the
+  common case where the model prepends a summary), and inline JSON without a fence,
+  so `AgentResult.output.structured` is reliably populated and `output.text` contains
+  only the human-readable prose.
 - **`tools/builtin.py` + `tools/arxiv_search.py` — built-in tool layer**: registers all
   built-in `ToolDefinition`s into the global `tool_registry`. Key tools:
   - `arxiv_search` — searches arXiv Atom API; returns `title`, `abstract`, `url` (abs),
@@ -243,16 +240,18 @@ Within one run, components talk through three mechanisms:
 - **Shared state — `core/context.py`**: `RunContext` is the source of truth for a run.
   `_dispatch_subtask()` writes each subtask's `AgentResult` via `ctx.store_result()`
   (optionally appended to `runs/<run_id>/results.jsonl`); downstream subtasks read
-  dependency output via `ctx.build_prior_results()` (text-only summaries) or
-  `ctx.build_prior_messages()` (full conversation replay when there is exactly one
-  dependency — this means the downstream agent already has in its context any files
-  the upstream agent wrote, so the planner should not instruct it to re-read them). `RunContext` also tracks `total_cost_usd()`/`remaining_budget_usd()` and
-  arbitrates human-input requests when a budget is exhausted. Mid-run user messages
-  (from `POST …/message`) are stored in per-agent queues: `register_agent(agent_id)`
-  creates a queue when a subtask starts; `push_user_message(content)` fans the message
-  out to every registered agent's queue; `pop_user_message(agent_id)` drains one message
-  from that agent's own queue; `deregister_agent(agent_id)` removes the queue when the
-  subtask finishes. This guarantees all parallel agents receive the same injected message.
+  dependency output via `ctx.build_prior_results()` (text-only summaries keyed by
+  dep task ID) and `ctx.build_upstream_artifacts()` (dict of dep task ID →
+  `files_written` list from that task's `AgentResult`). The agent receives both as
+  an `<upstream_context>` block in its initial user message — it reads the exact files
+  it needs rather than receiving the full upstream conversation history. `RunContext`
+  also tracks `total_cost_usd()`/`remaining_budget_usd()` and arbitrates human-input
+  requests when a budget is exhausted. Mid-run user messages (from `POST …/message`)
+  are stored in per-agent queues: `register_agent(agent_id)` creates a queue when a
+  subtask starts; `push_user_message(content)` fans the message out to every
+  registered agent's queue; `pop_user_message(agent_id)` drains one message from that
+  agent's own queue; `deregister_agent(agent_id)` removes the queue when the subtask
+  finishes. This guarantees all parallel agents receive the same injected message.
 - **Events — `core/bus.py` / `orchestrator/stream.py`**: `TaskBus` gives each run an
   asyncio dispatch/result queue pair (`create_run`/`close_run`), intended as the seam
   for a future distributed worker model. Live progress that the HTTP layer actually

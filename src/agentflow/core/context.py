@@ -138,20 +138,13 @@ class RunContext:
             if dep_id in self._results
         }
 
-    def build_prior_messages(self, dep_ids: list[str]) -> list[Any]:
-        """Return the full conversation messages from the single upstream dependency.
-
-        Only populated when there is exactly one dependency that has stored messages;
-        for multiple dependencies we fall back to text context (build_prior_results)
-        because merging separate conversation threads is not well-defined.
-        """
-        if len(dep_ids) != 1:
-            return []
-        dep_id = dep_ids[0]
-        result = self._results.get(dep_id)
-        if result is None or not result.messages:
-            return []
-        return result.messages
+    def build_upstream_artifacts(self, dep_ids: list[str]) -> dict[str, list[str]]:
+        """Return file paths written by completed dependencies, keyed by task ID."""
+        return {
+            dep_id: self._results[dep_id].files_written
+            for dep_id in dep_ids
+            if dep_id in self._results and self._results[dep_id].files_written
+        }
 
 
 class ContextStore:

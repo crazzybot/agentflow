@@ -101,77 +101,54 @@ def _to_dict_content(content: list) -> list[dict]:
     return result
 
 
-def _compact_file_writes(messages: list[dict], successful_ids: set[str]) -> None:
-    """In-place: truncate large file_write tool_use content to a preview stub.
+def _collect_written_paths(tool_use_blocks: list, tool_results: list[dict]) -> list[str]:
+    """Return file paths successfully written by file_write calls this turn."""
+    write_blocks: dict[str, str] = {}
+    for b in tool_use_blocks:
+        b_id = getattr(b, "id", b.get("id") if isinstance(b, dict) else None)
+        b_name = getattr(b, "name", b.get("name") if isinstance(b, dict) else "")
+        if b_name == "file_write" and b_id:
+            inp = getattr(b, "input", b.get("input") if isinstance(b, dict) else {}) or {}
+            path = inp.get("path", "")
+            if path:
+                write_blocks[b_id] = path
 
-    Large file contents accumulate in the cache prefix and are re-billed at
-    cache-creation rate on every subsequent turn.  Truncating to a 1 500-char
-    preview keeps the cache footprint small while giving the model enough
-    context to know what it already wrote (preventing pointless rewrites).
-    If the content fits in 1 500 chars it is kept verbatim; otherwise it is
-    followed by ``[… +N chars]`` — a display-truncation marker the model reads
-    as "more content follows" rather than a write-operation failure.
-
-    Only the most recent assistant message is scanned — earlier messages are
-    already part of the cached prefix and modifying them would cause a miss.
-    """
-    if not successful_ids:
-        return
-    for i in range(len(messages) - 1, -1, -1):
-        msg = messages[i]
-        if msg.get("role") != "assistant":
-            continue
-        content = msg.get("content")
-        if not isinstance(content, list):
-            return
-        new_content: list = []
-        changed = False
-        for block in content:
-            if (
-                isinstance(block, dict)
-                and block.get("type") == "tool_use"
-                and block.get("name") == "file_write"
-                and block.get("id") in successful_ids
-            ):
-                inp = block.get("input") or {}
-                path = inp.get("path", "?")
-                raw = str(inp.get("content", ""))
-                chars = len(raw)
-                if chars > 1500:
-                    stub_content = raw[:1500] + f"[… +{chars - 1500} chars]"
-                else:
-                    stub_content = raw
-                new_content.append({
-                    "type": "tool_use",
-                    "id": block["id"],
-                    "name": "file_write",
-                    "input": {"path": path, "content": stub_content},
-                })
-                changed = True
-            else:
-                new_content.append(block)
-        if changed:
-            messages[i] = {**msg, "content": new_content}
-        return  # only process the most recent assistant message
-
-
-def _successful_write_ids(tool_use_blocks: list, tool_results: list[dict]) -> set[str]:
-    """Return tool_use IDs for file_write calls that succeeded this turn."""
-    write_ids = {
-        getattr(b, "id", b.get("id") if isinstance(b, dict) else None)
-        for b in tool_use_blocks
-        if getattr(b, "name", b.get("name") if isinstance(b, dict) else "") == "file_write"
-    }
-    write_ids.discard(None)
-    return {
-        r["tool_use_id"]
+    return [
+        write_blocks[r["tool_use_id"]]
         for r in tool_results
         if isinstance(r, dict)
         and r.get("type") == "tool_result"
-        and r.get("tool_use_id") in write_ids
+        and r.get("tool_use_id") in write_blocks
         and isinstance(r.get("content"), str)
         and not r["content"].lower().startswith("error")
-    }
+    ]
+
+
+def _format_upstream_context(
+    prior_results: dict[str, Any],
+    upstream_artifacts: dict[str, list[str]],
+) -> str:
+    """Build the <upstream_context> block for the initial user message.
+
+    Combines text summaries from prior_results with file paths from
+    upstream_artifacts so downstream agents know both what happened and
+    where the output files are.
+    """
+    if not prior_results and not upstream_artifacts:
+        return ""
+    all_dep_ids = sorted(set(prior_results) | set(upstream_artifacts))
+    lines: list[str] = []
+    for dep_id in all_dep_ids:
+        lines.append(f'Upstream task "{dep_id}":')
+        summary = prior_results.get(dep_id, "")
+        if summary:
+            lines.append(f"  Summary: {str(summary)[:500]}")
+        paths = upstream_artifacts.get(dep_id, [])
+        if paths:
+            lines.append("  Files written:")
+            for p in paths:
+                lines.append(f"    - {p}")
+    return "\n\n<upstream_context>\n" + "\n".join(lines) + "\n</upstream_context>"
 
 
 def _parse_final_output(text: str) -> tuple[dict[str, Any], str]:
@@ -353,7 +330,7 @@ class Agent:
     ) -> AgentResult:
 
         if resume_messages is not None:
-            # Fix 3: resume a partial run — continue from the existing message thread.
+            # Resume a partial run — continue from the existing message thread.
             messages: list[dict[str, Any]] = list(resume_messages)
             # If the last message is from the assistant the model paused mid-thought;
             # add a user prompt to continue.  If it is a user message (tool results)
@@ -363,14 +340,8 @@ class Agent:
                     "role": "user",
                     "content": "You reached the iteration limit. Continue your work from where you left off — do not repeat completed steps.",
                 })
-        elif envelope.context.prior_messages:
-            # Fix 2: single-dependency chain — inherit the prior subtask's full
-            # conversation so the agent already has all file contents in context.
-            messages = list(envelope.context.prior_messages)
-            user_content = envelope.instruction
-            messages.append({"role": "user", "content": user_content})
         else:
-            # Standard path: build the initial user message with optional text context.
+            # Build the initial user message with upstream context and optional user context.
             user_content = envelope.instruction
             if envelope.context.user_context:
                 user_content += (
@@ -378,12 +349,12 @@ class Agent:
                     + json.dumps(envelope.context.user_context, separators=(",", ":"))
                     + "\n</user_context>"
                 )
-            if envelope.context.prior_results:
-                user_content += (
-                    "\n\n<context>\n"
-                    + json.dumps(envelope.context.prior_results, separators=(",", ":"))
-                    + "\n</context>"
-                )
+            upstream_block = _format_upstream_context(
+                envelope.context.prior_results,
+                envelope.context.upstream_artifacts,
+            )
+            if upstream_block:
+                user_content += upstream_block
             messages = [{"role": "user", "content": user_content}]
         anthropic_tools = [t.to_anthropic_param() for t in tools]
         total_input_tokens = 0
@@ -395,6 +366,7 @@ class Agent:
         final_text = ""
         last_response_content: list = []
         hit_limit = False
+        all_files_written: list[str] = []
 
         task_budget = envelope.constraints.budget_usd
         max_iterations = self.manifest.max_iterations or settings.agent_max_iterations
@@ -511,9 +483,8 @@ class Agent:
                           for b in pending_tool_use]
                     )
                     messages.append({"role": "user", "content": list(pending_results)})
-                    _compact_file_writes(
-                        messages,
-                        _successful_write_ids(pending_tool_use, list(pending_results)),
+                    all_files_written.extend(
+                        _collect_written_paths(pending_tool_use, list(pending_results))
                     )
                 break
 
@@ -542,11 +513,8 @@ class Agent:
             )
 
             messages.append({"role": "user", "content": list(tool_results)})
-            # Compact successful file_write inputs so large file contents don't
-            # accumulate in the cache prefix across subsequent turns.
-            _compact_file_writes(
-                messages,
-                _successful_write_ids(tool_use_blocks, list(tool_results)),
+            all_files_written.extend(
+                _collect_written_paths(tool_use_blocks, list(tool_results))
             )
 
             # Inject any pending user message as an additional user turn before
@@ -586,6 +554,7 @@ class Agent:
             cache_read_tokens=total_cache_read_tokens,
             tokens_used=total_input_tokens + total_output_tokens + total_cache_creation_tokens + total_cache_read_tokens,
             cost_usd=total_cost_usd,
+            files_written=all_files_written,
             messages=messages,
         )
 
