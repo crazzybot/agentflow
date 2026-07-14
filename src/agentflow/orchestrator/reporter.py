@@ -1,6 +1,7 @@
 """Final report compiler — aggregates subtask results into a markdown file."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -46,7 +47,16 @@ def _leaf_subtask_ids(plan: ExecutionPlan) -> set[str]:
 
 
 def _result_text(result: AgentResult) -> str:
-    text = result.output.text or str(result.output.structured)
+    # Combine prose and structured JSON so the synthesizer sees the full output.
+    # _parse_final_output splits the agent's final message into a prose preamble
+    # (text) and an extracted JSON dict (structured); using text-or-structured loses
+    # the structured content whenever a non-empty but minimal preamble is present.
+    parts: list[str] = []
+    if result.output.text:
+        parts.append(result.output.text)
+    if result.output.structured:
+        parts.append(json.dumps(result.output.structured, indent=2))
+    text = "\n\n".join(parts) if parts else ""
     if len(text) > _MAX_RESULT_CHARS:
         text = text[:_MAX_RESULT_CHARS] + "\n… [truncated]"
     return text

@@ -127,16 +127,24 @@ class RunContext:
     def build_prior_results(self, dep_ids: list[str]) -> dict[str, Any]:
         """Return text output from completed dependencies.
 
-        Sends only the text representation to avoid duplicating data: AgentOutput
-        stores both `text` (raw string) and `structured` (json.loads of that same
-        string), so model_dump() would transmit the same payload twice.
+        Combines prose (output.text) and structured JSON (output.structured) so
+        downstream agents see the full upstream result.  _parse_final_output splits
+        the agent's final message into a prose preamble and an extracted JSON dict;
+        using text-or-structured loses the structured content whenever a non-empty
+        but minimal preamble is present.
         """
-        return {
-            dep_id: self._results[dep_id].output.text
-            or str(self._results[dep_id].output.structured)
-            for dep_id in dep_ids
-            if dep_id in self._results
-        }
+        result: dict[str, Any] = {}
+        for dep_id in dep_ids:
+            if dep_id not in self._results:
+                continue
+            output = self._results[dep_id].output
+            parts: list[str] = []
+            if output.text:
+                parts.append(output.text)
+            if output.structured:
+                parts.append(json.dumps(output.structured, indent=2))
+            result[dep_id] = "\n\n".join(parts) if parts else ""
+        return result
 
     def build_upstream_artifacts(self, dep_ids: list[str]) -> dict[str, list[str]]:
         """Return file paths written by completed dependencies, keyed by task ID."""
