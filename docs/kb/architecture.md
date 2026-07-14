@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
-last_updated: 2026-07-13
-last_verified_sha: 1c1cfeb
+last_updated: 2026-07-14
+last_verified_sha: 8b9e787
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -86,12 +86,16 @@ variants so multiple API replicas can share a run — see
    `AgentManifest.thinking_budget_tokens` is set, each `messages.create()` call
    includes `thinking={"type": "enabled", "budget_tokens": N}` and — when the manifest
    also has tools — `betas=["interleaved-thinking-2025-05-14"]`; `max_tokens` is
-   automatically clamped to at least `thinking_budget_tokens + 1024`. `ThinkingBlock`
-   objects in the response are emitted immediately as `agent:thought` SSE events
-   (regardless of stop reason) and preserved verbatim in the message history so
-   subsequent API calls receive them back intact. Text blocks the model emits
-   alongside tool calls are also streamed as `agent:thought` events; `end_turn` text
-   is the final answer and is not re-emitted. After each tool-result batch the loop
+   automatically clamped to at least `thinking_budget_tokens + 1024`.
+   Response content is converted to plain dicts via `_to_dict_content()` before
+   being stored in the message history — SDK objects are never kept (thinking-block
+   `signature` fields are preserved exactly, as the API requires them echoed back
+   unchanged). Per non-`end_turn` turn, thinking blocks and text blocks are each
+   accumulated into a single `thinking_text` string and emitted as **one** combined
+   `agent:thought` SSE event (with `turn_index`); for `end_turn` turns only
+   `final_text` is collected from text blocks and no thought event is emitted.
+   Multiple text blocks within one response are concatenated (`+=`) rather than
+   overwritten. After each tool-result batch the loop
    calls `ctx.pop_user_message(self.agent_id)` and — if a message is queued for this
    agent — appends it as a user turn before the next API call, emitting
    `run:message_received`. Because `push_user_message()` fans out to every registered
@@ -177,10 +181,13 @@ variants so multiple API replicas can share a run — see
   (the Anthropic `tool_use` block ID); `_call_tool()` emits a matching
   `agent:tool_result` event (same `tool_call_id`) after the tool returns so clients can
   pair call and result; the budget-exhausted path also emits `agent:tool_result` with
-  `data.budget_exhausted=true`. Three additional helpers manage token efficiency and
+  `data.budget_exhausted=true`. Four additional helpers manage token efficiency and
   output parsing: `_to_dict_content()` converts SDK response blocks to plain dicts on
   storage (preserving thinking-block `signature` fields) so the history can be
-  post-processed without SDK coupling; `_compact_file_writes()` replaces successful
+  post-processed without SDK coupling; `_successful_write_ids()` identifies which
+  `file_write` tool_use IDs succeeded this turn (by cross-referencing `file_write`
+  blocks against tool results that lack an `"error"` prefix) and feeds that set to
+  `_compact_file_writes()`; `_compact_file_writes()` replaces successful
   `file_write` tool_use inputs in the **last stored assistant message only** (earlier
   messages are the cached prefix and must not be mutated) with a preview stub: the first
   1 500 chars of the written content are kept verbatim and, when the content exceeded that

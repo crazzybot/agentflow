@@ -485,19 +485,11 @@ class Agent:
             messages.append({"role": "assistant", "content": _to_dict_content(response.content)})
             last_response_content = list(response.content)
 
-            # Emit thinking blocks as thought events so clients can display live reasoning.
-            # Use block.type rather than isinstance so BetaThinkingBlock (beta endpoint)
-            # and ThinkingBlock (standard endpoint) are both matched.
-            if thinking_budget:
-                for block in response.content:
-                    thinking_text = getattr(block, "thinking", None)
-                    if block.type == "thinking" and thinking_text and thinking_text.strip():
-                        emitter.emit(SSEEventType.agent_thought, agent_id=self.agent_id, message=thinking_text, turn_index=iteration)
-
             # Collect any text the model produced this turn (BetaTextBlock or TextBlock)
+            final_text = ""
             for block in response.content:
                 if block.type == "text":
-                    final_text = getattr(block, "text", "")
+                    final_text += getattr(block, "text", "")
 
             if response.stop_reason == "end_turn":
                 break
@@ -525,16 +517,22 @@ class Agent:
                     )
                 break
 
-            # Emit any text the model produced alongside tool calls as a thought event
-            for block in response.content:
-                text = getattr(block, "text", None)
-                if block.type == "text" and text and text.strip():
-                    emitter.emit(
-                        SSEEventType.agent_thought,
-                        agent_id=self.agent_id,
-                        message=text,
-                        turn_index=iteration,
-                    )
+            # Emit thinking blocks as thought events so clients can display live reasoning.
+            # Use block.type rather than isinstance so BetaThinkingBlock (beta endpoint)
+            # and ThinkingBlock (standard endpoint) are both matched.
+            thinking_text = ""
+            if thinking_budget:
+                for block in response.content:
+                    text = None
+                    if block.type == "thinking":
+                        text = getattr(block, "thinking", None)
+                    elif block.type == "text":
+                        text = getattr(block, "text", None)
+                    
+                    if text:
+                        thinking_text += text
+            if thinking_text:
+                emitter.emit(SSEEventType.agent_thought, agent_id=self.agent_id, message=thinking_text, turn_index=iteration)
 
             # Execute all tool calls concurrently, then feed results back
             tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
@@ -563,11 +561,12 @@ class Agent:
         # producing a text block.  Fall back to the last thinking block so the reporter
         # receives a meaningful summary instead of an empty string.
         if not final_text and thinking_budget:
+            final_text = ""
             for block in reversed(last_response_content):
-                thinking_text = getattr(block, "thinking", None)
-                if block.type == "thinking" and thinking_text and thinking_text.strip():
-                    final_text = thinking_text
-                    break
+                if block.type == "thinking":
+                    text = getattr(block, "thinking", "")
+                    if thinking_text and text.strip():
+                        final_text += thinking_text
 
         # Extract structured JSON and clean prose from the final model output.
         # Agents are instructed to return raw JSON, but often prepend a summary
