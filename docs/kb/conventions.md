@@ -1,7 +1,7 @@
 ---
 title: Conventions & Patterns
 last_updated: 2026-07-13
-last_verified_sha: 5a2832d
+last_verified_sha: 1c1cfeb
 sources:
   - pyproject.toml
   - src/agentflow/config.py

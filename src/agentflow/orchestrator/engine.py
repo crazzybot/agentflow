@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from agentflow.orchestrator.reporter import compile_report
 from agentflow.orchestrator.scheduler import DependencyGraph
 from agentflow.orchestrator.stream import StreamEmitter, stream_registry
 from agentflow.tools.artifact_tracker import ArtifactSink, _current_sink
+from agentflow.tools.kb_dispatcher import _kb_dispatch_fn
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +203,23 @@ class OrchestratorEngine:
         sink = ArtifactSink(artifacts_file)
         sink_token = _current_sink.set(sink)
 
+        kb_token = None
+        if "KnowledgebaseAgent" in self._agent_instances:
+            async def _dispatch_to_kb(instruction: str) -> str:
+                subtask = Subtask(
+                    id=f"kb-{uuid.uuid4().hex[:8]}",
+                    agent_id="KnowledgebaseAgent",
+                    instruction=instruction,
+                    depends_on=[],
+                )
+                ok = await self._dispatch_subtask(run_id, subtask, ctx, emitter, task_budget_usd=None)
+                if ok:
+                    result = await ctx.get_result(subtask.id)
+                    return result.output.text if result and result.output.text else "KB ingest completed"
+                return "KB ingest task failed"
+
+            kb_token = _kb_dispatch_fn.set(_dispatch_to_kb)
+
         try:
             # Step 02: LLM planning pass
             plan = await create_plan(run_id, task, self.registry, self._client, budget_usd=budget_usd, user_context=user_context, emitter=emitter)
@@ -258,6 +277,8 @@ class OrchestratorEngine:
             emitter.emit(SSEEventType.run_error, message=str(exc))
         finally:
             self._run_tasks.pop(run_id, None)
+            if kb_token is not None:
+                _kb_dispatch_fn.reset(kb_token)
             _current_sink.reset(sink_token)
             self._client.stats.log_summary()
             emitter.close()

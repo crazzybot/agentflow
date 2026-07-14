@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import xml.etree.ElementTree as ET
 
 import httpx
@@ -13,6 +14,12 @@ logger = logging.getLogger(__name__)
 
 _API_URL = "https://export.arxiv.org/api/query"
 _ATOM_NS = "http://www.w3.org/2005/Atom"
+_ABS_RE = re.compile(r"^https?://arxiv\.org/abs/", re.IGNORECASE)
+
+
+def _abs_to_pdf_url(abs_url: str) -> str:
+    """Derive the PDF download URL from an arXiv abstract URL."""
+    return _ABS_RE.sub("https://arxiv.org/pdf/", abs_url.strip())
 
 
 def arxiv_search(
@@ -30,7 +37,7 @@ def arxiv_search(
             category are returned, which sharply reduces off-topic results.
 
     Returns:
-        A list of dicts with keys: "title", "abstract", "url".
+        A list of dicts with keys: "title", "abstract", "url", "pdf_url".
 
     Raises:
         ValueError: If *query* is empty or *max_results* is not positive.
@@ -83,8 +90,10 @@ def arxiv_search(
         summary_el = entry.find(f"{{{_ATOM_NS}}}summary")
         if id_el is None or not id_el.text:
             continue
+        abs_url = id_el.text.strip()
         results.append({
-            "url": id_el.text.strip(),
+            "url": abs_url,
+            "pdf_url": _abs_to_pdf_url(abs_url),
             "title": (title_el.text or "").strip() if title_el is not None else "",
             "abstract": " ".join((summary_el.text or "").split()) if summary_el is not None else "",
         })

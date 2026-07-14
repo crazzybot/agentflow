@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-07-13
-last_verified_sha: 5a2832d
+last_verified_sha: 1c1cfeb
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -9,6 +9,7 @@ sources:
   - src/agentflow/core/bus.py
   - src/agentflow/core/context.py
   - src/agentflow/llm/client.py
+  - src/agentflow/tools/
 status: current
 ---
 
@@ -37,7 +38,13 @@ variants so multiple API replicas can share a run — see
    current asyncio Task in `self._run_tasks[run_id]` (used by `cancel_run()`), creates a
    `StreamEmitter` (`stream_registry.create`), a `RunContext` (`context_store.create`),
    and a bus channel (`task_bus.create_run`), then names the run via a cheap Haiku call
-   and writes `runs/<run_id>/meta.json`.
+   and writes `runs/<run_id>/meta.json`. Two `ContextVar` tokens are then armed for the
+   lifetime of the run: `_current_sink` (artifact tracking, from
+   `tools/artifact_tracker.py`) and `_kb_dispatch_fn` (from `tools/kb_dispatcher.py`),
+   which is set to an async closure that dispatches an ad-hoc `KnowledgebaseAgent` subtask
+   via `_dispatch_subtask()` — enabling built-in tools (e.g. `download_document`) to
+   trigger KB ingest without a direct reference to the engine. `_kb_dispatch_fn` is only
+   armed when `KnowledgebaseAgent` is registered in `_agent_instances`.
 3. **Plan** — `create_plan()` in
    [`orchestrator/planner.py`](../../src/agentflow/orchestrator/planner.py) runs an
    agentic ReAct loop (read-only `file_read`/`bash_exec`/`web_search`/`fetch_url` tools)
@@ -174,13 +181,35 @@ variants so multiple API replicas can share a run — see
   output parsing: `_to_dict_content()` converts SDK response blocks to plain dicts on
   storage (preserving thinking-block `signature` fields) so the history can be
   post-processed without SDK coupling; `_compact_file_writes()` replaces successful
-  `file_write` tool_use inputs in the last stored assistant message with a compact
-  `{path, content: "[compacted — N chars written to disk]"}` stub immediately after each tool batch, preventing large file contents
-  from accumulating in the cache prefix across subsequent turns; `_parse_final_output()`
+  `file_write` tool_use inputs in the **last stored assistant message only** (earlier
+  messages are the cached prefix and must not be mutated) with a preview stub: the first
+  1 500 chars of the written content are kept verbatim and, when the content exceeded that
+  limit, a `[… +N chars]` display-truncation marker is appended. This preserves enough
+  context for the model to know what it wrote while capping the footprint of large file
+  writes in the accumulated history. The marker intentionally does NOT use XML-style tags
+  (`<TRUNCATED>`) because those were found to confuse the model into thinking the
+  tool had a size limit; `_parse_final_output()`
   splits the model's final text into `(structured: dict, prose: str)` — it handles raw
   JSON, markdown-fenced JSON (the common case where the model prepends a summary), and
   inline JSON without a fence, so `AgentResult.output.structured` is reliably populated
   and `output.text` contains only the human-readable prose.
+- **`tools/builtin.py` + `tools/arxiv_search.py` — built-in tool layer**: registers all
+  built-in `ToolDefinition`s into the global `tool_registry`. Key tools:
+  - `arxiv_search` — searches arXiv Atom API; returns `title`, `abstract`, `url` (abs),
+    and `pdf_url` (derived by replacing `/abs/` with `/pdf/` in the abs URL, normalised to
+    https). Use `category=` to restrict to a subject area and avoid off-topic hits. The
+    abstract is returned directly — agents should NOT call `fetch_url` on arxiv links.
+  - `download_document` — fetches a PDF/text/markdown URL and saves it to `.downloads/`
+    in the workspace; triggers KB ingest automatically via the `_kb_dispatch_fn` ContextVar
+    if `KnowledgebaseAgent` is active in the run. Returns the workspace-relative path and
+    the KB ingest outcome.
+  - `fetch_url` — transparently redirects `arxiv.org/abs/` URLs to the Atom API so
+    agents that accidentally call it on an arXiv link still get structured text.
+  - `file_write` — multi-mode writer (`overwrite`, `append`, `replace_lines`, etc.).
+    Artifacts recorded via `_record_artifact()` which writes to the `_current_sink`
+    ContextVar set by the engine per run.
+  - `_kb_dispatch_fn` (`tools/kb_dispatcher.py`) — a `ContextVar` holding the per-run
+    KB dispatch callable; set to `None` when `KnowledgebaseAgent` is not configured.
 - **`core/bus.py` — `TaskBus`**: in-process asyncio-queue pair (dispatch/result) keyed
   by `run_id`. Not currently on the request's critical path (dispatch is direct-call via
   `_dispatch_subtask`), but the per-run channels are created/closed alongside the run. A

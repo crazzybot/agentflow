@@ -4,8 +4,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -683,6 +685,8 @@ async def _arxiv_search_handler(query: str, max_results: int = 5, category: str 
     for p in papers:
         lines.append(f"**{p['title']}**")
         lines.append(f"URL: {p['url']}")
+        if p.get("pdf_url"):
+            lines.append(f"PDF: {p['pdf_url']}")
         if p["abstract"]:
             lines.append(f"Abstract: {p['abstract'][:600]}")
         lines.append("")
@@ -692,9 +696,9 @@ async def _arxiv_search_handler(query: str, max_results: int = 5, category: str 
 tool_registry.register(ToolDefinition(
     name="arxiv_search",
     description=(
-        "Search academic papers on arXiv. Returns title, abstract, and URL for each result. "
-        "Use this to get paper content directly — you do NOT need to fetch_url arxiv links "
-        "afterwards. Reserve fetch_url for non-arXiv sources. "
+        "Search academic papers on arXiv. Returns title, abstract, abstract URL, and PDF URL for each result. "
+        "The abstract already contains the full paper summary — do NOT call fetch_url on arxiv links afterwards. "
+        "Use download_document(pdf_url) to fetch the full PDF and ingest it into the knowledgebase. "
         "Use the category parameter to restrict results to a subject area and avoid off-topic hits "
         "(e.g. category='cs.LG' for ML, 'q-fin.TR' for trading, 'stat.ML' for statistical ML)."
     ),
@@ -724,6 +728,106 @@ tool_registry.register(ToolDefinition(
     handler=_arxiv_search_handler,
     impact=ToolImpact.read_only,
 ))
+
+# ---------------------------------------------------------------------------
+# download_document  — fetch PDF / text / markdown to .downloads/ and ingest
+# ---------------------------------------------------------------------------
+
+_DOWNLOADS_DIR = ".downloads"
+
+_MIME_TO_EXT: dict[str, str] = {
+    "application/pdf": ".pdf",
+    "text/plain": ".txt",
+    "text/markdown": ".md",
+    "text/html": ".html",
+}
+
+
+async def _download_document(url: str, filename: str | None = None) -> str:
+    from agentflow.tools.kb_dispatcher import _kb_dispatch_fn
+
+    ws = _workspace()
+    dl_dir = ws / _DOWNLOADS_DIR
+    dl_dir.mkdir(parents=True, exist_ok=True)
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
+        try:
+            resp = await client.get(url, headers=_HTTP_HEADERS)
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            return f"HTTP {exc.response.status_code} fetching {url}"
+        except httpx.RequestError as exc:
+            return f"Request error fetching {url}: {exc}"
+
+    content_type = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+    ext = _MIME_TO_EXT.get(content_type)
+    if ext is None:
+        url_path = url.split("?")[0].rstrip("/")
+        guessed, _ = mimetypes.guess_type(url_path)
+        ext = _MIME_TO_EXT.get(guessed or "")
+        if not ext:
+            supported = ", ".join(sorted(_MIME_TO_EXT))
+            return (
+                f"Unsupported content type {content_type!r} from {url}. "
+                f"Supported: {supported}"
+            )
+
+    if filename is None:
+        url_stem = url.split("?")[0].rstrip("/").split("/")[-1] or "document"
+        stem = url_stem.rsplit(".", 1)[0] if "." in url_stem else url_stem
+        filename = f"{stem}{ext}"
+
+    saved = dl_dir / filename
+    if saved.exists():
+        stem2, suf = saved.stem, saved.suffix
+        saved = dl_dir / f"{stem2}_{int(time.time())}{suf}"
+
+    saved.write_bytes(resp.content)
+    rel_path = str(saved.relative_to(ws))
+    await _record_artifact(rel_path)
+
+    msg = f"Downloaded {len(resp.content):,} bytes → {rel_path}"
+
+    dispatch = _kb_dispatch_fn.get()
+    if dispatch is not None:
+        try:
+            kb_result = await dispatch(
+                f"Ingest the downloaded document at workspace path '{rel_path}' into the knowledgebase."
+            )
+            msg += f"\nKB ingest: {kb_result}"
+        except Exception as exc:
+            logger.warning("KB ingest dispatch failed for %s: %s", rel_path, exc)
+            msg += f"\nKB ingest skipped (no KnowledgebaseAgent available): {exc}"
+    else:
+        msg += f"\n(KB ingest skipped — KnowledgebaseAgent not active in this run)"
+
+    return msg
+
+
+tool_registry.register(ToolDefinition(
+    name="download_document",
+    description=(
+        "Download a document (PDF, plain text, or Markdown) from a URL and save it to the "
+        "'.downloads/' folder in the workspace. Supported content types: PDF, text/plain, "
+        "text/markdown. If KnowledgebaseAgent is part of this run the saved file is automatically "
+        "ingested into the semantic knowledgebase. Use the pdf_url returned by arxiv_search to "
+        "fetch and ingest full papers."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "URL of the document to download"},
+            "filename": {
+                "type": "string",
+                "description": "Optional filename to save as (inside .downloads/). Derived from URL if omitted.",
+            },
+        },
+        "required": ["url"],
+    },
+    handler=_download_document,
+    impact=ToolImpact.write,
+))
+
 
 _STUBS: list[tuple[str, str, list[str], ToolImpact]] = [
     ("sql_query",        "Execute a SQL query against a configured database",       ["query"],               ToolImpact.execute),

@@ -46,6 +46,12 @@ def test_arxiv_search_registered():
     assert tool_registry.get("arxiv_search") is not None
 
 
+def test_download_document_registered():
+    tool = tool_registry.get("download_document")
+    assert tool is not None
+    assert "url" in tool.input_schema["properties"]
+
+
 # ---------------------------------------------------------------------------
 # Tool execution tests
 # ---------------------------------------------------------------------------

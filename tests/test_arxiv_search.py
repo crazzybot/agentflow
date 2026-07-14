@@ -200,7 +200,7 @@ class TestResponseParsing:
             result = arxiv_search("quantum computing", max_results=3)
         assert len(result) == 3
         for item in result:
-            assert set(item.keys()) == {"url", "title", "abstract"}
+            assert set(item.keys()) == {"url", "pdf_url", "title", "abstract"}
         assert [r["url"] for r in result] == urls
         assert result[0]["title"] == "T0"
         assert result[0]["abstract"] == "S0"
@@ -249,6 +249,29 @@ class TestResponseParsing:
         assert result[0]["url"] == url
         assert result[0]["title"] == "Attention Is All You Need"
         assert result[0]["abstract"] == "We propose..."
+
+    def test_pdf_url_derived_from_abs_url(self) -> None:
+        abs_url = "https://arxiv.org/abs/1706.03762"
+        atom = _build_atom_feed([abs_url])
+        with patch(_PATCH_TARGET, _mock_httpx_get(atom)):
+            result = arxiv_search("attention")
+        assert result[0]["pdf_url"] == "https://arxiv.org/pdf/1706.03762"
+
+    def test_pdf_url_http_normalised_to_https(self) -> None:
+        # arXiv Atom API sometimes returns http:// in the <id> element
+        abs_url = "http://arxiv.org/abs/2301.00001"
+        atom = _build_atom_feed([abs_url])
+        with patch(_PATCH_TARGET, _mock_httpx_get(atom)):
+            result = arxiv_search("test")
+        assert result[0]["pdf_url"].startswith("https://")
+        assert "arxiv.org/pdf/2301.00001" in result[0]["pdf_url"]
+
+    def test_pdf_url_preserves_version_suffix(self) -> None:
+        abs_url = "https://arxiv.org/abs/2408.16707v2"
+        atom = _build_atom_feed([abs_url])
+        with patch(_PATCH_TARGET, _mock_httpx_get(atom)):
+            result = arxiv_search("test")
+        assert result[0]["pdf_url"] == "https://arxiv.org/pdf/2408.16707v2"
 
 
 # ---------------------------------------------------------------------------
