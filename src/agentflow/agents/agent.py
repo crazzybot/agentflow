@@ -366,6 +366,7 @@ class Agent:
         final_text = ""
         last_response_content: list = []
         hit_limit = False
+        hit_max_tokens = False
         all_files_written: list[str] = []
 
         task_budget = envelope.constraints.budget_usd
@@ -473,6 +474,7 @@ class Agent:
                 )
                 if response.stop_reason == "max_tokens":
                     hit_limit = True
+                    hit_max_tokens = True
                     # The model was cut off mid-generation — any tool_use blocks in the
                     # response may have truncated inputs (e.g. file_write missing content).
                     # Remove the partial assistant message from history so that
@@ -480,6 +482,14 @@ class Agent:
                     # replaying a broken call that will fail with a missing-argument error.
                     if messages and messages[-1].get("role") == "assistant":
                         messages.pop()
+                    # Still execute the tool calls so SSE events reach the client,
+                    # but discard the results — they must not enter the history.
+                    pending_tool_use = [b for b in response.content if b.type == "tool_use"]
+                    if pending_tool_use:
+                        await asyncio.gather(
+                            *[self._checked_call_tool(b, tools, emitter, tool_call_counts, tool_limits, iteration)
+                              for b in pending_tool_use]
+                        )
                 else:
                     # For other unexpected stop reasons, execute any pending tool calls so
                     # the message history stays valid (every tool_use must be immediately
@@ -562,6 +572,7 @@ class Agent:
             cache_read_tokens=total_cache_read_tokens,
             tokens_used=total_input_tokens + total_output_tokens + total_cache_creation_tokens + total_cache_read_tokens,
             cost_usd=total_cost_usd,
+            hit_max_tokens=hit_max_tokens,
             files_written=all_files_written,
             messages=messages,
         )

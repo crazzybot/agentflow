@@ -577,13 +577,13 @@ class OrchestratorEngine:
                     if envelope.constraints.budget_usd is None:
                         result = await self._continue_partial(run_id, subtask, envelope, result, ctx, emitter)
                     else:
-                        # Only ask the human when the task's USD slice is truly near
-                        # exhaustion.  If the agent returned partial due to an iteration
-                        # or max_tokens limit but still has ample budget remaining,
-                        # continue automatically — interrupting the user in that case is
-                        # misleading (the "budget exhausted" message would be wrong).
                         budget_remaining = envelope.constraints.budget_usd - result.cost_usd
-                        if budget_remaining <= settings.agent_min_iteration_budget_usd:
+                        # max_tokens: the budget slice didn't leave enough room for
+                        # output tokens — continuing with the same budget will hit
+                        # the same wall, so ask the human to increase it.
+                        # Near-zero USD: same — genuinely exhausted.
+                        # Iteration limit with ample budget: auto-continue, no HITL.
+                        if result.hit_max_tokens or budget_remaining <= settings.agent_min_iteration_budget_usd:
                             result = await self._handle_task_budget_exhausted(run_id, subtask, envelope, result, ctx, emitter)
                         else:
                             result = await self._continue_partial(run_id, subtask, envelope, result, ctx, emitter)

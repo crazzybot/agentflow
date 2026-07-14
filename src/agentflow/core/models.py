@@ -100,6 +100,10 @@ class AgentResult(BaseModel):
     tokens_used: int = 0  # kept for backward compat; equals sum of all token types
     cost_usd: float = 0.0
     duration_ms: int = 0
+    # True when the agent stopped because the LLM hit its max_tokens limit.
+    # Signals the engine that increasing the budget (→ larger max_tokens) is
+    # required before continuation can make progress.
+    hit_max_tokens: bool = False
     # Relative paths of every file successfully written during this agent's run.
     files_written: list[str] = Field(default_factory=list)
     # Full conversation messages — not serialised, used in-memory for same-agent
