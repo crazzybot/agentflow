@@ -473,19 +473,27 @@ class Agent:
                 )
                 if response.stop_reason == "max_tokens":
                     hit_limit = True
-                # Execute any tool_use blocks that are present before stopping so the
-                # message history stays valid for continuation (every tool_use must be
-                # immediately followed by a tool_result in the next message).
-                pending_tool_use = [b for b in response.content if b.type == "tool_use"]
-                if pending_tool_use:
-                    pending_results = await asyncio.gather(
-                        *[self._checked_call_tool(b, tools, emitter, tool_call_counts, tool_limits, iteration)
-                          for b in pending_tool_use]
-                    )
-                    messages.append({"role": "user", "content": list(pending_results)})
-                    all_files_written.extend(
-                        _collect_written_paths(pending_tool_use, list(pending_results))
-                    )
+                    # The model was cut off mid-generation — any tool_use blocks in the
+                    # response may have truncated inputs (e.g. file_write missing content).
+                    # Remove the partial assistant message from history so that
+                    # continuation resumes from the last clean state rather than
+                    # replaying a broken call that will fail with a missing-argument error.
+                    if messages and messages[-1].get("role") == "assistant":
+                        messages.pop()
+                else:
+                    # For other unexpected stop reasons, execute any pending tool calls so
+                    # the message history stays valid (every tool_use must be immediately
+                    # followed by a tool_result in the next message).
+                    pending_tool_use = [b for b in response.content if b.type == "tool_use"]
+                    if pending_tool_use:
+                        pending_results = await asyncio.gather(
+                            *[self._checked_call_tool(b, tools, emitter, tool_call_counts, tool_limits, iteration)
+                              for b in pending_tool_use]
+                        )
+                        messages.append({"role": "user", "content": list(pending_results)})
+                        all_files_written.extend(
+                            _collect_written_paths(pending_tool_use, list(pending_results))
+                        )
                 break
 
             # Emit thinking blocks as thought events so clients can display live reasoning.
