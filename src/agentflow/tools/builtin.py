@@ -446,7 +446,10 @@ tool_registry.register(ToolDefinition(
         "mode='replace_lines': replace a range of lines (requires start_line and end_line). "
         "mode='replace_pattern': find-and-replace using a regex (requires pattern; replaces all occurrences). "
         "mode='replace_between': replace text between two regex markers, keeping the marker lines (requires start_pattern and end_pattern). "
-        "IMPORTANT: Do not call overwrite on the same file multiple times in one task — use append or a targeted mode to add or update content."
+        "IMPORTANT — output token limit: Never write more than ~500 lines or ~15 000 characters in a single call. "
+        "Large documents MUST be split across multiple calls: the first call uses mode='overwrite' to create the file "
+        "with the opening section; every subsequent section uses mode='append'. "
+        "Attempting to write an entire large document in one call will be cut off mid-content by the output token limit, corrupting the file."
     ),
     input_schema={
         "type": "object",

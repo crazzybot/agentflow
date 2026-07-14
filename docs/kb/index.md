@@ -1,7 +1,7 @@
 ---
 title: AgentFlow Knowledge Base — Index
 last_updated: 2026-07-10
-last_verified_sha: bb0bacd
+last_verified_sha: f0cd566
 sources:
   - src/agentflow/
   - manifests/

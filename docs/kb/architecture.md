@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-07-14
-last_verified_sha: 2878fae
+last_verified_sha: f0cd566
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -69,8 +69,12 @@ variants so multiple API replicas can share a run — see
    receive user-supplied extra context), and calls `Agent.run(envelope, emitter,
    ctx=ctx)`. It handles retries with exponential backoff, fallback-agent routing on
    final failure (deregistering the primary agent and registering the fallback before
-   its `run()` call), and budget-exhaustion continuation (`_continue_partial`,
-   `_request_budget_increase`) which can pause the run for human input.
+   its `run()` call), and partial-result continuation (`_continue_partial`,
+   `_request_budget_increase`). HITL is triggered when the remaining USD budget is at or
+   below `agent_min_iteration_budget_usd` **or** when `AgentResult.hit_max_tokens` is
+   True (because continuing with the same budget would compute the same `max_tokens` cap
+   and hit the wall again). Iteration-limit partials with ample budget remaining continue
+   automatically via `_continue_partial` without interrupting the user.
    `ctx.deregister_agent(agent_id)` is always called in a `finally` block when the
    subtask finishes. If the run is cancelled (`asyncio.CancelledError` propagates from
    `asyncio.wait`), `_execute_plan` cancels all in-flight subtask tasks and re-raises;
@@ -173,11 +177,15 @@ variants so multiple API replicas can share a run — see
   LLM call; thinking blocks are emitted as `agent:thought` SSE events and kept in the
   message history for subsequent turns. Thinking tokens are extracted via
   `usage.thinking_tokens` (via `getattr` for forward-compatibility). `AgentResult`
-  carries `thinking_tokens` as a separate counter (a subset of `output_tokens`); thinking
-  tokens are priced at `cost_per_1m_thinking_tokens` while regular output tokens use
-  `cost_per_1m_output_tokens`. SSE events emitted during the loop carry `turn_index`
-  (1-based LLM call counter); `agent:progress` tool-call events carry `tool_call_id`
-  (the Anthropic `tool_use` block ID); `_call_tool()` emits a matching
+  carries `thinking_tokens` as a separate counter (a subset of `output_tokens`) and a
+  `hit_max_tokens: bool` flag (set when `stop_reason=="max_tokens"`); thinking tokens are
+  priced at `cost_per_1m_thinking_tokens` while regular output tokens use
+  `cost_per_1m_output_tokens`. On `max_tokens`, the partial assistant message is popped
+  from history (resumption starts from the last clean state), but pending tool calls ARE
+  still dispatched so clients receive paired `agent:progress` / `agent:tool_result` SSE
+  events — the results are not appended to history. SSE events emitted during the loop
+  carry `turn_index` (1-based LLM call counter); `agent:progress` tool-call events carry
+  `tool_call_id` (the Anthropic `tool_use` block ID); `_call_tool()` emits a matching
   `agent:tool_result` event (same `tool_call_id`) after the tool returns so clients can
   pair call and result; the budget-exhausted path also emits `agent:tool_result` with
   `data.budget_exhausted=true`. Three additional helpers manage output tracking and
@@ -225,11 +233,13 @@ variants so multiple API replicas can share a run — see
   `provide_human_input`). `context_store` is built by `_make_context_store()`, which
   returns a write-through `RedisContextStore` (`context_redis.py`) under
   `STATE_BACKEND=redis`; `ContextStore.connect()` enables cross-replica HITL delivery.
-- **`llm/client.py` — `LLMClient`**: wraps `anthropic.AsyncAnthropic.messages.create()`
-  with automatic prompt-cache `cache_control` injection on system/tool blocks and tracks
-  cumulative `UsageStats` (fields: `total_requests`, `total_input_tokens`,
-  `total_output_tokens`, `total_thinking_tokens`, `cache_creation_tokens`,
-  `cache_read_tokens`). Rate limiting is delegated to the Anthropic SDK
+- **`llm/client.py` — `LLMClient`**: wraps the Anthropic SDK with automatic prompt-cache
+  `cache_control` injection on system/tool blocks and tracks cumulative `UsageStats`
+  (fields: `total_requests`, `total_input_tokens`, `total_output_tokens`,
+  `total_thinking_tokens`, `cache_creation_tokens`, `cache_read_tokens`). Internally
+  uses `messages.stream()` / `beta.messages.stream()` + `get_final_message()` instead
+  of `messages.create()` so that long agent turns are not cut off by the Anthropic SDK's
+  10-minute non-streaming timeout. Rate limiting is delegated to the Anthropic SDK
   (`max_retries=4`, exponential backoff on 429/500) rather than a per-process limiter,
   which would not coordinate across replicas.
 

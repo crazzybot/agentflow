@@ -221,7 +221,7 @@ def _budget_to_max_tokens(remaining_budget: float, last_input_tokens: int) -> in
     if output_budget <= 0:
         return 256  # minimum to at least elicit an end_turn
     tokens = int(output_budget / (settings.cost_per_1m_output_tokens / 1_000_000))
-    return max(256, min(16_384, tokens))
+    return max(256, min(settings.agent_max_tokens_cap, tokens))
 
 
 

@@ -123,11 +123,16 @@ class _MessagesProxy:
             if cached_tools is not None:
                 kwargs["tools"] = cached_tools
 
+        # Use streaming to avoid the 10-minute timeout imposed on non-streaming
+        # requests. stream() keeps the connection alive and get_final_message()
+        # returns the same Message object callers expect.
         betas = kwargs.pop("betas", None)
         if betas:
-            response = await self._inner.beta.messages.create(betas=betas, **kwargs)
+            async with self._inner.beta.messages.stream(betas=betas, **kwargs) as stream:
+                response = await stream.get_final_message()
         else:
-            response = await self._inner.messages.create(**kwargs)
+            async with self._inner.messages.stream(**kwargs) as stream:
+                response = await stream.get_final_message()
 
         usage = response.usage
         input_tokens: int = usage.input_tokens

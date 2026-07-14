@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     sandbox_python: str = "sandbox/.venv/bin/python"
     agent_max_iterations: int = 10  # fallback when no budget is set
     agent_max_tokens_fallback: int = 8_192  # max_tokens per call when no budget is set
+    agent_max_tokens_cap: int = 32_768  # upper bound on max_tokens derived from budget
     # Minimum remaining budget (USD) required to attempt another agent iteration.
     # Below this threshold the agent stops and returns partial rather than starting
     # a call that is almost certain to be cut short by max_tokens.
