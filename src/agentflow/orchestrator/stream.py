@@ -14,12 +14,18 @@ logger = logging.getLogger(__name__)
 
 
 class StreamEmitter:
-    """Buffers SSE events for a single run and exposes an async generator."""
+    """Buffers SSE events for a single run and exposes an async generator.
+
+    Events are kept in an in-memory list so any number of consumers can replay
+    from the beginning independently.  An asyncio.Event signals new arrivals so
+    consumers wait efficiently rather than polling.
+    """
 
     def __init__(self, run_id: str, events_file: str | None = None) -> None:
         self.run_id = run_id
         self.done = False
-        self._queue: asyncio.Queue[SSEEvent | None] = asyncio.Queue()
+        self._buffer: list[SSEEvent] = []
+        self._notify: asyncio.Event = asyncio.Event()
         self._seq = 0
         self._events_file = events_file
         if events_file:
@@ -36,15 +42,20 @@ class StreamEmitter:
         agent_id: str | None = None,
         message: str = "",
         data: Any = None,
+        turn_index: int | None = None,
+        tool_call_id: str | None = None,
     ) -> None:
         event = SSEEvent(
             run_id=self.run_id,
             seq=self._next_seq(),
             type=event_type,
             agent_id=agent_id,
+            turn_index=turn_index,
+            tool_call_id=tool_call_id,
             payload=SSEPayload(message=message, data=data),
         )
-        self._queue.put_nowait(event)
+        self._buffer.append(event)
+        self._notify.set()
         if self._events_file:
             with open(self._events_file, "a") as f:
                 f.write(json.dumps(event.model_dump(mode="json")) + "\n")
@@ -52,14 +63,29 @@ class StreamEmitter:
 
     def close(self) -> None:
         self.done = True
-        self._queue.put_nowait(None)  # sentinel
+        self._notify.set()
 
     async def __aiter__(self) -> AsyncIterator[dict[str, str]]:
+        pos = 0
         while True:
-            event = await self._queue.get()
-            if event is None:
+            # Yield all buffered events from current position.
+            while pos < len(self._buffer):
+                yield {"data": json.dumps(self._buffer[pos].model_dump(mode="json"))}
+                pos += 1
+
+            if self.done:
                 return
-            yield {"data": json.dumps(event.model_dump(mode="json"))}
+
+            # Clear the notification flag, then re-check buffer and done in case
+            # emit()/close() fired between our last check and this clear().
+            self._notify.clear()
+            while pos < len(self._buffer):
+                yield {"data": json.dumps(self._buffer[pos].model_dump(mode="json"))}
+                pos += 1
+            if self.done:
+                return
+
+            await self._notify.wait()
 
 
 class StreamRegistry:

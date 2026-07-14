@@ -15,11 +15,17 @@ _ICONS: dict[str, str] = {
     "plan:created": "◇",
     "task:dispatched": "→",
     "agent:progress": "·",
+    "agent:thought": "~",
     "agent:query": "?",
     "task:complete": "✓",
+    "task:partial": "~",
     "task:failed": "✗",
+    "task:continuing": "↻",
+    "run:awaiting_input": "⏸",
+    "run:budget_exceeded": "!",
     "run:complete": "◆",
     "run:error": "✗",
+    "run:cancelled": "✗",
 }
 
 _STYLES: dict[str, str] = {
@@ -27,11 +33,17 @@ _STYLES: dict[str, str] = {
     "plan:created": "cyan",
     "task:dispatched": "blue",
     "agent:progress": "dim",
+    "agent:thought": "dim italic",
     "agent:query": "yellow",
     "task:complete": "green",
+    "task:partial": "yellow",
     "task:failed": "bold red",
+    "task:continuing": "yellow",
+    "run:awaiting_input": "bold yellow",
+    "run:budget_exceeded": "bold yellow",
     "run:complete": "bold green",
     "run:error": "bold red",
+    "run:cancelled": "bold red",
 }
 
 
@@ -76,13 +88,43 @@ class RunDisplay:
             if self.verbose and message:
                 self._print(event_type, agent_id, message)
 
+        elif event_type == "agent:thought":
+            if self.verbose and message:
+                preview = message[:200].replace("\n", " ")
+                self._print(event_type, agent_id, preview)
+
+        elif event_type == "agent:tool_result":
+            if self.verbose and data and isinstance(data, dict):
+                tool = data.get("tool", "")
+                result = data.get("result", "")
+                preview = result[:120].replace("\n", " ")
+                self._print(event_type, agent_id, f"← {tool}: {preview}")
+
         elif event_type == "agent:query":
             self._print(event_type, agent_id, message)
+
+        elif event_type in ("task:partial", "task:continuing", "run:budget_exceeded"):
+            self._print(event_type, agent_id, message)
+
+        elif event_type == "run:awaiting_input":
+            console.print()
+            self._print(event_type, agent_id, message)
+            if data and isinstance(data, dict):
+                req_type = data.get("request_type", "")
+                if "budget" in req_type:
+                    console.print(
+                        "  [dim]To continue: POST /api/runs/{run_id}/input "
+                        '{"action":"continue","budget_increase_usd":<amount>}[/dim]'
+                    )
+                    console.print(
+                        '  [dim]To stop:     POST /api/runs/{run_id}/input {"action":"stop"}[/dim]'
+                    )
+            console.print()
 
         elif event_type == "run:complete":
             self._handle_run_complete(message, data)
 
-        elif event_type == "run:error":
+        elif event_type in ("run:error", "run:cancelled"):
             console.print()
             self._print(event_type, None, message)
             if data and isinstance(data, dict):

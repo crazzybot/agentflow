@@ -1,11 +1,11 @@
 """Tests for the generic Agent class (without live LLM or MCP calls)."""
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 from anthropic.types import TextBlock, ThinkingBlock
 
-from agentflow.agents.agent import Agent, _with_message_cache_breakpoint
-from agentflow.core.models import AgentManifest, AgentStatus, TaskConstraints, TaskContext, TaskEnvelope
+from agentflow.agents.agent import Agent, _compact_file_writes, _with_message_cache_breakpoint, _parse_final_output
+from agentflow.core.models import AgentManifest, AgentStatus, SSEEventType, TaskConstraints, TaskContext, TaskEnvelope
 
 
 def _make_manifest(
@@ -393,3 +393,301 @@ def test_cache_breakpoint_no_double_marking():
     result = _with_message_cache_breakpoint(messages)
     # setdefault should not overwrite existing cache_control
     assert result[0]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+# ---------------------------------------------------------------------------
+# _parse_final_output tests
+# ---------------------------------------------------------------------------
+
+def test_parse_final_output_pure_json():
+    """Direct JSON parse: structured populated, text preserved as-is."""
+    payload = '{"code": "x", "language": "Python"}'
+    structured, text = _parse_final_output(payload)
+    assert structured == {"code": "x", "language": "Python"}
+    assert text == payload  # kept for reporter display
+
+
+def test_parse_final_output_fenced_json():
+    """Prose + fenced JSON: structured populated, text is prose only."""
+    raw = "All done.\n\n---\n\n```json\n{\"code\": \"x\", \"language\": \"Python\"}\n```"
+    structured, text = _parse_final_output(raw)
+    assert structured == {"code": "x", "language": "Python"}
+    assert text == "All done."
+
+
+def test_parse_final_output_fenced_no_lang_tag():
+    """Fence without 'json' tag still extracted correctly."""
+    raw = "Summary.\n\n```\n{\"k\": \"v\"}\n```"
+    structured, text = _parse_final_output(raw)
+    assert structured == {"k": "v"}
+    assert text == "Summary."
+
+
+def test_parse_final_output_outermost_brace():
+    """Fallback: outermost { } extraction when no fence is present."""
+    raw = 'Here is the result: {"result": "ok"} — done.'
+    structured, text = _parse_final_output(raw)
+    assert structured == {"result": "ok"}
+    assert text == "Here is the result:"
+
+
+def test_parse_final_output_no_json():
+    """No JSON found: structured is empty, text unchanged."""
+    raw = "I could not complete the task."
+    structured, text = _parse_final_output(raw)
+    assert structured == {}
+    assert text == raw
+
+
+def test_parse_final_output_empty():
+    structured, text = _parse_final_output("")
+    assert structured == {}
+    assert text == ""
+
+
+# ---------------------------------------------------------------------------
+# turn_index / tool_call_id / agent:tool_result event tests
+# ---------------------------------------------------------------------------
+
+def _make_tool_use_block(name: str = "file_read", tool_id: str = "toolu_t1", input_: dict | None = None):
+    block = MagicMock()
+    block.type = "tool_use"
+    block.id = tool_id
+    block.name = name
+    block.input = input_ or {}
+    return block
+
+
+def _make_tool_use_resp(block, input_tokens: int = 10, output_tokens: int = 5):
+    resp = MagicMock()
+    resp.stop_reason = "tool_use"
+    resp.content = [block]
+    resp.usage.input_tokens = input_tokens
+    resp.usage.output_tokens = output_tokens
+    resp.usage.cache_creation_input_tokens = 0
+    resp.usage.cache_read_input_tokens = 0
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_tool_call_event_carries_tool_call_id_and_turn_index():
+    """agent:progress for a tool call must include tool_call_id and turn_index."""
+    tool_block = _make_tool_use_block("file_read", "toolu_x1")
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(
+        side_effect=[_make_tool_use_resp(tool_block), _mock_response()]
+    )
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    agent = Agent(_make_manifest(tools=["file_read"]), mock_client)
+    await agent.run(_make_envelope(), emitter)
+
+    # Find the agent:progress call that announces the tool invocation
+    progress_calls = [
+        c for c in emitter.emit.call_args_list
+        if c.args[0] == SSEEventType.agent_progress
+        and "file_read" in c.kwargs.get("message", "")
+    ]
+    assert progress_calls, "Expected at least one agent:progress for tool call"
+    kw = progress_calls[0].kwargs
+    assert kw["tool_call_id"] == "toolu_x1"
+    assert kw["turn_index"] == 1  # first LLM turn → iteration=1
+
+
+@pytest.mark.asyncio
+async def test_tool_result_event_emitted_with_matching_tool_call_id():
+    """agent:tool_result must be emitted after the tool executes, with matching tool_call_id."""
+    tool_block = _make_tool_use_block("file_read", "toolu_y2")
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(
+        side_effect=[_make_tool_use_resp(tool_block), _mock_response()]
+    )
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    agent = Agent(_make_manifest(tools=["file_read"]), mock_client)
+    await agent.run(_make_envelope(), emitter)
+
+    result_calls = [
+        c for c in emitter.emit.call_args_list
+        if c.args[0] == SSEEventType.agent_tool_result
+    ]
+    assert result_calls, "Expected agent:tool_result event"
+    kw = result_calls[0].kwargs
+    assert kw["tool_call_id"] == "toolu_y2"
+    assert kw["turn_index"] == 1
+    assert "tool" in (kw.get("data") or {})
+
+
+@pytest.mark.asyncio
+async def test_tool_result_event_ordering_relative_to_progress():
+    """agent:tool_result must come after its matching agent:progress in the emit sequence."""
+    tool_block = _make_tool_use_block("file_read", "toolu_z3")
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(
+        side_effect=[_make_tool_use_resp(tool_block), _mock_response()]
+    )
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    agent = Agent(_make_manifest(tools=["file_read"]), mock_client)
+    await agent.run(_make_envelope(), emitter)
+
+    types_in_order = [c.args[0] for c in emitter.emit.call_args_list]
+    progress_idx = next(
+        (i for i, t in enumerate(types_in_order) if t == SSEEventType.agent_progress and "file_read" in emitter.emit.call_args_list[i].kwargs.get("message", "")),
+        None,
+    )
+    result_idx = next(
+        (i for i, t in enumerate(types_in_order) if t == SSEEventType.agent_tool_result),
+        None,
+    )
+    assert progress_idx is not None
+    assert result_idx is not None
+    assert result_idx > progress_idx
+
+
+@pytest.mark.asyncio
+async def test_budget_exhausted_tool_emits_tool_result_event():
+    """When a tool's budget is exhausted, an agent:tool_result event is still emitted."""
+    manifest = _make_manifest(tools=["file_read"], tool_limits={"file_read": 1})
+    b1 = _make_tool_use_block("file_read", "toolu_a1")
+    b2 = _make_tool_use_block("file_read", "toolu_a2")
+
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(
+        side_effect=[_make_tool_use_resp(b1), _make_tool_use_resp(b2), _mock_response()]
+    )
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    agent = Agent(manifest, mock_client)
+    await agent.run(_make_envelope(), emitter)
+
+    result_calls = [
+        c for c in emitter.emit.call_args_list
+        if c.args[0] == SSEEventType.agent_tool_result
+    ]
+    # Should have one result for the allowed call and one for the budget-exhausted call
+    assert len(result_calls) == 2
+    exhausted_call = next(
+        (c for c in result_calls if (c.kwargs.get("data") or {}).get("budget_exhausted")),
+        None,
+    )
+    assert exhausted_call is not None
+    assert exhausted_call.kwargs["tool_call_id"] == "toolu_a2"
+
+
+@pytest.mark.asyncio
+async def test_turn_index_zero_for_start_event():
+    """The initial agent:progress 'Starting:' event must carry turn_index=0."""
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    agent = Agent(_make_manifest(), mock_client)
+    await agent.run(_make_envelope(), emitter)
+
+    start_calls = [
+        c for c in emitter.emit.call_args_list
+        if c.kwargs.get("message", "").startswith("Starting:")
+    ]
+    assert start_calls
+    assert start_calls[0].kwargs["turn_index"] == 0
+
+
+@pytest.mark.asyncio
+async def test_turn_index_increments_across_turns():
+    """Successive LLM turns produce turn_index values 1, 2, ... on tool call events."""
+    b1 = _make_tool_use_block("file_read", "toolu_b1")
+    b2 = _make_tool_use_block("file_read", "toolu_b2")
+
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(
+        side_effect=[_make_tool_use_resp(b1), _make_tool_use_resp(b2), _mock_response()]
+    )
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    agent = Agent(_make_manifest(tools=["file_read"]), mock_client)
+    await agent.run(_make_envelope(), emitter)
+
+    result_calls = [
+        c for c in emitter.emit.call_args_list
+        if c.args[0] == SSEEventType.agent_tool_result
+    ]
+    assert len(result_calls) == 2
+    assert result_calls[0].kwargs["turn_index"] == 1
+    assert result_calls[1].kwargs["turn_index"] == 2
+
+
+# ---------------------------------------------------------------------------
+# _compact_file_writes — stub format
+# ---------------------------------------------------------------------------
+
+def _make_file_write_block(tool_id: str, path: str, content: str) -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "file_write", "input": {"path": path, "content": content}}
+
+
+def _make_tool_result_msg(tool_id: str, result_text: str) -> dict:
+    return {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": result_text}]}
+
+
+def _messages_with_file_write(tool_id: str, path: str, content: str) -> list[dict]:
+    return [
+        {"role": "user", "content": "write a file"},
+        {"role": "assistant", "content": [_make_file_write_block(tool_id, path, content)]},
+        _make_tool_result_msg(tool_id, f"Wrote {len(content.splitlines())} lines ({len(content)} chars) to {path}"),
+    ]
+
+
+def test_compact_short_content_kept_verbatim():
+    """Content ≤ 1 500 chars is not altered."""
+    messages = _messages_with_file_write("tid1", "out.md", "short content")
+    _compact_file_writes(messages, {"tid1"})
+    stub = messages[1]["content"][0]["input"]["content"]
+    assert stub == "short content"
+    assert "[…" not in stub
+
+
+def test_compact_long_content_truncated_with_ellipsis_marker():
+    """Content > 1 500 chars gets a '[… +N chars]' suffix, not <TRUNCATED>."""
+    long_content = "x" * 3000
+    messages = _messages_with_file_write("tid2", "big.md", long_content)
+    _compact_file_writes(messages, {"tid2"})
+    stub = messages[1]["content"][0]["input"]["content"]
+    assert stub.startswith("x" * 1500)
+    assert stub.endswith("[… +1500 chars]")
+    assert "<TRUNCATED" not in stub
+    assert "TRUNCATED" not in stub
+
+
+def test_compact_marker_includes_correct_remaining_count():
+    content = "a" * 2000
+    messages = _messages_with_file_write("tid3", "f.md", content)
+    _compact_file_writes(messages, {"tid3"})
+    stub = messages[1]["content"][0]["input"]["content"]
+    assert "[… +500 chars]" in stub
+
+
+def test_compact_path_preserved():
+    messages = _messages_with_file_write("tid4", "docs/guide.md", "y" * 2000)
+    _compact_file_writes(messages, {"tid4"})
+    assert messages[1]["content"][0]["input"]["path"] == "docs/guide.md"
+
+
+def test_compact_only_affects_successful_ids():
+    """A tool_use ID not in successful_ids is left untouched."""
+    long_content = "z" * 3000
+    messages = _messages_with_file_write("tid5", "file.md", long_content)
+    _compact_file_writes(messages, {"other_id"})
+    stub = messages[1]["content"][0]["input"]["content"]
+    assert stub == long_content  # unchanged

@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Tools the planner is allowed to call during its exploration phase.
-_PLANNER_TOOLS = ["file_read", "bash_exec", "web_search", "fetch_url"]
+_PLANNER_TOOLS = ["file_read", "bash_exec_readonly", "web_search", "fetch_url"]
 
 # Planner tool results are capped at this many chars to keep the context manageable.
 _MAX_TOOL_RESULT_CHARS = 8_000
@@ -33,7 +33,7 @@ You are an orchestration planner. You have read-only tools to explore the worksp
 before you commit to a plan.
 
 EXPLORATION PHASE
-Use file_read and bash_exec (find, ls, grep — no writes) to understand the workspace:
+Use file_read and bash_exec_readonly (find, ls, grep, wc, diff, etc.) to understand the workspace:
 - Actual file structure and counts relevant to the task
 - Technologies, frameworks, and complexity present
 - Whether the task is small (one agent pass) or large (multiple subtasks)
@@ -229,10 +229,11 @@ async def create_plan(
                 SSEEventType.agent_progress,
                 agent_id="planner",
                 message=f"Exploring workspace: {', '.join(tool_names)}",
+                turn_index=iteration + 1,
             )
             for block in response.content:
                 if isinstance(block, TextBlock) and block.text.strip():
-                    emitter.emit(SSEEventType.agent_thought, agent_id="planner", message=block.text)
+                    emitter.emit(SSEEventType.agent_thought, agent_id="planner", message=block.text, turn_index=iteration + 1)
 
         tool_results = await asyncio.gather(
             *[_call_planner_tool(b, planner_tools) for b in tool_use_blocks]

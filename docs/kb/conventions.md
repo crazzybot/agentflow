@@ -1,7 +1,7 @@
 ---
 title: Conventions & Patterns
-last_updated: 2026-07-10
-last_verified_sha: 5da537c
+last_updated: 2026-07-13
+last_verified_sha: 1c1cfeb
 sources:
   - pyproject.toml
   - src/agentflow/config.py
@@ -80,7 +80,8 @@ contradict the source):
 
 - Tests live in the top-level `tests/` directory (flat, no subpackages), one file per
   module under test: `test_agent.py`, `test_scheduler.py`, `test_models.py`,
-  `test_registry.py`, `test_skill_loader.py`, `test_tools.py`, `test_arxiv_search.py`.
+  `test_registry.py`, `test_skill_loader.py`, `test_tools.py`, `test_arxiv_search.py`,
+  `test_stream.py`.
 - Naming: files are `test_*.py`; test functions are `test_<behavior>` (e.g.
   `test_agent_run_end_turn`, `test_dependency_blocks_downstream`).
 - Structure seen in `tests/test_agent.py` and `tests/test_scheduler.py`: small `_make_*`/`_plan`

@@ -18,7 +18,6 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import anthropic
-from anthropic.types import TextBlock, ThinkingBlock  # also matched via block.type for beta variants
 
 from agentflow.config import settings
 from agentflow.core.models import AgentManifest, AgentOutput, AgentResult, AgentStatus, SSEEventType, TaskEnvelope
@@ -64,6 +63,175 @@ def _with_message_cache_breakpoint(messages: list[dict]) -> list[dict]:
     return messages
 
 
+def _to_dict_content(content: list) -> list[dict]:
+    """Convert Anthropic SDK response blocks to plain dicts for message storage.
+
+    Storing plain dicts lets us post-process the history (e.g. compact large
+    file_write inputs) without relying on SDK internals.  Thinking-block
+    signatures are preserved exactly — the API requires them to be echoed back
+    unchanged on subsequent calls.
+    """
+    result: list[dict] = []
+    for block in content:
+        if isinstance(block, dict):
+            result.append(block)
+            continue
+        block_type: str = getattr(block, "type", "")
+        if not block_type:
+            continue
+        d: dict = {"type": block_type}
+        if block_type == "text":
+            d["text"] = getattr(block, "text", "")
+        elif block_type == "thinking":
+            d["thinking"] = getattr(block, "thinking", "")
+            sig = getattr(block, "signature", None)
+            if sig is not None:
+                d["signature"] = sig
+        elif block_type == "tool_use":
+            d["id"] = getattr(block, "id", "")
+            d["name"] = getattr(block, "name", "")
+            d["input"] = dict(getattr(block, "input", None) or {})
+        else:
+            # Beta or future block variants — copy any known attributes
+            for attr in ("id", "name", "input", "text", "thinking", "signature"):
+                val = getattr(block, attr, None)
+                if val is not None:
+                    d[attr] = val
+        result.append(d)
+    return result
+
+
+def _compact_file_writes(messages: list[dict], successful_ids: set[str]) -> None:
+    """In-place: truncate large file_write tool_use content to a preview stub.
+
+    Large file contents accumulate in the cache prefix and are re-billed at
+    cache-creation rate on every subsequent turn.  Truncating to a 1 500-char
+    preview keeps the cache footprint small while giving the model enough
+    context to know what it already wrote (preventing pointless rewrites).
+    If the content fits in 1 500 chars it is kept verbatim; otherwise it is
+    followed by ``[… +N chars]`` — a display-truncation marker the model reads
+    as "more content follows" rather than a write-operation failure.
+
+    Only the most recent assistant message is scanned — earlier messages are
+    already part of the cached prefix and modifying them would cause a miss.
+    """
+    if not successful_ids:
+        return
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            return
+        new_content: list = []
+        changed = False
+        for block in content:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and block.get("name") == "file_write"
+                and block.get("id") in successful_ids
+            ):
+                inp = block.get("input") or {}
+                path = inp.get("path", "?")
+                raw = str(inp.get("content", ""))
+                chars = len(raw)
+                if chars > 1500:
+                    stub_content = raw[:1500] + f"[… +{chars - 1500} chars]"
+                else:
+                    stub_content = raw
+                new_content.append({
+                    "type": "tool_use",
+                    "id": block["id"],
+                    "name": "file_write",
+                    "input": {"path": path, "content": stub_content},
+                })
+                changed = True
+            else:
+                new_content.append(block)
+        if changed:
+            messages[i] = {**msg, "content": new_content}
+        return  # only process the most recent assistant message
+
+
+def _successful_write_ids(tool_use_blocks: list, tool_results: list[dict]) -> set[str]:
+    """Return tool_use IDs for file_write calls that succeeded this turn."""
+    write_ids = {
+        getattr(b, "id", b.get("id") if isinstance(b, dict) else None)
+        for b in tool_use_blocks
+        if getattr(b, "name", b.get("name") if isinstance(b, dict) else "") == "file_write"
+    }
+    write_ids.discard(None)
+    return {
+        r["tool_use_id"]
+        for r in tool_results
+        if isinstance(r, dict)
+        and r.get("type") == "tool_result"
+        and r.get("tool_use_id") in write_ids
+        and isinstance(r.get("content"), str)
+        and not r["content"].lower().startswith("error")
+    }
+
+
+def _parse_final_output(text: str) -> tuple[dict[str, Any], str]:
+    """Split model output into (structured JSON dict, prose text).
+
+    System prompts instruct agents to return raw JSON, but the model often
+    prepends a prose summary and wraps the JSON in a markdown fence.  This
+    function extracts the JSON into ``structured`` and returns only the
+    non-JSON prose as ``text`` so downstream consumers (reporter,
+    prior_results) receive a readable summary rather than a raw blob.
+
+    Extraction order:
+      1. Direct JSON parse  — text IS the JSON; keep text as-is for display.
+      2. Fenced code block  — strip the fence, return prose before it.
+      3. Outermost { … }   — last resort; return prose before the brace.
+
+    If no JSON is found both fields are returned unchanged.
+    """
+    if not text:
+        return {}, text
+
+    # 1. Direct parse — the whole text is JSON (model followed instructions).
+    #    Preserve text so the reporter can display the formatted JSON string.
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed, text
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # 2. Fenced code block: ```[json]\n { ... } \n```
+    tick_open = text.find("```")
+    if tick_open != -1:
+        newline_after_tick = text.find("\n", tick_open)
+        tick_close = text.find("```", tick_open + 3)
+        if newline_after_tick != -1 and tick_close > newline_after_tick:
+            fenced = text[newline_after_tick + 1 : tick_close].strip()
+            try:
+                parsed = json.loads(fenced)
+                if isinstance(parsed, dict):
+                    prose = text[:tick_open].rstrip(" \n\r-")
+                    return parsed, prose
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    # 3. Outermost { … } span — handles mixed prose + inline JSON with no fence.
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        try:
+            parsed = json.loads(text[start : end + 1])
+            if isinstance(parsed, dict):
+                prose = text[:start].rstrip(" \n\r-")
+                return parsed, prose
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    return {}, text
+
+
 def _budget_to_max_tokens(remaining_budget: float, last_input_tokens: int) -> int:
     """Compute how many output tokens we can afford with *remaining_budget*.
 
@@ -107,6 +275,7 @@ class Agent:
             SSEEventType.agent_progress,
             agent_id=self.agent_id,
             message=f"Starting: {envelope.instruction[:80]}",
+            turn_index=0,
         )
         try:
             result = await self._execute(envelope, emitter, resume_messages=resume_messages, ctx=ctx)
@@ -311,23 +480,16 @@ class Agent:
             ) / 1_000_000
             iteration += 1
 
-            # Append the assistant's full response (preserves tool_use and thinking blocks)
-            messages.append({"role": "assistant", "content": response.content})
+            # Store the assistant response as plain dicts so the history can be
+            # post-processed (e.g. file_write compaction) without SDK coupling.
+            messages.append({"role": "assistant", "content": _to_dict_content(response.content)})
             last_response_content = list(response.content)
 
-            # Emit thinking blocks as thought events so clients can display live reasoning.
-            # Use block.type rather than isinstance so BetaThinkingBlock (beta endpoint)
-            # and ThinkingBlock (standard endpoint) are both matched.
-            if thinking_budget:
-                for block in response.content:
-                    thinking_text = getattr(block, "thinking", None)
-                    if block.type == "thinking" and thinking_text and thinking_text.strip():
-                        emitter.emit(SSEEventType.agent_thought, agent_id=self.agent_id, message=thinking_text)
-
             # Collect any text the model produced this turn (BetaTextBlock or TextBlock)
+            final_text = ""
             for block in response.content:
                 if block.type == "text":
-                    final_text = getattr(block, "text", "")
+                    final_text += getattr(block, "text", "")
 
             if response.stop_reason == "end_turn":
                 break
@@ -345,30 +507,47 @@ class Agent:
                 pending_tool_use = [b for b in response.content if b.type == "tool_use"]
                 if pending_tool_use:
                     pending_results = await asyncio.gather(
-                        *[self._checked_call_tool(b, tools, emitter, tool_call_counts, tool_limits)
+                        *[self._checked_call_tool(b, tools, emitter, tool_call_counts, tool_limits, iteration)
                           for b in pending_tool_use]
                     )
                     messages.append({"role": "user", "content": list(pending_results)})
+                    _compact_file_writes(
+                        messages,
+                        _successful_write_ids(pending_tool_use, list(pending_results)),
+                    )
                 break
 
-            # Emit any text the model produced alongside tool calls as a thought event
-            for block in response.content:
-                text = getattr(block, "text", None)
-                if block.type == "text" and text and text.strip():
-                    emitter.emit(
-                        SSEEventType.agent_thought,
-                        agent_id=self.agent_id,
-                        message=text,
-                    )
+            # Emit thinking blocks as thought events so clients can display live reasoning.
+            # Use block.type rather than isinstance so BetaThinkingBlock (beta endpoint)
+            # and ThinkingBlock (standard endpoint) are both matched.
+            thinking_text = ""
+            if thinking_budget:
+                for block in response.content:
+                    text = None
+                    if block.type == "thinking":
+                        text = getattr(block, "thinking", None)
+                    elif block.type == "text":
+                        text = getattr(block, "text", None)
+                    
+                    if text:
+                        thinking_text += text
+            if thinking_text:
+                emitter.emit(SSEEventType.agent_thought, agent_id=self.agent_id, message=thinking_text, turn_index=iteration)
 
             # Execute all tool calls concurrently, then feed results back
             tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
             tool_results = await asyncio.gather(
-                *[self._checked_call_tool(b, tools, emitter, tool_call_counts, tool_limits)
+                *[self._checked_call_tool(b, tools, emitter, tool_call_counts, tool_limits, iteration)
                   for b in tool_use_blocks]
             )
 
             messages.append({"role": "user", "content": list(tool_results)})
+            # Compact successful file_write inputs so large file contents don't
+            # accumulate in the cache prefix across subsequent turns.
+            _compact_file_writes(
+                messages,
+                _successful_write_ids(tool_use_blocks, list(tool_results)),
+            )
 
             # Inject any pending user message as an additional user turn before
             # the next API call, so the model sees it without a separate round-trip.
@@ -376,24 +555,24 @@ class Agent:
                 pending = await ctx.pop_user_message(self.agent_id)
                 if pending is not None:
                     messages.append({"role": "user", "content": pending})
-                    emitter.emit(SSEEventType.run_message_received, agent_id=self.agent_id, message=pending[:120])
+                    emitter.emit(SSEEventType.run_message_received, agent_id=self.agent_id, message=pending[:120], turn_index=iteration)
 
         # With extended thinking the model may end via thinking + tool use without ever
         # producing a text block.  Fall back to the last thinking block so the reporter
         # receives a meaningful summary instead of an empty string.
         if not final_text and thinking_budget:
+            final_text = ""
             for block in reversed(last_response_content):
-                thinking_text = getattr(block, "thinking", None)
-                if block.type == "thinking" and thinking_text and thinking_text.strip():
-                    final_text = thinking_text
-                    break
+                if block.type == "thinking":
+                    text = getattr(block, "thinking", "")
+                    if thinking_text and text.strip():
+                        final_text += thinking_text
 
-        # Try to parse final text as JSON (many system prompts ask for JSON output)
-        structured: dict[str, Any] = {}
-        try:
-            structured = json.loads(final_text)
-        except (json.JSONDecodeError, TypeError):
-            pass
+        # Extract structured JSON and clean prose from the final model output.
+        # Agents are instructed to return raw JSON, but often prepend a summary
+        # and wrap the JSON in a markdown fence; _parse_final_output handles all
+        # three cases and strips the JSON block from the prose text.
+        structured, final_text = _parse_final_output(final_text)
 
         return AgentResult(
             task_id=envelope.task_id,
@@ -419,12 +598,15 @@ class Agent:
         block: Any,
         tools: list,
         emitter: "StreamEmitter",
+        turn_index: int,
     ) -> dict[str, Any]:
         emitter.emit(
             SSEEventType.agent_progress,
             agent_id=self.agent_id,
             message=f"Calling tool: {block.name}",
             data={"tool": block.name, "input": block.input},
+            turn_index=turn_index,
+            tool_call_id=block.id,
         )
 
         # Find in the tools list for this invocation (built-in + MCP)
@@ -441,6 +623,14 @@ class Agent:
             result_text = result_text[:_MAX_TOOL_RESULT_CHARS] + "\n… [truncated]"
 
         logger.debug("[%s] Tool %r → %s…", self.agent_id, block.name, result_text[:80])
+        emitter.emit(
+            SSEEventType.agent_tool_result,
+            agent_id=self.agent_id,
+            message=result_text[:200],
+            data={"tool": block.name, "result": result_text},
+            turn_index=turn_index,
+            tool_call_id=block.id,
+        )
         return {
             "type": "tool_result",
             "tool_use_id": block.id,
@@ -454,6 +644,7 @@ class Agent:
         emitter: "StreamEmitter",
         counts: dict[str, int],
         limits: dict[str, int],
+        turn_index: int,
     ) -> dict[str, Any]:
         """Call a tool, enforcing manifest tool_limits before dispatch."""
         if block.name in limits:
@@ -463,13 +654,22 @@ class Agent:
                     "[%s] Tool budget exhausted: '%s' limited to %d call(s), this would be call %d",
                     self.agent_id, block.name, limits[block.name], counts[block.name],
                 )
+                budget_error = (
+                    f"Tool budget exhausted: '{block.name}' is limited to "
+                    f"{limits[block.name]} call(s) per task. "
+                    "Use information already gathered instead of making additional calls."
+                )
+                emitter.emit(
+                    SSEEventType.agent_tool_result,
+                    agent_id=self.agent_id,
+                    message=budget_error,
+                    data={"tool": block.name, "result": budget_error, "budget_exhausted": True},
+                    turn_index=turn_index,
+                    tool_call_id=block.id,
+                )
                 return {
                     "type": "tool_result",
                     "tool_use_id": block.id,
-                    "content": (
-                        f"Tool budget exhausted: '{block.name}' is limited to "
-                        f"{limits[block.name]} call(s) per task. "
-                        "Use information already gathered instead of making additional calls."
-                    ),
+                    "content": budget_error,
                 }
-        return await self._call_tool(block, tools, emitter)
+        return await self._call_tool(block, tools, emitter, turn_index)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import xml.etree.ElementTree as ET
 
 import httpx
@@ -13,17 +14,30 @@ logger = logging.getLogger(__name__)
 
 _API_URL = "https://export.arxiv.org/api/query"
 _ATOM_NS = "http://www.w3.org/2005/Atom"
+_ABS_RE = re.compile(r"^https?://arxiv\.org/abs/", re.IGNORECASE)
 
 
-def arxiv_search(query: str, max_results: int = 5) -> list[str]:
-    """Search arXiv and return a list of abstract URLs.
+def _abs_to_pdf_url(abs_url: str) -> str:
+    """Derive the PDF download URL from an arXiv abstract URL."""
+    return _ABS_RE.sub("https://arxiv.org/pdf/", abs_url.strip())
+
+
+def arxiv_search(
+    query: str,
+    max_results: int = 5,
+    category: str | None = None,
+) -> list[dict[str, str]]:
+    """Search arXiv and return paper metadata including title, abstract, and URL.
 
     Args:
         query: Free-text search query (mapped to the ``all:`` field).
         max_results: Maximum number of results to return (default 5).
+        category: Optional arXiv subject category filter, e.g. ``"cs.LG"``,
+            ``"q-fin.TR"``, ``"stat.ML"``.  When set, only papers in that
+            category are returned, which sharply reduces off-topic results.
 
     Returns:
-        A list of arXiv abstract URL strings, one per matching paper.
+        A list of dicts with keys: "title", "abstract", "url", "pdf_url".
 
     Raises:
         ValueError: If *query* is empty or *max_results* is not positive.
@@ -34,8 +48,12 @@ def arxiv_search(query: str, max_results: int = 5) -> list[str]:
     if max_results < 1:
         raise ValueError("max_results must be a positive integer")
 
+    search_query = f"all:{query.strip()}"
+    if category:
+        search_query = f"cat:{category.strip()} AND {search_query}"
+
     params = {
-        "search_query": f"all:{query.strip()}",
+        "search_query": search_query,
         "max_results": max_results,
     }
 
@@ -65,13 +83,20 @@ def arxiv_search(query: str, max_results: int = 5) -> list[str]:
     except ET.ParseError as exc:
         raise RuntimeError(f"Failed to parse arXiv XML response: {exc}") from exc
 
-    # Each <entry> contains one <id> with the abstract URL.
-    # The top-level <feed><id> is skipped — it sits directly under <feed>, not <entry>.
-    urls: list[str] = []
+    results: list[dict[str, str]] = []
     for entry in root.findall(f"{{{_ATOM_NS}}}entry"):
         id_el = entry.find(f"{{{_ATOM_NS}}}id")
-        if id_el is not None and id_el.text:
-            urls.append(id_el.text.strip())
+        title_el = entry.find(f"{{{_ATOM_NS}}}title")
+        summary_el = entry.find(f"{{{_ATOM_NS}}}summary")
+        if id_el is None or not id_el.text:
+            continue
+        abs_url = id_el.text.strip()
+        results.append({
+            "url": abs_url,
+            "pdf_url": _abs_to_pdf_url(abs_url),
+            "title": (title_el.text or "").strip() if title_el is not None else "",
+            "abstract": " ".join((summary_el.text or "").split()) if summary_el is not None else "",
+        })
 
-    logger.info("arxiv_search(%r, max_results=%d) → %d results", query, max_results, len(urls))
-    return urls
+    logger.info("arxiv_search(%r, cat=%r, max_results=%d) → %d results", query, category, max_results, len(results))
+    return results

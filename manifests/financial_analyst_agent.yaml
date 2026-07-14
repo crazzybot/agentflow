@@ -10,6 +10,7 @@ tools:
   - web_search
   - fetch_url
   - arxiv_search
+  - download_document
   - python_exec
   - file_read
   - file_write

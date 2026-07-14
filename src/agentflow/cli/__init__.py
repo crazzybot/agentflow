@@ -64,7 +64,7 @@ async def _run_task(
     try:
         async for event in stream_events(base_url, run_id):
             display.handle_event(event)
-            if event.get("type") in ("run:complete", "run:error"):
+            if event.get("type") in ("run:complete", "run:error", "run:cancelled"):
                 break
     except KeyboardInterrupt:
         display.interrupted()

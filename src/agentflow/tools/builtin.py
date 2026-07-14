@@ -4,8 +4,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -59,7 +61,29 @@ def _truncate(text: str, label: str = "") -> str:
 # fetch_url
 # ---------------------------------------------------------------------------
 
+_ARXIV_ABS_RE = re.compile(r"arxiv\.org/abs/([\w./]+)", re.IGNORECASE)
+
 async def _fetch_url(url: str) -> str:
+    # Redirect arxiv abstract page URLs to the Atom API so we get structured
+    # text (title + abstract) instead of raw JavaScript-heavy HTML.
+    if m := _ARXIV_ABS_RE.search(url):
+        paper_id = m.group(1).rstrip("/")
+        api_url = f"https://export.arxiv.org/api/query?id_list={paper_id}&max_results=1"
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+            try:
+                resp = await client.get(api_url, headers=_HTTP_HEADERS)
+                resp.raise_for_status()
+                import xml.etree.ElementTree as ET
+                root = ET.fromstring(resp.text)
+                ns = "http://www.w3.org/2005/Atom"
+                entry = root.find(f"{{{ns}}}entry")
+                if entry is not None:
+                    title = (entry.findtext(f"{{{ns}}}title") or "").strip()
+                    summary = " ".join((entry.findtext(f"{{{ns}}}summary") or "").split())
+                    return _truncate(f"**{title}**\n\n{summary}", label=url)
+            except Exception:
+                pass  # fall through to raw fetch on any error
+
     async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
         try:
             resp = await client.get(url, headers=_HTTP_HEADERS)
@@ -73,7 +97,10 @@ async def _fetch_url(url: str) -> str:
 
 tool_registry.register(ToolDefinition(
     name="fetch_url",
-    description="Fetch the raw text content of any URL (HTML, JSON, plain text). Returns up to 8 000 characters.",
+    description=(
+        "Fetch the raw text content of any URL (HTML, JSON, plain text). Returns up to 8 000 characters. "
+        "arxiv.org/abs/ URLs are automatically resolved to title + abstract via the Atom API."
+    ),
     input_schema={
         "type": "object",
         "properties": {
@@ -87,40 +114,70 @@ tool_registry.register(ToolDefinition(
 
 
 # ---------------------------------------------------------------------------
-# web_search  (DuckDuckGo Instant Answers — no API key required)
+# web_search  (Tavily if TAVILY_API_KEY is set, else DuckDuckGo HTML fallback)
 # ---------------------------------------------------------------------------
 
-async def _web_search(query: str, max_results: int = 5) -> str:
-    params = {"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"}
-    async with httpx.AsyncClient(timeout=15) as client:
+async def _web_search_tavily(query: str, max_results: int) -> str:
+    payload = {"api_key": settings.tavily_api_key, "query": query, "max_results": max_results}
+    async with httpx.AsyncClient(timeout=20) as client:
         try:
-            resp = await client.get("https://api.duckduckgo.com/", params=params, headers=_HTTP_HEADERS)
+            resp = await client.post("https://api.tavily.com/search", json=payload)
+            resp.raise_for_status()
             data: dict[str, Any] = resp.json()
         except Exception as exc:
             return f"Search error: {exc}"
 
     lines: list[str] = []
-    if data.get("Abstract"):
-        lines.append(f"Abstract: {data['Abstract']}")
-        if data.get("AbstractURL"):
-            lines.append(f"Source: {data['AbstractURL']}")
-    for item in data.get("RelatedTopics", [])[:max_results]:
-        if not isinstance(item, dict):
-            continue
-        # RelatedTopics can nest topic groups
-        topics = item.get("Topics") or [item]
-        for t in topics[:2]:
-            if t.get("Text"):
-                lines.append(f"• {t['Text']}")
-                if t.get("FirstURL"):
-                    lines.append(f"  {t['FirstURL']}")
-
+    if answer := data.get("answer"):
+        lines.append(f"Summary: {answer}\n")
+    for r in data.get("results", []):
+        lines.append(f"• {r.get('title', '(no title)')}")
+        lines.append(f"  {r.get('url', '')}")
+        if content := r.get("content", ""):
+            lines.append(f"  {content[:400]}")
+        lines.append("")
     return "\n".join(lines) if lines else f"No results for: {query!r}"
+
+
+async def _web_search_ddg(query: str, max_results: int) -> str:
+    headers = {**_HTTP_HEADERS, "Accept": "text/html,application/xhtml+xml"}
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        try:
+            resp = await client.get(
+                "https://html.duckduckgo.com/html/",
+                params={"q": query},
+                headers=headers,
+            )
+            html = resp.text
+        except Exception as exc:
+            return f"Search error: {exc}"
+
+    titles = re.findall(r'class="result__a"[^>]*>(.+?)</a>', html)
+    urls = re.findall(r'class="result__url"[^>]*>\s*(.+?)\s*</', html)
+    snippets = re.findall(r'class="result__snippet"[^>]*>(.+?)</a>', html, re.DOTALL)
+
+    lines: list[str] = []
+    for title, url, snippet in list(zip(titles, urls, snippets))[:max_results]:
+        lines.append(f"• {re.sub(r'<[^>]+>', '', title).strip()}")
+        lines.append(f"  {url.strip()}")
+        if clean := re.sub(r'<[^>]+>', '', snippet).strip():
+            lines.append(f"  {clean[:400]}")
+        lines.append("")
+    return "\n".join(lines) if lines else f"No results for: {query!r}"
+
+
+async def _web_search(query: str, max_results: int = 5) -> str:
+    if settings.tavily_api_key:
+        return await _web_search_tavily(query, max_results)
+    return await _web_search_ddg(query, max_results)
 
 
 tool_registry.register(ToolDefinition(
     name="web_search",
-    description="Search the web using DuckDuckGo instant answers. Returns abstracts and related topics.",
+    description=(
+        "Search the web for information on any topic. Returns titles, URLs, and content snippets. "
+        "Uses Tavily when TAVILY_API_KEY is configured; falls back to DuckDuckGo HTML search otherwise."
+    ),
     input_schema={
         "type": "object",
         "properties": {
@@ -292,9 +349,18 @@ async def _file_write(
             hi = min(total, end_line)
             block = (content if content.endswith("\n") else content + "\n") if content else ""
             lines[lo:hi] = [block] if block else []
-            target.write_text("".join(lines), encoding="utf-8")
+            new_text = "".join(lines)
+            target.write_text(new_text, encoding="utf-8")
             await _record_artifact(path)
-            return f"Replaced lines {start_line}-{end_line} in {path}"
+            new_total = len(new_text.splitlines())
+            new_line_count = len(block.splitlines()) if block else 0
+            new_end = lo + new_line_count
+            preview = content[:3000] + ("…" if len(content) > 3000 else "")
+            return (
+                f"Replaced lines {start_line}-{end_line} in {path} "
+                f"(file now {new_total} lines; new content at lines {lo + 1}-{new_end}):\n"
+                f"{preview}"
+            )
 
         if mode == "replace_pattern":
             if pattern is None:
@@ -322,9 +388,18 @@ async def _file_write(
                 return f"End pattern {end_pattern!r} not found after line {start_idx + 1} in {path}"
             block = (content if content.endswith("\n") else content + "\n") if content else ""
             lines[start_idx + 1:end_idx] = [block] if block else []
-            target.write_text("".join(lines), encoding="utf-8")
+            new_text = "".join(lines)
+            target.write_text(new_text, encoding="utf-8")
             await _record_artifact(path)
-            return f"Replaced content between lines {start_idx + 1} and {end_idx + 1} in {path}"
+            new_total = len(new_text.splitlines())
+            new_line_count = len(block.splitlines()) if block else 0
+            new_end = start_idx + 1 + new_line_count
+            preview = content[:3000] + ("…" if len(content) > 3000 else "")
+            return (
+                f"Replaced content between lines {start_idx + 1} and {end_idx + 1} in {path} "
+                f"(file now {new_total} lines; new content at lines {start_idx + 2}-{new_end}):\n"
+                f"{preview}"
+            )
 
         return f"Error: unknown mode {mode!r}"
 
@@ -365,12 +440,13 @@ tool_registry.register(ToolDefinition(
     name="file_write",
     description=(
         "Write content to a file in the agent workspace. Creates parent directories automatically. "
-        "mode='overwrite' (default): replace entire file. "
-        "mode='append': add content at end of file. "
+        "mode='overwrite' (default): REPLACES THE ENTIRE FILE — use only for the first write or a deliberate full rewrite. "
+        "mode='append': add content at end of file — preferred for adding sections to an existing file. "
         "mode='insert_at_line': insert content before the given line number (requires line). "
         "mode='replace_lines': replace a range of lines (requires start_line and end_line). "
         "mode='replace_pattern': find-and-replace using a regex (requires pattern; replaces all occurrences). "
-        "mode='replace_between': replace text between two regex markers, keeping the marker lines (requires start_pattern and end_pattern)."
+        "mode='replace_between': replace text between two regex markers, keeping the marker lines (requires start_pattern and end_pattern). "
+        "IMPORTANT: Do not call overwrite on the same file multiple times in one task — use append or a targeted mode to add or update content."
     ),
     input_schema={
         "type": "object",
@@ -452,6 +528,77 @@ tool_registry.register(ToolDefinition(
 
 
 # ---------------------------------------------------------------------------
+# bash_exec_readonly — safe subset of bash_exec for planning / decomposition
+# ---------------------------------------------------------------------------
+
+# Commands that are safe to run during read-only exploration.  Deliberately
+# conservative: no interpreters (python3, node), no network tools (curl, wget),
+# no editors, no process managers.
+_READONLY_COMMANDS = frozenset({
+    "find", "grep", "egrep", "fgrep",
+    "ls", "cat", "head", "tail", "wc",
+    "sort", "uniq", "diff", "comm",
+    "echo", "printf", "test",
+    "awk", "sed", "cut", "tr",
+    "tree", "du", "stat", "file",
+    "which", "basename", "dirname", "realpath", "pwd",
+    "env", "printenv",
+    "jq", "xargs",
+})
+
+
+def _check_readonly_command(command: str) -> str | None:
+    """Return an error message if *command* is not safe for read-only use, else None."""
+    # Block any output redirection
+    if re.search(r'(?<![<&2])>{1,2}', command):
+        return "Output redirections (> and >>) are not allowed in bash_exec_readonly"
+    # Block sed in-place edits
+    if re.search(r'\bsed\b[^|;]*-[a-zA-Z]*i', command):
+        return "sed -i (in-place edit) is not allowed in bash_exec_readonly"
+    # Split on shell operators to get individual pipeline stages
+    segments = re.split(r'[|;&]+', command)
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+        first_word = seg.split()[0] if seg.split() else ""
+        cmd = os.path.basename(first_word)
+        if cmd and cmd not in _READONLY_COMMANDS:
+            allowed = ", ".join(sorted(_READONLY_COMMANDS))
+            return f"Command '{cmd}' is not allowed in bash_exec_readonly. Allowed: {allowed}"
+    return None
+
+
+async def _bash_exec_readonly(command: str, purpose: str, timeout_seconds: int = 30) -> str:
+    err = _check_readonly_command(command)
+    if err:
+        return f"Error: {err}"
+    return await _bash_exec(command, purpose, timeout_seconds)
+
+
+tool_registry.register(ToolDefinition(
+    name="bash_exec_readonly",
+    description=(
+        "Execute a read-only bash command in the workspace. "
+        "Suitable for workspace exploration: find, grep, ls, cat, wc, diff, etc. "
+        "Write operations, output redirections, and arbitrary interpreters are blocked. "
+        "Use only relative paths — '~' and absolute paths are not permitted."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "command": {"type": "string", "description": "Read-only shell command to run"},
+            "purpose": {"type": "string", "description": "Short explanation of why this command is being run"},
+            "timeout_seconds": {"type": "integer", "description": "Timeout in seconds (default 30)", "default": 30},
+        },
+        "required": ["command", "purpose"],
+    },
+    handler=_bash_exec_readonly,
+    impact=ToolImpact.read_only,
+))
+
+
+# ---------------------------------------------------------------------------
 # python_exec
 # ---------------------------------------------------------------------------
 
@@ -525,19 +672,36 @@ def _make_stub(tool_name: str, description: str, required_params: list[str], imp
     )
 
 
-async def _arxiv_search_handler(query: str, max_results: int = 5) -> str:
+async def _arxiv_search_handler(query: str, max_results: int = 5, category: str | None = None) -> str:
     from agentflow.tools.arxiv_search import arxiv_search as _arxiv_search
 
     try:
-        urls = await asyncio.to_thread(_arxiv_search, query, max_results)
+        papers = await asyncio.to_thread(_arxiv_search, query, max_results, category)
     except (ValueError, RuntimeError) as exc:
         return f"arXiv search error: {exc}"
-    return "\n".join(urls) if urls else "No results found."
+    if not papers:
+        return "No results found."
+    lines: list[str] = []
+    for p in papers:
+        lines.append(f"**{p['title']}**")
+        lines.append(f"URL: {p['url']}")
+        if p.get("pdf_url"):
+            lines.append(f"PDF: {p['pdf_url']}")
+        if p["abstract"]:
+            lines.append(f"Abstract: {p['abstract'][:600]}")
+        lines.append("")
+    return "\n".join(lines)
 
 
 tool_registry.register(ToolDefinition(
     name="arxiv_search",
-    description="Search academic papers on arXiv and return a list of abstract URLs.",
+    description=(
+        "Search academic papers on arXiv. Returns title, abstract, abstract URL, and PDF URL for each result. "
+        "The abstract already contains the full paper summary — do NOT call fetch_url on arxiv links afterwards. "
+        "Use download_document(pdf_url) to fetch the full PDF and ingest it into the knowledgebase. "
+        "Use the category parameter to restrict results to a subject area and avoid off-topic hits "
+        "(e.g. category='cs.LG' for ML, 'q-fin.TR' for trading, 'stat.ML' for statistical ML)."
+    ),
     input_schema={
         "type": "object",
         "properties": {
@@ -550,12 +714,120 @@ tool_registry.register(ToolDefinition(
                 "description": "Maximum number of results to return (default 5)",
                 "default": 5,
             },
+            "category": {
+                "type": "string",
+                "description": (
+                    "Optional arXiv subject category filter to reduce off-topic results. "
+                    "Examples: 'cs.LG' (machine learning), 'cs.AI', 'q-fin.TR' (trading), "
+                    "'q-fin.PM' (portfolio management), 'stat.ML', 'econ.EM'."
+                ),
+            },
         },
         "required": ["query"],
     },
     handler=_arxiv_search_handler,
     impact=ToolImpact.read_only,
 ))
+
+# ---------------------------------------------------------------------------
+# download_document  — fetch PDF / text / markdown to .downloads/ and ingest
+# ---------------------------------------------------------------------------
+
+_DOWNLOADS_DIR = ".downloads"
+
+_MIME_TO_EXT: dict[str, str] = {
+    "application/pdf": ".pdf",
+    "text/plain": ".txt",
+    "text/markdown": ".md",
+    "text/html": ".html",
+}
+
+
+async def _download_document(url: str, filename: str | None = None) -> str:
+    from agentflow.tools.kb_dispatcher import _kb_dispatch_fn
+
+    ws = _workspace()
+    dl_dir = ws / _DOWNLOADS_DIR
+    dl_dir.mkdir(parents=True, exist_ok=True)
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
+        try:
+            resp = await client.get(url, headers=_HTTP_HEADERS)
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            return f"HTTP {exc.response.status_code} fetching {url}"
+        except httpx.RequestError as exc:
+            return f"Request error fetching {url}: {exc}"
+
+    content_type = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+    ext = _MIME_TO_EXT.get(content_type)
+    if ext is None:
+        url_path = url.split("?")[0].rstrip("/")
+        guessed, _ = mimetypes.guess_type(url_path)
+        ext = _MIME_TO_EXT.get(guessed or "")
+        if not ext:
+            supported = ", ".join(sorted(_MIME_TO_EXT))
+            return (
+                f"Unsupported content type {content_type!r} from {url}. "
+                f"Supported: {supported}"
+            )
+
+    if filename is None:
+        url_stem = url.split("?")[0].rstrip("/").split("/")[-1] or "document"
+        stem = url_stem.rsplit(".", 1)[0] if "." in url_stem else url_stem
+        filename = f"{stem}{ext}"
+
+    saved = dl_dir / filename
+    if saved.exists():
+        stem2, suf = saved.stem, saved.suffix
+        saved = dl_dir / f"{stem2}_{int(time.time())}{suf}"
+
+    saved.write_bytes(resp.content)
+    rel_path = str(saved.relative_to(ws))
+    await _record_artifact(rel_path)
+
+    msg = f"Downloaded {len(resp.content):,} bytes → {rel_path}"
+
+    dispatch = _kb_dispatch_fn.get()
+    if dispatch is not None:
+        try:
+            kb_result = await dispatch(
+                f"Ingest the downloaded document at workspace path '{rel_path}' into the knowledgebase."
+            )
+            msg += f"\nKB ingest: {kb_result}"
+        except Exception as exc:
+            logger.warning("KB ingest dispatch failed for %s: %s", rel_path, exc)
+            msg += f"\nKB ingest skipped (no KnowledgebaseAgent available): {exc}"
+    else:
+        msg += f"\n(KB ingest skipped — KnowledgebaseAgent not active in this run)"
+
+    return msg
+
+
+tool_registry.register(ToolDefinition(
+    name="download_document",
+    description=(
+        "Download a document (PDF, plain text, or Markdown) from a URL and save it to the "
+        "'.downloads/' folder in the workspace. Supported content types: PDF, text/plain, "
+        "text/markdown. If KnowledgebaseAgent is part of this run the saved file is automatically "
+        "ingested into the semantic knowledgebase. Use the pdf_url returned by arxiv_search to "
+        "fetch and ingest full papers."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "URL of the document to download"},
+            "filename": {
+                "type": "string",
+                "description": "Optional filename to save as (inside .downloads/). Derived from URL if omitted.",
+            },
+        },
+        "required": ["url"],
+    },
+    handler=_download_document,
+    impact=ToolImpact.write,
+))
+
 
 _STUBS: list[tuple[str, str, list[str], ToolImpact]] = [
     ("sql_query",        "Execute a SQL query against a configured database",       ["query"],               ToolImpact.execute),

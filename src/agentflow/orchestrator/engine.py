@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,16 +13,17 @@ from agentflow.core.bus import task_bus
 from agentflow.core.context import RunContext, context_store
 from agentflow.core.models import (AgentResult, AgentStatus, ExecutionPlan,
                                    HumanInputRequest, HumanInputResponse,
-                                   RunMeta, SSEEventType, Subtask,
-                                   TaskConstraints, TaskContext, TaskEnvelope)
+                                   RunMeta, SSEEvent, SSEEventType, SSEPayload,
+                                   Subtask, TaskConstraints, TaskContext, TaskEnvelope)
 from agentflow.core.registry import AgentRegistry
 from agentflow.llm import LLMClient
-from agentflow.orchestrator.decomposer import expand_plan
+from agentflow.orchestrator.decomposer import decompose_subtask
 from agentflow.orchestrator.planner import create_plan
 from agentflow.orchestrator.reporter import compile_report
 from agentflow.orchestrator.scheduler import DependencyGraph
 from agentflow.orchestrator.stream import StreamEmitter, stream_registry
 from agentflow.tools.artifact_tracker import ArtifactSink, _current_sink
+from agentflow.tools.kb_dispatcher import _kb_dispatch_fn
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,49 @@ class OrchestratorEngine:
             return False
         task.cancel()
         return True
+
+    def reconcile_orphaned_runs(self) -> int:
+        """Mark runs that have no report.md as interrupted (called once at startup).
+
+        Any run directory with a meta.json but no report.md was in-flight when
+        the previous process exited.  Write a tombstone report so the run shows
+        as complete (failed) rather than perpetually in-progress.
+        """
+        runs_dir = Path(settings.runs_dir)
+        if not runs_dir.exists():
+            return 0
+        count = 0
+        for run_dir in runs_dir.iterdir():
+            if not run_dir.is_dir():
+                continue
+            if not (run_dir / "meta.json").exists():
+                continue
+            report_file = run_dir / "report.md"
+            if report_file.exists():
+                continue
+
+            run_id = run_dir.name
+
+            events_file = run_dir / "events.jsonl"
+            if events_file.exists():
+                lines = [line for line in events_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+                event = SSEEvent(
+                    run_id=run_id,
+                    seq=len(lines),
+                    type=SSEEventType.run_error,
+                    payload=SSEPayload(message="Run interrupted: service restarted"),
+                )
+                with events_file.open("a", encoding="utf-8") as f:
+                    f.write(event.model_dump_json() + "\n")
+
+            report_file.write_text(
+                "# Run Interrupted\n\n"
+                "This run did not complete — the service restarted while it was in progress.\n",
+                encoding="utf-8",
+            )
+            logger.warning("Reconciled orphaned run %s", run_id)
+            count += 1
+        return count
 
     def _build_agents(self) -> None:
         """Instantiate one generic Agent per registered manifest."""
@@ -158,12 +203,29 @@ class OrchestratorEngine:
         sink = ArtifactSink(artifacts_file)
         sink_token = _current_sink.set(sink)
 
+        kb_token = None
+        if "KnowledgebaseAgent" in self._agent_instances:
+            async def _dispatch_to_kb(instruction: str) -> str:
+                subtask = Subtask(
+                    id=f"kb-{uuid.uuid4().hex[:8]}",
+                    agent_id="KnowledgebaseAgent",
+                    instruction=instruction,
+                    depends_on=[],
+                )
+                ok = await self._dispatch_subtask(run_id, subtask, ctx, emitter, task_budget_usd=None)
+                if ok:
+                    result = await ctx.get_result(subtask.id)
+                    return result.output.text if result and result.output.text else "KB ingest completed"
+                return "KB ingest task failed"
+
+            kb_token = _kb_dispatch_fn.set(_dispatch_to_kb)
+
         try:
             # Step 02: LLM planning pass
             plan = await create_plan(run_id, task, self.registry, self._client, budget_usd=budget_usd, user_context=user_context, emitter=emitter)
-
-            # Step 02b: expand subtasks for agents that declare a decomposition_prompt
-            plan = await expand_plan(plan, self.registry, self._client, emitter, task=task, user_context=user_context)
+            # Decomposition is now lazy: each subtask is decomposed at dispatch
+            # time (inside _dispatch_subtask) so the decomposer sees a workspace
+            # that reflects completed upstream dependencies.
 
             emitter.emit(
                 SSEEventType.plan_created,
@@ -215,6 +277,8 @@ class OrchestratorEngine:
             emitter.emit(SSEEventType.run_error, message=str(exc))
         finally:
             self._run_tasks.pop(run_id, None)
+            if kb_token is not None:
+                _kb_dispatch_fn.reset(kb_token)
             _current_sink.reset(sink_token)
             self._client.stats.log_summary()
             emitter.close()
@@ -289,6 +353,52 @@ class OrchestratorEngine:
     # Single subtask dispatch with retry
     # ------------------------------------------------------------------
 
+    async def _run_micro_subtasks(
+        self,
+        run_id: str,
+        parent: Subtask,
+        micro: list[Subtask],
+        ctx: RunContext,
+        emitter: StreamEmitter,
+        task_budget_usd: float | None,
+    ) -> bool:
+        """Run decomposed micro-subtasks in sequence and promote the last result to the parent ID.
+
+        Each micro-task is dispatched through the normal retry/budget/fallback path.
+        Running sequentially respects the dependency chain the decomposer declared
+        and ensures each step sees the completed output of the previous one.
+        """
+        n = len(micro)
+        micro_budget = (task_budget_usd / n) if task_budget_usd else None
+
+        for ms in micro:
+            ok = await self._dispatch_subtask(
+                run_id, ms, ctx, emitter, micro_budget, _skip_decompose=True
+            )
+            if not ok:
+                emitter.emit(
+                    SSEEventType.task_failed,
+                    agent_id=parent.agent_id,
+                    message=f"Subtask {parent.id} failed at micro-step {ms.id}",
+                    data={"subtask_id": parent.id},
+                )
+                return False
+
+        # Promote the last micro-task's result under the parent ID so downstream
+        # subtasks that depend on this one can find their prior results / messages.
+        all_results = await ctx.all_results()
+        last_result = all_results.get(micro[-1].id)
+        if last_result is not None:
+            await ctx.store_result(parent.id, last_result)
+
+        emitter.emit(
+            SSEEventType.task_complete,
+            agent_id=parent.agent_id,
+            message=f"Subtask {parent.id} complete ({n} micro-steps)",
+            data={"subtask_id": parent.id},
+        )
+        return True
+
     async def _dispatch_subtask(
         self,
         run_id: str,
@@ -296,6 +406,7 @@ class OrchestratorEngine:
         ctx: RunContext,
         emitter: StreamEmitter,
         task_budget_usd: float | None = None,
+        _skip_decompose: bool = False,
     ) -> bool:
         """Dispatch a subtask with retry and continuation logic. Returns True on success/partial."""
         agent = self._agent_instances.get(subtask.agent_id)
@@ -308,12 +419,35 @@ class OrchestratorEngine:
             )
             return False
 
-        prior_results = ctx.build_prior_results(subtask.depends_on)
-        prior_messages = ctx.build_prior_messages(subtask.depends_on)
+        # Compute agent_user_context early — needed both for the decomposer and
+        # for the TaskEnvelope further below.
         agent_user_context = {
             k: v for k, v in ctx.user_context.items()
             if k not in _PLANNER_ONLY_CONTEXT_KEYS
         }
+
+        # Lazy decomposition: run at dispatch time so the decomposer sees the
+        # workspace after all upstream dependencies have completed.
+        # _skip_decompose is set when we are already running a micro-subtask to
+        # prevent infinite recursion.
+        if not _skip_decompose:
+            manifest = self.registry.get(subtask.agent_id)
+            if manifest and manifest.decomposition_prompt:
+                micro = await decompose_subtask(
+                    subtask, manifest, run_id, self._client, emitter,
+                    user_context=agent_user_context,
+                )
+                if len(micro) > 1:
+                    logger.info(
+                        "[%s] Decomposed %s → %d micro-subtasks: %s",
+                        run_id, subtask.id, len(micro), [m.id for m in micro],
+                    )
+                    return await self._run_micro_subtasks(
+                        run_id, subtask, micro, ctx, emitter, task_budget_usd
+                    )
+
+        prior_results = ctx.build_prior_results(subtask.depends_on)
+        prior_messages = ctx.build_prior_messages(subtask.depends_on)
         envelope = TaskEnvelope(
             parent_run_id=run_id,
             agent_id=subtask.agent_id,
