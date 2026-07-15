@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import anthropic
 from anthropic.types import TextBlock
 
+from agentflow.agents.agent import _parse_final_output
 from agentflow.config import settings
 from agentflow.core.models import ExecutionPlan, SSEEventType, Subtask
 from agentflow.core.registry import AgentRegistry
@@ -243,8 +244,7 @@ async def create_plan(
         logger.warning("[%s] Planner hit iteration limit (%d)", run_id, settings.planner_max_iterations)
 
     # Extract the JSON plan from the final assistant text block.
-    # The model may wrap the object in prose or markdown fences; find the
-    # outermost {...} span so those wrappers don't break parsing.
+    # _parse_final_output handles direct JSON, fenced code blocks, and bare {...} spans.
     raw = ""
     if last_response is not None:
         for block in last_response.content:
@@ -252,15 +252,16 @@ async def create_plan(
                 raw = block.text
                 break
 
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start != -1 and end > start:
-        raw = raw[start : end + 1]
-
     logger.info("[%s] Planner raw output (%d chars): %s…", run_id, len(raw), raw[:300])
 
+    plan_data, _ = _parse_final_output(raw)
+    if not plan_data or "subtasks" not in plan_data:
+        raise RuntimeError(
+            f"Planner did not produce a valid execution plan. "
+            f"Raw output ({len(raw)} chars):\n{raw[:1000]}"
+        )
+
     try:
-        plan_data = json.loads(raw)
         subtasks = [
             Subtask(
                 id=st["id"],
@@ -272,21 +273,14 @@ async def create_plan(
             )
             for st in plan_data["subtasks"]
         ]
-    except (json.JSONDecodeError, KeyError) as exc:
-        logger.warning(
-            "[%s] Planner returned unparseable JSON (%s) — falling back to first agent.\nRaw was:\n%s",
-            run_id, exc, raw[:1000],
-        )
-        subtasks = [
-            Subtask(
-                id="st_1",
-                agent_id=registry.all()[0].agent_id if registry.all() else "ResearchAgent",
-                instruction=task,
-                depends_on=[],
-                expected_output="task result",
-                budget_fraction=1.0 if budget_usd is not None else None,
-            )
-        ]
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError(
+            f"Planner produced malformed subtask structure: {exc}. "
+            f"Raw output:\n{raw[:1000]}"
+        ) from exc
+
+    if not subtasks:
+        raise RuntimeError("Planner returned an empty subtasks list.")
 
     logger.info("[%s] Planner routing: %s", run_id, [(st.id, st.agent_id) for st in subtasks])
 
