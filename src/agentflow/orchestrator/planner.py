@@ -1,33 +1,32 @@
-"""LLM-based task planning — agentic ReAct loop that explores the workspace
-before committing to an execution plan."""
+"""LLM-based task planning — delegates to an in-memory Agent so the planner
+shares the same ReAct loop, tool-execution, prompt-caching, and SSE-event
+infrastructure as every other agent in the system."""
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-import anthropic
-from anthropic.types import TextBlock
-
-from agentflow.agents.agent import _parse_final_output
+from agentflow.agents.agent import Agent
 from agentflow.config import settings
-from agentflow.core.models import ExecutionPlan, SSEEventType, Subtask
+from agentflow.core.models import (
+    AgentManifest,
+    AgentStatus,
+    ExecutionPlan,
+    Subtask,
+    TaskEnvelope,
+)
 from agentflow.core.registry import AgentRegistry
 from agentflow.llm import LLMClient
-from agentflow.tools import tool_registry
 
 if TYPE_CHECKING:
+    import anthropic
     from agentflow.orchestrator.stream import StreamEmitter
 
 logger = logging.getLogger(__name__)
 
 # Tools the planner is allowed to call during its exploration phase.
 _PLANNER_TOOLS = ["file_read", "bash_exec_readonly", "web_search", "fetch_url"]
-
-# Planner tool results are capped at this many chars to keep the context manageable.
-_MAX_TOOL_RESULT_CHARS = 8_000
 
 _SYSTEM_PROMPT_BASE = """\
 You are an orchestration planner. You have read-only tools to explore the workspace
@@ -112,60 +111,27 @@ Allocation guidance:
 """
 
 
-async def _call_planner_tool(block: anthropic.types.ToolUseBlock, tools: list) -> dict:
-    tool_def = next((t for t in tools if t.name == block.name), None)
-    if tool_def is None:
-        result_text = f"Tool {block.name!r} is not available to the planner."
-    else:
-        try:
-            if block.name in {t.name for t in tool_registry.all()}:
-                result_text = await tool_registry.execute(block.name, block.input)
-            else:
-                result_text = await tool_def.handler(**block.input)
-        except Exception as exc:
-            result_text = f"Tool error: {exc}"
-
-    if len(result_text) > _MAX_TOOL_RESULT_CHARS:
-        result_text = result_text[:_MAX_TOOL_RESULT_CHARS] + "\n… [truncated]"
-
-    return {
-        "type": "tool_result",
-        "tool_use_id": block.id,
-        "content": result_text,
-    }
-
-
 async def create_plan(
     run_id: str,
     task: str,
     registry: AgentRegistry,
-    client: LLMClient | anthropic.AsyncAnthropic,
+    client: "LLMClient | anthropic.AsyncAnthropic",
     budget_usd: float | None = None,
     user_context: dict | None = None,
-    emitter: "StreamEmitter | None" = None,
+    emitter: "StreamEmitter",
 ) -> ExecutionPlan:
-    agent_summary = registry.summary()
-    planner_tools = tool_registry.get_many(_PLANNER_TOOLS)
-    anthropic_tools = [t.to_anthropic_param() for t in planner_tools]
-
-    static_prompt = _SYSTEM_PROMPT_BASE
+    # Build system prompt
+    system_prompt = _SYSTEM_PROMPT_BASE
     if budget_usd is not None:
-        static_prompt = static_prompt + _BUDGET_ALLOCATION_INSTRUCTIONS
+        system_prompt += _BUDGET_ALLOCATION_INSTRUCTIONS
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    system_blocks = [
-        {"type": "text", "text": static_prompt, "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": f"Current date and time: {now}"},
-    ]
-
-    budget_note = f" (budget: ${budget_usd:.4f})" if budget_usd is not None else ""
-
-    # Separate prior-run context (only relevant to the planner) from any
-    # additional user-supplied context that should appear as a JSON block.
+    # Build instruction: task + optional prior-run context + extra context + agent roster.
+    # The planner sees the full agent list so it can make informed routing decisions.
     _PRIOR_RUN_KEYS = {"prior_run_id", "prior_task", "prior_report", "prior_subtask_outputs"}
     prior_run = {k: v for k, v in (user_context or {}).items() if k in _PRIOR_RUN_KEYS}
     extra_context = {k: v for k, v in (user_context or {}).items() if k not in _PRIOR_RUN_KEYS}
 
+    budget_note = f" (budget: ${budget_usd:.4f})" if budget_usd is not None else ""
     parts: list[str] = [f'Task: "{task}"{budget_note}']
 
     if prior_run:
@@ -190,75 +156,33 @@ async def create_plan(
     if extra_context:
         parts.append(f"User Context:\n{json.dumps(extra_context, indent=2)}")
 
-    parts.append(f"Available Agents:\n{agent_summary}")
+    parts.append(f"Available Agents:\n{registry.summary()}")
 
-    messages: list[dict] = [{"role": "user", "content": "\n\n".join(parts)}]
-    last_response = None
+    manifest = AgentManifest(
+        agent_id="planner",
+        domain="Orchestration",
+        system_prompt=system_prompt,
+        tools=_PLANNER_TOOLS,
+        max_iterations=settings.planner_max_iterations,
+        model=settings.planner_model,
+    )
+    envelope = TaskEnvelope(
+        parent_run_id=run_id,
+        agent_id="planner",
+        instruction="\n\n".join(parts),
+    )
 
-    logger.info("[%s] Starting agentic planner (max %d iterations)", run_id, settings.planner_max_iterations)
+    logger.info("[%s] Starting planner (max %d iterations)", run_id, settings.planner_max_iterations)
+    result = await Agent(manifest, client).run(envelope, emitter)
 
-    if emitter is not None:
-        emitter.emit(SSEEventType.agent_progress, agent_id="planner", message="Planning task...")
+    if result.status == AgentStatus.failed:
+        raise RuntimeError(f"Planner agent failed: {result.error}")
 
-    for iteration in range(settings.planner_max_iterations):
-        response = await client.messages.create(
-            model=settings.planner_model,
-            max_tokens=4096,
-            system=system_blocks,
-            messages=messages,  # type: ignore
-            tools=anthropic_tools, # type: ignore
-        )
-        last_response = response
-        messages.append({"role": "assistant", "content": response.content})
-
-        if response.stop_reason == "end_turn":
-            logger.info("[%s] Planner finished after %d iteration(s)", run_id, iteration + 1)
-            break
-
-        if response.stop_reason != "tool_use":
-            logger.warning("[%s] Planner unexpected stop_reason %r", run_id, response.stop_reason)
-            break
-
-        tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
-        logger.info("[%s] Planner iteration %d: %d tool call(s): %s",
-                    run_id, iteration + 1, len(tool_use_blocks),
-                    [b.name for b in tool_use_blocks])
-
-        if emitter is not None:
-            tool_names = [b.name for b in tool_use_blocks]
-            emitter.emit(
-                SSEEventType.agent_progress,
-                agent_id="planner",
-                message=f"Exploring workspace: {', '.join(tool_names)}",
-                turn_index=iteration + 1,
-            )
-            for block in response.content:
-                if isinstance(block, TextBlock) and block.text.strip():
-                    emitter.emit(SSEEventType.agent_thought, agent_id="planner", message=block.text, turn_index=iteration + 1)
-
-        tool_results = await asyncio.gather(
-            *[_call_planner_tool(b, planner_tools) for b in tool_use_blocks]
-        )
-        messages.append({"role": "user", "content": list(tool_results)})
-    else:
-        logger.warning("[%s] Planner hit iteration limit (%d)", run_id, settings.planner_max_iterations)
-
-    # Extract the JSON plan from the final assistant text block.
-    # _parse_final_output handles direct JSON, fenced code blocks, and bare {...} spans.
-    raw = ""
-    if last_response is not None:
-        for block in last_response.content:
-            if isinstance(block, TextBlock):
-                raw = block.text
-                break
-
-    logger.info("[%s] Planner raw output (%d chars): %s…", run_id, len(raw), raw[:300])
-
-    plan_data, _ = _parse_final_output(raw)
+    plan_data = result.output.structured
     if not plan_data or "subtasks" not in plan_data:
         raise RuntimeError(
             f"Planner did not produce a valid execution plan. "
-            f"Raw output ({len(raw)} chars):\n{raw[:1000]}"
+            f"Output ({len(result.output.text)} chars):\n{result.output.text[:1000]}"
         )
 
     try:
@@ -276,7 +200,7 @@ async def create_plan(
     except (KeyError, TypeError) as exc:
         raise RuntimeError(
             f"Planner produced malformed subtask structure: {exc}. "
-            f"Raw output:\n{raw[:1000]}"
+            f"Output:\n{result.output.text[:1000]}"
         ) from exc
 
     if not subtasks:
@@ -285,15 +209,12 @@ async def create_plan(
     logger.info("[%s] Planner routing: %s", run_id, [(st.id, st.agent_id) for st in subtasks])
 
     # Ensure fractions are set and sum to 1.0 whenever a run budget is provided.
-    # The model may omit budgetFraction or return values that don't sum to 1.0.
     if budget_usd is not None and subtasks:
         n = len(subtasks)
         total = sum(st.budget_fraction or 0.0 for st in subtasks)
         if total < 0.01:
-            # Model omitted fractions entirely — distribute equally.
             subtasks = [st.model_copy(update={"budget_fraction": 1.0 / n}) for st in subtasks]
         elif abs(total - 1.0) > 0.01:
-            # Renormalize so fractions sum to exactly 1.0.
             subtasks = [
                 st.model_copy(update={"budget_fraction": (st.budget_fraction or 0.0) / total})
                 for st in subtasks

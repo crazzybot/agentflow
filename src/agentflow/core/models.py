@@ -36,6 +36,7 @@ class AgentManifest(BaseModel):
     system_prompt: str
     decomposition_prompt: str | None = None
     fallback_for: list[str] = Field(default_factory=list)
+    model: str | None = None  # model override; None → settings.agent_model
     max_concurrency: int = 3
     max_iterations: int | None = None  # None → fall back to settings.agent_max_iterations
     tool_limits: dict[str, int] | None = None  # per-task call budgets e.g. {"fetch_url": 5}

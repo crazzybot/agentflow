@@ -400,7 +400,7 @@ class Agent:
                 max_tokens = settings.agent_max_tokens_fallback
 
             create_kwargs: dict[str, Any] = {
-                "model": settings.agent_model,
+                "model": self.manifest.model or settings.agent_model,
                 "max_tokens": max_tokens,
                 "system": system_prompt,
                 "messages": _with_message_cache_breakpoint(messages),

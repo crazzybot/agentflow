@@ -1,13 +1,14 @@
 ---
 title: Architecture Overview
-last_updated: 2026-07-14
-last_verified_sha: 8a894c6
+last_updated: 2026-07-15
+last_verified_sha: 17a27d3
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
   - src/agentflow/agents/agent.py
   - src/agentflow/core/bus.py
   - src/agentflow/core/context.py
+  - src/agentflow/core/models.py
   - src/agentflow/llm/client.py
   - src/agentflow/tools/
 status: current
@@ -46,12 +47,16 @@ variants so multiple API replicas can share a run — see
    trigger KB ingest without a direct reference to the engine. `_kb_dispatch_fn` is only
    armed when `KnowledgebaseAgent` is registered in `_agent_instances`.
 3. **Plan** — `create_plan()` in
-   [`orchestrator/planner.py`](../../src/agentflow/orchestrator/planner.py) runs an
-   agentic ReAct loop (read-only `file_read`/`bash_exec`/`web_search`/`fetch_url` tools)
-   against `settings.planner_model` to explore the workspace, then emits a JSON
-   `ExecutionPlan` of `Subtask`s (agent id, instruction, `depends_on`, optional
-   `budget_fraction`). During exploration turns, text blocks the model produces
-   alongside tool calls are emitted as `agent:thought` events (with `agent_id="planner"`).
+   [`orchestrator/planner.py`](../../src/agentflow/orchestrator/planner.py) builds an
+   in-memory `AgentManifest` (tools: `file_read`/`bash_exec_readonly`/`web_search`/`fetch_url`;
+   model: `settings.planner_model`; `max_iterations`: `settings.planner_max_iterations`) and
+   delegates to a one-shot `Agent.run()` call rather than maintaining its own ReAct loop.
+   The planner's system prompt instructs the model to explore the workspace (5-8 tool calls)
+   and then emit a JSON `ExecutionPlan` of `Subtask`s (agent id, instruction, `depends_on`,
+   optional `budget_fraction`). SSE events (tool calls, thought blocks) flow through the same
+   `StreamEmitter` infrastructure as every other agent, with `agent_id="planner"`. If the
+   agent's `output.structured` has no `"subtasks"` key, `create_plan()` raises `RuntimeError`
+   (no silent fallback); the engine catches it and emits `run:error`.
 4. **Decompose** — decomposition is now **lazy**: `engine.run()` no longer calls
    `expand_plan()` eagerly. Instead, `_dispatch_subtask()` calls `decompose_subtask()`
    for any manifest with a `decomposition_prompt` at dispatch time — after the subtask's
@@ -136,12 +141,15 @@ variants so multiple API replicas can share a run — see
   the plan → schedule → dispatch → report lifecycle and all retry/budget/fallback/cancel
   logic.
 - **`orchestrator/planner.py` — `create_plan()`**: turns a task string into an
-  `ExecutionPlan` via an LLM ReAct loop with read-only exploration tools; also
-  allocates `budget_fraction` per subtask when a run budget is set. For follow-up
-  runs, prior-run context keys (`prior_report`, `prior_task`, `prior_run_id`,
-  `prior_subtask_outputs`) are extracted from `user_context` and formatted as a
-  readable "Prior Run" prose section in the planner's first message; any remaining
-  user-supplied context keys appear as a separate JSON block.
+  `ExecutionPlan` by delegating to `Agent.run()` with an in-memory `AgentManifest`
+  (read-only tools, `settings.planner_model`, `settings.planner_max_iterations`).
+  The planner owns the system prompt and instruction construction (injecting the full
+  agent roster as `Available Agents:`, prior-run context as a "Prior Run" prose block,
+  and any extra user context as a JSON block); `Agent` handles the ReAct loop, prompt
+  caching, SSE emission, and JSON extraction via `_parse_final_output()`. Budget
+  fraction normalization (equal split when omitted; renormalization when fractions do not
+  sum to 1) runs on the parsed subtask list. If `output.structured` has no `"subtasks"`
+  key, `create_plan()` raises `RuntimeError` — the engine emits `run:error`.
 - **`orchestrator/decomposer.py` — `decompose_subtask()` / `expand_plan()`**: splits a
   subtask into micro-subtasks using the manifest's `decomposition_prompt`, run as a
   nested `Agent` ReAct loop. Invoked **lazily** inside `_dispatch_subtask()` (not
@@ -182,9 +190,11 @@ variants so multiple API replicas can share a run — see
   cross-replica streaming.
 - **`agents/agent.py` — `Agent`**: single generic, manifest-driven class for every agent
   type; runs the tool-calling loop against Claude, tracks token/cost usage per call,
-  and returns an `AgentResult` (`success`/`partial`/`failed`). The loop dispatches tool
-  calls through `_checked_call_tool()`, which enforces per-tool call budgets declared in
-  `AgentManifest.tool_limits` by incrementing an in-loop counter and returning a hard
+  and returns an `AgentResult` (`success`/`partial`/`failed`). The model used for each
+  API call is `manifest.model or settings.agent_model`, so manifests (e.g. the planner)
+  can declare a per-agent model override via `AgentManifest.model`. The loop dispatches
+  tool calls through `_checked_call_tool()`, which enforces per-tool call budgets declared
+  in `AgentManifest.tool_limits` by incrementing an in-loop counter and returning a hard
   error result (without invoking the tool) when the limit is exceeded. When
   `AgentManifest.thinking_budget_tokens` is set, extended thinking is enabled on every
   LLM call; thinking blocks are emitted as `agent:thought` SSE events and kept in the
