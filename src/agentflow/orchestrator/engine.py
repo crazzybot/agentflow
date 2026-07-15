@@ -222,7 +222,7 @@ class OrchestratorEngine:
 
         try:
             # Step 02: LLM planning pass
-            plan = await create_plan(run_id, task, self.registry, self._client, budget_usd=budget_usd, user_context=user_context, emitter=emitter)
+            plan = await create_plan(run_id, task, self.registry, self._client, emitter, budget_usd=budget_usd, user_context=user_context)
             # Decomposition is now lazy: each subtask is decomposed at dispatch
             # time (inside _dispatch_subtask) so the decomposer sees a workspace
             # that reflects completed upstream dependencies.

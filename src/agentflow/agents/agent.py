@@ -194,17 +194,25 @@ def _parse_final_output(text: str) -> tuple[dict[str, Any], str]:
             except (json.JSONDecodeError, TypeError):
                 pass
 
-    # 3. Outermost { … } span — handles mixed prose + inline JSON with no fence.
-    start = text.find("{")
+    # 3. Outermost { … } span — iterate left-to-right through { positions so that
+    #    prose containing bare { (e.g. shell brace expansions like {a,b,c}, path
+    #    globs, or template literals) doesn't prevent finding the JSON object.
+    #    The end anchor is always the last } in the text (rfind), and we advance
+    #    the start candidate until json.loads succeeds.
     end = text.rfind("}")
-    if start != -1 and end > start:
-        try:
-            parsed = json.loads(text[start : end + 1])
-            if isinstance(parsed, dict):
-                prose = text[:start].rstrip(" \n\r-")
-                return parsed, prose
-        except (json.JSONDecodeError, TypeError):
-            pass
+    if end != -1:
+        pos = 0
+        while True:
+            start = text.find("{", pos)
+            if start == -1 or start >= end:
+                break
+            try:
+                parsed = json.loads(text[start : end + 1])
+                if isinstance(parsed, dict):
+                    prose = text[:start].rstrip(" \n\r-")
+                    return parsed, prose
+            except (json.JSONDecodeError, TypeError):
+                pos = start + 1
 
     return {}, text
 

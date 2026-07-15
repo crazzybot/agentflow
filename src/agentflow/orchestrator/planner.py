@@ -116,9 +116,9 @@ async def create_plan(
     task: str,
     registry: AgentRegistry,
     client: "LLMClient | anthropic.AsyncAnthropic",
+    emitter: "StreamEmitter",
     budget_usd: float | None = None,
     user_context: dict | None = None,
-    emitter: "StreamEmitter",
 ) -> ExecutionPlan:
     # Build system prompt
     system_prompt = _SYSTEM_PROMPT_BASE
