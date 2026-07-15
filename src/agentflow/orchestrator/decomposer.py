@@ -27,6 +27,18 @@ logger = logging.getLogger(__name__)
 _DECOMPOSER_TOOLS = frozenset({"file_read", "bash_exec_readonly"})
 
 
+def _extract_context_block(text: str) -> str:
+    """Return the content of the first <decomposer_context>…</decomposer_context> block, or ''."""
+    m = re.search(r"<decomposer_context>([\s\S]*?)</decomposer_context>", text)
+    return m.group(1).strip() if m else ""
+
+
+def _strip_context_block(text: str) -> str:
+    """Remove any <decomposer_context>…</decomposer_context> blocks so _extract_json_array
+    is not confused by brackets inside the context prose."""
+    return re.sub(r"<decomposer_context>[\s\S]*?</decomposer_context>", "", text).strip()
+
+
 def _extract_json_array(text: str) -> str:
     """Return the first JSON array found in *text*, stripping any surrounding prose or fences."""
     # Strip a leading ```[language] fence and trailing ``` if present
@@ -51,11 +63,13 @@ async def decompose_subtask(
     emitter: "StreamEmitter",
     task: str = "",
     user_context: dict | None = None,
-) -> list[Subtask]:
+) -> tuple[list[Subtask], str]:
     """Run a ReAct loop to decompose *subtask* using read-only tools.
 
-    Returns the expanded list of micro-subtasks, or [subtask] if the task is
-    already small enough or if the decomposition loop fails.
+    Returns ``(subtasks, context)`` where *subtasks* is the expanded list of
+    micro-subtasks (or ``[subtask]`` if already small or if decomposition fails)
+    and *context* is the synthesised workspace summary from the decomposer's
+    ``<decomposer_context>`` block (empty string when absent).
     """
     from agentflow.agents.agent import Agent
 
@@ -92,13 +106,17 @@ async def decompose_subtask(
 
     if result.status == AgentStatus.failed:
         logger.warning("[decomposer] Decomposition loop failed for %s — keeping original", subtask.id)
-        return [subtask]
+        return [subtask], ""
 
-    raw = _extract_json_array(result.output.text)
+    raw_text = result.output.text
+    context = _extract_context_block(raw_text)
+    json_text = _strip_context_block(raw_text)
+    raw = _extract_json_array(json_text)
+
     try:
         items = json.loads(raw)
         if not isinstance(items, list) or len(items) <= 1:
-            return [subtask]
+            return [subtask], context
 
         micro: list[Subtask] = []
         micro_fraction = (subtask.budget_fraction / len(items)) if subtask.budget_fraction else None
@@ -115,13 +133,13 @@ async def decompose_subtask(
                 )
             )
         logger.info("[decomposer] Expanded %s → %d micro-subtasks", subtask.id, len(micro))
-        return micro
+        return micro, context
     except (json.JSONDecodeError, KeyError) as exc:
         logger.warning(
             "[decomposer] Could not parse decomposition for %s: %s — keeping original.\nRaw output was:\n%s",
             subtask.id, exc, result.output.text[:500],
         )
-        return [subtask]
+        return [subtask], context
 
 
 async def expand_plan(
@@ -148,7 +166,7 @@ async def expand_plan(
             tail_id[subtask.id] = subtask.id
             continue
 
-        micro = await decompose_subtask(subtask, manifest, plan.run_id, client, emitter, task=task, user_context=user_context)
+        micro, _ = await decompose_subtask(subtask, manifest, plan.run_id, client, emitter, task=task, user_context=user_context)
         expanded.extend(micro)
         tail_id[subtask.id] = micro[-1].id
 

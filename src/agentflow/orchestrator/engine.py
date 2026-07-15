@@ -190,7 +190,7 @@ class OrchestratorEngine:
             else None
         )
         emitter = stream_registry.create(run_id, events_file=events_file)
-        ctx = context_store.create(run_id, results_file=results_file, budget_usd=budget_usd, user_context=user_context)
+        ctx = context_store.create(run_id, results_file=results_file, budget_usd=budget_usd, user_context=user_context, task=task)
         task_bus.create_run(run_id)
 
         created_at = datetime.now(timezone.utc).isoformat()
@@ -474,8 +474,9 @@ class OrchestratorEngine:
         if not _skip_decompose:
             manifest = self.registry.get(subtask.agent_id)
             if manifest and manifest.decomposition_prompt:
-                micro = await decompose_subtask(
+                micro, decomp_ctx = await decompose_subtask(
                     subtask, manifest, run_id, self._client, emitter,
+                    task=ctx.task,
                     user_context=agent_user_context,
                 )
                 if len(micro) > 1:
@@ -483,9 +484,22 @@ class OrchestratorEngine:
                         "[%s] Decomposed %s → %d micro-subtasks: %s",
                         run_id, subtask.id, len(micro), [m.id for m in micro],
                     )
+                    if decomp_ctx:
+                        # Prepend the decomposer's synthesised workspace summary to
+                        # each micro-task instruction so agents don't re-read design
+                        # documents independently.
+                        ctx_block = f"<workspace_context>\n{decomp_ctx}\n</workspace_context>\n\n"
+                        micro = [
+                            ms.model_copy(update={"instruction": ctx_block + ms.instruction})
+                            for ms in micro
+                        ]
                     return await self._run_micro_subtasks(
                         run_id, subtask, micro, ctx, emitter, task_budget_usd
                     )
+                # Single-task path: still inject context so the agent skips re-reading.
+                if decomp_ctx:
+                    ctx_block = f"<workspace_context>\n{decomp_ctx}\n</workspace_context>\n\n"
+                    subtask = subtask.model_copy(update={"instruction": ctx_block + subtask.instruction})
 
         prior_results = ctx.build_prior_results(subtask.depends_on)
         upstream_artifacts = ctx.build_upstream_artifacts(subtask.depends_on)

@@ -8,6 +8,8 @@
             "name": "Run Service",
             "type": "debugpy",
             "request": "launch",
+            "python": "uv",
+            "pythonArgs": ["run", "python"],
             "module": "agentflow",
             "args": ["serve"]
         }

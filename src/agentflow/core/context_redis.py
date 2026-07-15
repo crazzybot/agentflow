@@ -66,8 +66,10 @@ class RedisRunContext:
         budget_usd: float | None = None,
         user_context: dict | None = None,
         ttl: int = 86_400,
+        task: str = "",
     ) -> None:
         self.run_id = run_id
+        self.task = task
         self._redis = redis
         self._ttl = ttl
         self.budget_usd = budget_usd
@@ -275,6 +277,7 @@ class RedisContextStore:
         results_file: str | None = None,
         budget_usd: float | None = None,
         user_context: dict | None = None,
+        task: str = "",
     ) -> RedisRunContext:
         ctx = RedisRunContext(
             run_id,
@@ -283,6 +286,7 @@ class RedisContextStore:
             budget_usd=budget_usd,
             user_context=user_context,
             ttl=self._ttl,
+            task=task,
         )
         self._runs[run_id] = ctx
         return ctx

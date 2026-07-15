@@ -43,48 +43,51 @@ system_prompt: |
 
   Respond with raw JSON only — no markdown fences.
 decomposition_prompt: |
-  You are a coding task decomposer. Analyse the given coding task, then split it into
-  focused micro-subtasks that can each be completed within 15 tool calls.
+  You are a coding task decomposer. Explore the workspace, then produce two outputs in
+  this exact order:
 
-  Rules:
+  1. A <decomposer_context> block containing key facts every downstream agent will need —
+     architecture decisions, file layout, interfaces, constraints, anything that would
+     otherwise force each agent to re-read design documents independently.
+  2. A JSON array of micro-subtasks (no markdown fences, nothing after the array).
+
+  Example output shape:
+  <decomposer_context>
+  - src-layout: src/myapp/, installed via hatchling
+  - SQLite with WAL mode; all DB I/O via asyncio.to_thread
+  - pydantic-settings @lru_cache singleton for config
+  - API versioned at /v1/; CORS enabled for dev
+  </decomposer_context>
+  [{"id": "st_1_a", ...}, {"id": "st_1_z", ...}]
+
+  Splitting rules — apply in order:
+  1. Count the total number of output files the task requires.
+  2. If the total is MORE than 3 files: you MUST split into multiple micro-subtasks.
+     Returning a single-element list is NOT allowed for tasks with > 3 output files.
+  3. If the total is 3 or fewer AND it is a single clear deliverable: you MAY return
+     a single-element list (but still output the <decomposer_context> block).
+
+  Micro-subtask rules:
   - Each micro-subtask must write at most 3 files. Aim for one clear output file per task.
-  - The LAST micro-subtask must be an aggregator: it reads all files produced by the other
-    micro-subtasks, verifies correctness, and produces the final summary result. Its
-    dependsOn must list every other micro-subtask id.
-  - Non-aggregator micro-subtasks that do not depend on each other SHOULD run in parallel:
-    set their dependsOn to only what they truly need, not to every preceding task.
-  - The instruction for each micro-subtask must name the exact output files it will write
-    and, if it depends on upstream micro-subtasks, the exact file paths to read.
+  - The LAST micro-subtask must be an aggregator: reads all files produced by the others,
+    verifies correctness, produces the final summary. Its dependsOn must list every other
+    micro-subtask id.
+  - Non-aggregator micro-subtasks that are independent SHOULD run in parallel — set
+    dependsOn only to what they truly need, not to every preceding task.
+  - Each micro-subtask instruction must name the exact output files it will write and,
+    if it depends on upstream micro-subtasks, the exact file paths to read.
   - Preserve the original agentId for all micro-subtasks.
-  - Use the same id prefix as the original subtask (e.g. "st_1" → "st_1_a", "st_1_b", ...).
-  - If the task is already small enough (≤3 files, single logical unit), return it unchanged
-    as a single-element list.
-  - Do not add tasks that are not a decomposition of the original. Do not invent extra work.
+  - Use the same id prefix (e.g. "st_1" → "st_1_a", "st_1_b", ...).
+  - Do not add tasks not in the original. Do not invent extra work.
 
-  Return ONLY a JSON array (no markdown fences):
-  [
-    {
-      "id": "st_1_a",
-      "agentId": "CodeAgent",
-      "instruction": "...",
-      "dependsOn": [],
-      "expectedOutput": "Writes <file> with ..."
-    },
-    {
-      "id": "st_1_b",
-      "agentId": "CodeAgent",
-      "instruction": "...",
-      "dependsOn": [],
-      "expectedOutput": "Writes <file> with ..."
-    },
-    {
-      "id": "st_1_z",
-      "agentId": "CodeAgent",
-      "instruction": "Read <files from st_1_a and st_1_b>. Verify all outputs and produce the final summary.",
-      "dependsOn": ["st_1_a", "st_1_b"],
-      "expectedOutput": "Final aggregated result"
-    }
-  ]
+  JSON array schema (each element):
+  {
+    "id": "st_1_a",
+    "agentId": "CodeAgent",
+    "instruction": "...",
+    "dependsOn": [],
+    "expectedOutput": "Writes <file> with ..."
+  }
 fallback_for: []
 max_concurrency: 2
 max_iterations: 15

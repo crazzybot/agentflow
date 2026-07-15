@@ -1,7 +1,7 @@
 ---
 title: Redis-Backed State Backend
 last_updated: 2026-07-14
-last_verified_sha: f0cd566
+last_verified_sha: 8a894c6
 sources:
   - src/agentflow/config.py
   - src/agentflow/core/redis_client.py
@@ -99,8 +99,8 @@ already-finished runs done.
 so the synchronous `build_prior_results()`/`build_upstream_artifacts()` helpers work
 without an async call, while `get_result()`/`all_results()` fall back to Redis
 for cross-replica reads. Cost is tracked both locally (authoritative for
-`within_budget()`) and in Redis (`INCRBYFLOAT`); `budget_usd` and `user_context`
-stay in instance vars and are not persisted.
+`within_budget()`) and in Redis (`INCRBYFLOAT`); `budget_usd`, `user_context`, and
+`task` stay in instance vars and are not persisted to Redis.
 
 HITL delivery is cross-replica safe: `provide_human_input()` (now **async** in
 both the base and Redis contexts) runs a Lua script that atomically checks the

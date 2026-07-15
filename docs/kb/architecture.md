@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-07-14
-last_verified_sha: f0cd566
+last_verified_sha: 8a894c6
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -56,7 +56,13 @@ variants so multiple API replicas can share a run — see
    `expand_plan()` eagerly. Instead, `_dispatch_subtask()` calls `decompose_subtask()`
    for any manifest with a `decomposition_prompt` at dispatch time — after the subtask's
    `depends_on` are satisfied — so the decomposer sees the workspace in its completed
-   state (see step 5 and the decomposer component entry below).
+   state (see step 5 and the decomposer component entry below). The engine passes
+   `task=ctx.task` so the decomposer has the full top-level task framing. `decompose_subtask()`
+   now returns `(list[Subtask], context: str)` where `context` is the synthesised
+   `<decomposer_context>` block the decomposer wrote before its JSON array. When non-empty,
+   the engine prepends this block as `<workspace_context>…</workspace_context>` to every
+   micro-task instruction (and to the original subtask instruction in the single-task
+   fallback), so agents do not re-read design documents independently.
 5. **Schedule + execute** — `OrchestratorEngine._execute_plan()` builds a
    `DependencyGraph` (`orchestrator/scheduler.py`) over the plan and loops: ask the
    graph for `ready()` subtasks (deps satisfied, not failed), dispatch each as an
@@ -141,16 +147,23 @@ variants so multiple API replicas can share a run — see
   nested `Agent` ReAct loop. Invoked **lazily** inside `_dispatch_subtask()` (not
   eagerly at plan time) so the decomposer always sees completed upstream workspace state.
   `_DECOMPOSER_TOOLS` is `frozenset({"file_read", "bash_exec_readonly"})` — read-only
-  exploration only; no writes or arbitrary code execution. When decomposition produces
-  N > 1 micro-subtasks, `_run_micro_subtasks()` schedules them as a **DAG** (using the
-  same `DependencyGraph` scheduler as the top-level plan) so parallel branches within a
+  exploration only; no writes or arbitrary code execution. `decompose_subtask()` returns
+  `tuple[list[Subtask], str]`: the subtask list and a `context` string parsed from a
+  `<decomposer_context>…</decomposer_context>` block the decomposer writes before its
+  JSON array. `_extract_context_block()` pulls the block; `_strip_context_block()` removes
+  it before `_extract_json_array()` parses the micro-task list (preventing brackets inside
+  the context prose from confusing the array parser). When decomposition produces N > 1
+  micro-subtasks, `_run_micro_subtasks()` schedules them as a **DAG** (using the same
+  `DependencyGraph` scheduler as the top-level plan) so parallel branches within a
   decomposed subtask run concurrently. The sink micro-task — the one no other
   micro-task declares as a dependency — is promoted to the parent subtask ID so
   downstream tasks find the aggregated result. A `_skip_decompose=True` flag on
   `_dispatch_subtask` prevents recursive decomposition when micro-subtasks are dispatched.
-  Decomposition prompts should produce: (a) parallel branches for independent work,
-  (b) each micro-task writing ≤ 3 files, and (c) a final aggregator micro-task whose
-  `dependsOn` lists every other micro-task ID.
+  Decomposition prompts must produce: (a) a `<decomposer_context>` block with key facts
+  from workspace exploration (architecture, layout, interfaces), (b) parallel branches for
+  independent work — tasks requiring > 3 output files MUST be split, (c) each micro-task
+  writing ≤ 3 files, and (d) a final aggregator micro-task whose `dependsOn` lists every
+  other micro-task ID.
 - **`orchestrator/scheduler.py` — `DependencyGraph`**: wraps a `networkx.DiGraph` built
   from `Subtask.depends_on`; validates the plan is acyclic and exposes `ready()`
   (dependency-satisfied, non-failed nodes) for the execution loop.
@@ -228,10 +241,12 @@ variants so multiple API replicas can share a run — see
   `_make_task_bus()` factory returns the Redis-backed `RedisTaskBus` (`bus_redis.py`)
   when `STATE_BACKEND=redis`; both remain the future seam for a worker-pool split.
 - **`core/context.py` — `RunContext` / `ContextStore`**: per-run shared state — stores
-  each subtask's `AgentResult`, running cost totals and budget, and the human-input
+  each subtask's `AgentResult`, running cost totals and budget, the human-input
   request/response handshake (`request_human_input`/`await_human_input`/async
-  `provide_human_input`). `context_store` is built by `_make_context_store()`, which
-  returns a write-through `RedisContextStore` (`context_redis.py`) under
+  `provide_human_input`), and the top-level `task: str` (stored as `ctx.task`; set at
+  creation time and forwarded to the decomposer so it has full task framing without
+  needing to re-explore the workspace). `context_store` is built by `_make_context_store()`,
+  which returns a write-through `RedisContextStore` (`context_redis.py`) under
   `STATE_BACKEND=redis`; `ContextStore.connect()` enables cross-replica HITL delivery.
 - **`llm/client.py` — `LLMClient`**: wraps the Anthropic SDK with automatic prompt-cache
   `cache_control` injection on system/tool blocks and tracks cumulative `UsageStats`
@@ -250,11 +265,13 @@ Within one run, components talk through three mechanisms:
 - **Shared state — `core/context.py`**: `RunContext` is the source of truth for a run.
   `_dispatch_subtask()` writes each subtask's `AgentResult` via `ctx.store_result()`
   (optionally appended to `runs/<run_id>/results.jsonl`); downstream subtasks read
-  dependency output via `ctx.build_prior_results()` (text-only summaries keyed by
-  dep task ID) and `ctx.build_upstream_artifacts()` (dict of dep task ID →
-  `files_written` list from that task's `AgentResult`). The agent receives both as
-  an `<upstream_context>` block in its initial user message — it reads the exact files
-  it needs rather than receiving the full upstream conversation history. `RunContext`
+  dependency output via `ctx.build_prior_results()` (combined prose + structured-JSON
+  summaries keyed by dep task ID — both `output.text` and `output.structured` are
+  included when present so the synthesizer sees the full agent output) and
+  `ctx.build_upstream_artifacts()` (dict of dep task ID → `files_written` list from
+  that task's `AgentResult`). The agent receives both as an `<upstream_context>` block
+  in its initial user message — it reads the exact files it needs rather than receiving
+  the full upstream conversation history. `RunContext`
   also tracks `total_cost_usd()`/`remaining_budget_usd()` and arbitrates human-input
   requests when a budget is exhausted. Mid-run user messages (from `POST …/message`)
   are stored in per-agent queues: `register_agent(agent_id)` creates a queue when a

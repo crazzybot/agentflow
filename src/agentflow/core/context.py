@@ -20,8 +20,10 @@ class RunContext:
         results_file: str | None = None,
         budget_usd: float | None = None,
         user_context: dict | None = None,
+        task: str = "",
     ) -> None:
         self.run_id = run_id
+        self.task = task
         self.budget_usd = budget_usd
         self.user_context: dict = user_context or {}
         self._results: dict[str, AgentResult] = {}
@@ -167,8 +169,9 @@ class ContextStore:
         results_file: str | None = None,
         budget_usd: float | None = None,
         user_context: dict | None = None,
+        task: str = "",
     ) -> RunContext:
-        ctx = RunContext(run_id, results_file=results_file, budget_usd=budget_usd, user_context=user_context)
+        ctx = RunContext(run_id, results_file=results_file, budget_usd=budget_usd, user_context=user_context, task=task)
         self._runs[run_id] = ctx
         return ctx
 
