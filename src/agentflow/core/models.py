@@ -21,17 +21,6 @@ class IterationLimitAction(str, Enum):
     ask_user = "ask_user"  # pause and request user input via HITL before deciding
 
 
-class RunMode(str, Enum):
-    """How the orchestrator should approach a run.
-
-    plan   — always invoke the LLM planner to decompose into subtasks (default).
-    direct — skip the planner; route the task to a single configured agent.
-    auto   — use a cheap Haiku call to classify the task, then route to plan or direct.
-    """
-    plan = "plan"
-    direct = "direct"
-    auto = "auto"
-
 
 class MCPServerConfig(BaseModel):
     name: str
@@ -234,14 +223,12 @@ class RunRequest(BaseModel):
     task: str
     context: dict[str, Any] = Field(default_factory=dict)
     budget_usd: float | None = None
-    mode: RunMode = RunMode.plan
 
 
 class FollowUpRequest(BaseModel):
     task: str
     context: dict[str, Any] = Field(default_factory=dict)
     budget_usd: float | None = None
-    mode: RunMode = RunMode.plan
 
 
 class UserMessage(BaseModel):

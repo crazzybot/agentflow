@@ -14,7 +14,7 @@ from agentflow.core.bus import task_bus
 from agentflow.core.context import RunContext, context_store
 from agentflow.core.models import (AgentResult, AgentStatus, ExecutionPlan,
                                    HumanInputRequest, HumanInputResponse,
-                                   RunMeta, RunMode, SSEEvent, SSEEventType, SSEPayload,
+                                   RunMeta, SSEEvent, SSEEventType, SSEPayload,
                                    Subtask, TaskConstraints, TaskContext, TaskEnvelope)
 from agentflow.core.registry import AgentRegistry
 from agentflow.llm import LLMClient
@@ -169,11 +169,12 @@ class OrchestratorEngine:
     # Mode routing helpers
     # ------------------------------------------------------------------
 
-    async def _classify_task(self, task: str) -> RunMode:
-        """Cheap Haiku call to decide if a task warrants multi-agent planning.
+    async def _is_single_agent_task(self, task: str) -> bool:
+        """Cheap Haiku call to decide if the task can be handled by a single agent.
 
-        Returns RunMode.plan or RunMode.direct.  Falls back to RunMode.plan on
-        any error so auto-mode degrades gracefully to the known-good path.
+        Returns True when a single capable agent with tools can handle the task
+        end-to-end.  Falls back to False (multi-agent plan) on any error so the
+        known-good path is always the safe default.
         """
         try:
             response = await self._client.messages.create(
@@ -192,10 +193,10 @@ class OrchestratorEngine:
             for block in response.content:
                 if hasattr(block, "text"):
                     data = json.loads(block.text.strip())
-                    return RunMode.plan if data.get("route") == "plan" else RunMode.direct
+                    return data.get("route") == "direct"
         except Exception:
             logger.warning("[auto] Task classification failed — defaulting to plan mode", exc_info=True)
-        return RunMode.plan
+        return False
 
     def _make_direct_plan(self, run_id: str, task: str) -> ExecutionPlan:
         """Build a synthetic single-subtask plan that bypasses the LLM planner."""
@@ -225,7 +226,6 @@ class OrchestratorEngine:
         task: str,
         user_context: dict[str, Any],
         budget_usd: float | None = None,
-        mode: RunMode = RunMode.plan,
     ) -> None:
         current_task = asyncio.current_task()
         if current_task is not None:
@@ -273,27 +273,23 @@ class OrchestratorEngine:
             kb_token = _kb_dispatch_fn.set(_dispatch_to_kb)
 
         try:
-            # Resolve run mode — auto uses a cheap Haiku classifier first.
-            effective_mode = mode
-            if mode == RunMode.auto:
-                effective_mode = await self._classify_task(task)
-                logger.info("[%s] Auto-classified run mode: %s", run_id, effective_mode.value)
-
-            # Step 02: plan — either via LLM planner or a synthetic single-subtask plan.
-            if effective_mode == RunMode.direct:
+            # Step 02: classify then plan.  A cheap Haiku call decides whether the
+            # task warrants multi-agent planning or can be routed directly to a
+            # single agent.  Falls back to the full planner on any error.
+            if await self._is_single_agent_task(task):
+                logger.info("[%s] Auto-classified as single-agent task — skipping planner", run_id)
                 plan = self._make_direct_plan(run_id, task)
                 emitter.emit(
                     SSEEventType.plan_created,
-                    message="Direct mode: single-agent execution (planner skipped)",
-                    data={**plan.model_dump(mode="json"), "run_mode": effective_mode.value},
+                    message="Single-agent mode: planner skipped (auto-classified)",
+                    data=plan.model_dump(mode="json"),
                 )
             else:
                 plan = await create_plan(run_id, task, self.registry, self._client, emitter, budget_usd=budget_usd, user_context=user_context)
                 emitter.emit(
                     SSEEventType.plan_created,
-                    message=f"Plan: {len(plan.subtasks)} subtask(s)"
-                            + (" (auto-classified)" if mode == RunMode.auto else ""),
-                    data={**plan.model_dump(mode="json"), "run_mode": effective_mode.value},
+                    message=f"Plan: {len(plan.subtasks)} subtask(s)",
+                    data=plan.model_dump(mode="json"),
                 )
 
             # Step 03-06: scheduling loop
