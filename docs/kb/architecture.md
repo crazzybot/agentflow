@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-07-15
-last_verified_sha: 17a27d3
+last_verified_sha: 4470b3b
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -155,12 +155,21 @@ variants so multiple API replicas can share a run — see
   nested `Agent` ReAct loop. Invoked **lazily** inside `_dispatch_subtask()` (not
   eagerly at plan time) so the decomposer always sees completed upstream workspace state.
   `_DECOMPOSER_TOOLS` is `frozenset({"file_read", "bash_exec_readonly"})` — read-only
-  exploration only; no writes or arbitrary code execution. `decompose_subtask()` returns
-  `tuple[list[Subtask], str]`: the subtask list and a `context` string parsed from a
-  `<decomposer_context>…</decomposer_context>` block the decomposer writes before its
-  JSON array. `_extract_context_block()` pulls the block; `_strip_context_block()` removes
-  it before `_extract_json_array()` parses the micro-task list (preventing brackets inside
-  the context prose from confusing the array parser). When decomposition produces N > 1
+  exploration only; no writes or arbitrary code execution. The decomposer manifest always
+  uses `on_iteration_limit=IterationLimitAction.finalize` (set in `decompose_subtask()`),
+  so when it exhausts its exploration iterations it receives a finalization prompt and
+  makes one final tool-free LLM call to produce its output instead of silently returning
+  nothing. `decomposer_max_iterations` defaults to 10 (raised from 5 — complex workspaces
+  can exhaust 5 turns on exploration alone, leaving no turn for the JSON output).
+  `decompose_subtask()` returns `tuple[list[Subtask], str]`: the subtask list and a
+  `context` string parsed from a `<decomposer_context>…</decomposer_context>` block the
+  decomposer writes before its JSON array. `_extract_context_block()` pulls the block;
+  `_strip_context_block()` removes it before `_extract_json_array()` parses the
+  micro-task list (preventing brackets inside the context prose from confusing the array
+  parser). Failure modes are guarded explicitly: `AgentStatus.failed` logs a warning and
+  returns the original subtask; `AgentStatus.partial` with empty output logs a specific
+  "hit iteration limit" warning and also returns the original subtask (preventing a
+  silent `JSONDecodeError` from masking the real cause). When decomposition produces N > 1
   micro-subtasks, `_run_micro_subtasks()` schedules them as a **DAG** (using the same
   `DependencyGraph` scheduler as the top-level plan) so parallel branches within a
   decomposed subtask run concurrently. The sink micro-task — the one no other
@@ -198,7 +207,17 @@ variants so multiple API replicas can share a run — see
   error result (without invoking the tool) when the limit is exceeded. When
   `AgentManifest.thinking_budget_tokens` is set, extended thinking is enabled on every
   LLM call; thinking blocks are emitted as `agent:thought` SSE events and kept in the
-  message history for subsequent turns. Thinking tokens are extracted via
+  message history for subsequent turns. **Iteration-limit behaviour** is controlled by
+  `AgentManifest.on_iteration_limit` (`IterationLimitAction` enum in `core/models.py`):
+  - `"stop"` (default) — return `AgentStatus.partial` immediately, as before.
+  - `"finalize"` — inject `manifest.iteration_limit_message` (or `_DEFAULT_FINALIZE_MESSAGE`)
+    as a user turn, then make **one extra LLM call** with `tool_choice={"type": "none"}`
+    so the model is forced to produce text output from whatever it gathered. Returns
+    `AgentStatus.partial` with non-empty `output.text`. Used by the decomposer.
+  - `"ask_user"` — if `ctx` is available, acquires `ctx.human_input_lock`, emits
+    `run:awaiting_input`, and blocks until the user responds via HITL. `action="continue"`
+    with `iteration_increase=N` extends `max_iterations` by N and resumes; `action="cancel"`
+    returns `AgentStatus.partial` immediately. Falls back to `"stop"` when `ctx` is None. Thinking tokens are extracted via
   `usage.thinking_tokens` (via `getattr` for forward-compatibility). `AgentResult`
   carries `thinking_tokens` as a separate counter (a subset of `output_tokens`) and a
   `hit_max_tokens: bool` flag (set when `stop_reason=="max_tokens"`); thinking tokens are

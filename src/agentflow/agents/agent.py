@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 import anthropic
 
 from agentflow.config import settings
-from agentflow.core.models import AgentManifest, AgentOutput, AgentResult, AgentStatus, SSEEventType, TaskEnvelope
+from agentflow.core.models import AgentManifest, AgentOutput, AgentResult, AgentStatus, IterationLimitAction, SSEEventType, TaskEnvelope
 from agentflow.llm import LLMClient
 from agentflow.tools import tool_registry
 from agentflow.tools.mcp_tools import mcp_session
@@ -34,6 +34,14 @@ logger = logging.getLogger(__name__)
 # prevents a single fetch_url call from dominating every subsequent loop iteration
 # (the full messages array is re-sent on each turn).
 _MAX_TOOL_RESULT_CHARS = 8_000
+
+# Injected as a user turn when on_iteration_limit == "finalize" and the agent
+# exhausts its iteration budget without producing a final text response.
+_DEFAULT_FINALIZE_MESSAGE = (
+    "You have reached your iteration limit and cannot make further tool calls. "
+    "Based on all the information you have gathered so far, produce your final output now. "
+    "Do not request any more tools — write your response directly."
+)
 
 
 def _with_message_cache_breakpoint(messages: list[dict]) -> list[dict]:
@@ -375,6 +383,7 @@ class Agent:
         last_response_content: list = []
         hit_limit = False
         hit_max_tokens = False
+        _finalizing = False  # True during the single extra LLM call for on_iteration_limit="finalize"
         all_files_written: list[str] = []
 
         task_budget = envelope.constraints.budget_usd
@@ -398,13 +407,51 @@ class Agent:
                     break
                 max_tokens = _budget_to_max_tokens(remaining, last_input_tokens)
             else:
-                if iteration >= max_iterations:
-                    hit_limit = True
-                    logger.warning(
-                        "[%s] Hit max iterations (%d) — returning partial result",
-                        self.agent_id, max_iterations,
-                    )
-                    break
+                if not _finalizing and iteration >= max_iterations:
+                    action = self.manifest.on_iteration_limit
+                    if action == IterationLimitAction.finalize:
+                        finalize_msg = self.manifest.iteration_limit_message or _DEFAULT_FINALIZE_MESSAGE
+                        messages.append({"role": "user", "content": finalize_msg})
+                        _finalizing = True
+                        hit_limit = True
+                        logger.warning(
+                            "[%s] Hit max iterations (%d) — injecting finalization prompt",
+                            self.agent_id, max_iterations,
+                        )
+                    elif action == IterationLimitAction.ask_user and ctx is not None:
+                        async with ctx.human_input_lock:
+                            ctx.request_human_input()
+                            emitter.emit(
+                                SSEEventType.run_awaiting_input,
+                                agent_id=self.agent_id,
+                                message=(
+                                    f"Agent '{self.agent_id}' hit its iteration limit ({max_iterations}). "
+                                    "Reply with action='continue' and iteration_increase=<N> for more "
+                                    "iterations, or action='cancel'."
+                                ),
+                            )
+                            hitl_response = await ctx.await_human_input()
+                        if hitl_response.action == "continue":
+                            extra = hitl_response.iteration_increase or 5
+                            max_iterations += extra
+                            logger.info(
+                                "[%s] User granted %d more iterations (new limit: %d)",
+                                self.agent_id, extra, max_iterations,
+                            )
+                        else:
+                            hit_limit = True
+                            logger.warning(
+                                "[%s] User cancelled at iteration limit (%d) — returning partial result",
+                                self.agent_id, max_iterations,
+                            )
+                            break
+                    else:
+                        hit_limit = True
+                        logger.warning(
+                            "[%s] Hit max iterations (%d) — returning partial result",
+                            self.agent_id, max_iterations,
+                        )
+                        break
                 max_tokens = settings.agent_max_tokens_fallback
 
             create_kwargs: dict[str, Any] = {
@@ -415,6 +462,9 @@ class Agent:
             }
             if anthropic_tools:
                 create_kwargs["tools"] = anthropic_tools
+                if _finalizing:
+                    # Disable tool use so the model is forced to produce text output.
+                    create_kwargs["tool_choice"] = {"type": "none"}
 
             if thinking_budget:
                 create_kwargs["max_tokens"] = max(create_kwargs["max_tokens"], thinking_budget + 1024)
@@ -473,6 +523,11 @@ class Agent:
                     final_text += getattr(block, "text", "")
 
             if response.stop_reason == "end_turn":
+                break
+
+            if _finalizing:
+                # The finalization LLM call is complete regardless of stop_reason.
+                logger.debug("[%s] Finalization turn complete (stop_reason=%r)", self.agent_id, response.stop_reason)
                 break
 
             if response.stop_reason != "tool_use":

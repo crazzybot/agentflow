@@ -11,7 +11,7 @@ import re
 from typing import TYPE_CHECKING
 
 from agentflow.config import settings
-from agentflow.core.models import AgentManifest, AgentStatus, ExecutionPlan, Subtask, TaskContext, TaskEnvelope
+from agentflow.core.models import AgentManifest, AgentStatus, ExecutionPlan, IterationLimitAction, Subtask, TaskContext, TaskEnvelope
 from agentflow.core.registry import AgentRegistry
 from agentflow.llm import LLMClient
 
@@ -84,6 +84,7 @@ async def decompose_subtask(
         mcp_servers=manifest.mcp_servers,
         system_prompt=manifest.decomposition_prompt or "",  # guaranteed non-None at call site
         max_iterations=settings.decomposer_max_iterations,
+        on_iteration_limit=IterationLimitAction.finalize,
     )
 
     instruction_parts = []
@@ -106,6 +107,14 @@ async def decompose_subtask(
 
     if result.status == AgentStatus.failed:
         logger.warning("[decomposer] Decomposition loop failed for %s — keeping original", subtask.id)
+        return [subtask], ""
+
+    if result.status == AgentStatus.partial and not result.output.text:
+        logger.warning(
+            "[decomposer] Decomposition hit iteration limit for %s with no output — "
+            "keeping original; consider raising decomposer_max_iterations in config",
+            subtask.id,
+        )
         return [subtask], ""
 
     raw_text = result.output.text

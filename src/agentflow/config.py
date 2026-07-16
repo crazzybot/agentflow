@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     planner_max_iterations: int = 15
 
     # Max iterations for the per-subtask decomposer ReAct loop
-    decomposer_max_iterations: int = 5
+    decomposer_max_iterations: int = 10
 
     # How long (seconds) the engine waits for human input before timing out and
     # accepting the partial result.  Default: 30 minutes.

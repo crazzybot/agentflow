@@ -14,6 +14,13 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 
+class IterationLimitAction(str, Enum):
+    """What the agent should do when it hits its max_iterations cap."""
+    stop = "stop"        # return partial result immediately (default)
+    finalize = "finalize"  # inject a prompt, make one final LLM call (tools disabled) to produce output
+    ask_user = "ask_user"  # pause and request user input via HITL before deciding
+
+
 class MCPServerConfig(BaseModel):
     name: str
     transport: str = "sse"
@@ -41,6 +48,8 @@ class AgentManifest(BaseModel):
     max_iterations: int | None = None  # None → fall back to settings.agent_max_iterations
     tool_limits: dict[str, int] | None = None  # per-task call budgets e.g. {"fetch_url": 5}
     thinking_budget_tokens: int | None = None  # enables extended thinking; min 1024, must be < max_tokens
+    on_iteration_limit: IterationLimitAction = IterationLimitAction.stop
+    iteration_limit_message: str | None = None  # custom prompt injected for the 'finalize' action
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +210,7 @@ class HumanInputRequest(BaseModel):
 class HumanInputResponse(BaseModel):
     action: str  # "continue" or "cancel"
     budget_increase_usd: float | None = None
+    iteration_increase: int | None = None  # extra iterations granted for ask_user iteration-limit HITL
 
 
 # ---------------------------------------------------------------------------
