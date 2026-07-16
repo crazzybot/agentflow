@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     # Max iterations for the per-subtask decomposer ReAct loop
     decomposer_max_iterations: int = 10
 
+    # Set ENABLE_DECOMPOSER=false to skip per-subtask decomposition entirely.
+    # Subtasks then execute as the planner produced them, with no extra ReAct loop.
+    enable_decomposer: bool = True
+
     # How long (seconds) the engine waits for human input before timing out and
     # accepting the partial result.  Default: 30 minutes.
     human_input_timeout_s: float = 1800

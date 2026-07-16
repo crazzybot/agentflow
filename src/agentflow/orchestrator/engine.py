@@ -471,7 +471,7 @@ class OrchestratorEngine:
         # workspace after all upstream dependencies have completed.
         # _skip_decompose is set when we are already running a micro-subtask to
         # prevent infinite recursion.
-        if not _skip_decompose:
+        if not _skip_decompose and settings.enable_decomposer:
             manifest = self.registry.get(subtask.agent_id)
             if manifest and manifest.decomposition_prompt:
                 micro, decomp_ctx = await decompose_subtask(
