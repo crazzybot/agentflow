@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     # Must match an agent_id in the manifests directory.
     direct_agent_id: str = ""
 
+    # Global extended-thinking budget (tokens) applied to every agent that does
+    # not declare its own thinking_budget_tokens in its manifest.
+    # Set to 0 to disable extended thinking globally.
+    agent_thinking_budget_tokens: int = 5000
+
     # How long (seconds) the engine waits for human input before timing out and
     # accepting the partial result.  Default: 30 minutes.
     human_input_timeout_s: float = 1800

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 from anthropic.types import TextBlock, ThinkingBlock
 
 from agentflow.agents.agent import Agent, _with_message_cache_breakpoint, _parse_final_output
+from agentflow.config import settings
 from agentflow.core.models import AgentManifest, AgentStatus, SSEEventType, TaskConstraints, TaskContext, TaskEnvelope
 
 
@@ -374,13 +375,30 @@ async def test_thinking_blocks_emitted_as_thought_events():
 
 
 @pytest.mark.asyncio
-async def test_thinking_disabled_by_default():
-    """Without thinking_budget_tokens, no thinking= param is sent."""
+async def test_thinking_uses_global_default():
+    """When manifest has no thinking_budget_tokens, the global setting is used."""
     mock_client = MagicMock()
     mock_client.messages.create = AsyncMock(return_value=_mock_response())
 
     agent = Agent(_make_manifest(), mock_client)
     await agent.run(_make_envelope(), MagicMock())
+
+    call_kwargs = mock_client.messages.create.call_args[1]
+    assert "thinking" in call_kwargs
+    assert call_kwargs["thinking"]["budget_tokens"] == settings.agent_thinking_budget_tokens
+
+
+@pytest.mark.asyncio
+async def test_thinking_disabled_when_global_zero():
+    """When global agent_thinking_budget_tokens is 0 and manifest has no value, thinking is off."""
+    from unittest.mock import patch
+
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+
+    with patch.object(settings, "agent_thinking_budget_tokens", 0):
+        agent = Agent(_make_manifest(), mock_client)
+        await agent.run(_make_envelope(), MagicMock())
 
     call_kwargs = mock_client.messages.create.call_args[1]
     assert "thinking" not in call_kwargs

@@ -392,7 +392,7 @@ class Agent:
         iteration = 0
         tool_call_counts: dict[str, int] = {}
         tool_limits: dict[str, int] = self.manifest.tool_limits or {}
-        thinking_budget = self.manifest.thinking_budget_tokens
+        thinking_budget = self.manifest.thinking_budget_tokens or (settings.agent_thinking_budget_tokens or None)
 
         while True:
             # --- Determine max_tokens for this iteration ---
