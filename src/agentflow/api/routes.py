@@ -66,7 +66,7 @@ async def start_run(request: RunRequest):
     # BackgroundTasks would only start after the response is sent, making the
     # poll a no-op and leaving a window where the SSE stream key doesn't exist.
     asyncio.create_task(
-        engine.run(run_id, request.task, request.context, request.budget_usd)
+        engine.run(run_id, request.task, request.context, request.budget_usd, request.mode)
     )
 
     # Wait for the engine to create the emitter (happens in the first few ms).
@@ -143,7 +143,7 @@ async def followup_run(run_id: str, request: FollowUpRequest):
     new_run_id = str(uuid.uuid4())
     engine = _get_engine()
     asyncio.create_task(
-        engine.run(new_run_id, request.task, prior_context, request.budget_usd)
+        engine.run(new_run_id, request.task, prior_context, request.budget_usd, request.mode)
     )
 
     for _ in range(20):

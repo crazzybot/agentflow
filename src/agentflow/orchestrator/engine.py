@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ from agentflow.core.bus import task_bus
 from agentflow.core.context import RunContext, context_store
 from agentflow.core.models import (AgentResult, AgentStatus, ExecutionPlan,
                                    HumanInputRequest, HumanInputResponse,
-                                   RunMeta, SSEEvent, SSEEventType, SSEPayload,
+                                   RunMeta, RunMode, SSEEvent, SSEEventType, SSEPayload,
                                    Subtask, TaskConstraints, TaskContext, TaskEnvelope)
 from agentflow.core.registry import AgentRegistry
 from agentflow.llm import LLMClient
@@ -165,6 +166,56 @@ class OrchestratorEngine:
         meta_path.write_text(meta.model_dump_json(indent=2))
 
     # ------------------------------------------------------------------
+    # Mode routing helpers
+    # ------------------------------------------------------------------
+
+    async def _classify_task(self, task: str) -> RunMode:
+        """Cheap Haiku call to decide if a task warrants multi-agent planning.
+
+        Returns RunMode.plan or RunMode.direct.  Falls back to RunMode.plan on
+        any error so auto-mode degrades gracefully to the known-good path.
+        """
+        try:
+            response = await self._client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=32,
+                system=(
+                    "Classify this AI task. Reply with ONLY valid JSON: "
+                    '{"route":"plan"} or {"route":"direct"}.\n'
+                    'Route "plan": task has multiple clearly independent parallel workstreams '
+                    "that genuinely benefit from specialist agents running simultaneously.\n"
+                    'Route "direct": a single capable agent with tools can handle it end-to-end.\n'
+                    'Default to "direct" when unsure.'
+                ),
+                messages=[{"role": "user", "content": task[:2000]}],
+            )
+            for block in response.content:
+                if hasattr(block, "text"):
+                    data = json.loads(block.text.strip())
+                    return RunMode.plan if data.get("route") == "plan" else RunMode.direct
+        except Exception:
+            logger.warning("[auto] Task classification failed — defaulting to plan mode", exc_info=True)
+        return RunMode.plan
+
+    def _make_direct_plan(self, run_id: str, task: str) -> ExecutionPlan:
+        """Build a synthetic single-subtask plan that bypasses the LLM planner."""
+        agent_id = settings.direct_agent_id
+        if not agent_id:
+            raise RuntimeError(
+                "DIRECT_AGENT_ID is not configured. "
+                "Set it in .env to the agent_id to use for direct/auto mode."
+            )
+        if agent_id not in self._agent_instances:
+            raise RuntimeError(
+                f"direct_agent_id {agent_id!r} is not a registered agent. "
+                f"Available agents: {sorted(self._agent_instances)}"
+            )
+        return ExecutionPlan(
+            run_id=run_id,
+            subtasks=[Subtask(id="direct-task", agent_id=agent_id, instruction=task, depends_on=[])],
+        )
+
+    # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
 
@@ -174,6 +225,7 @@ class OrchestratorEngine:
         task: str,
         user_context: dict[str, Any],
         budget_usd: float | None = None,
+        mode: RunMode = RunMode.plan,
     ) -> None:
         current_task = asyncio.current_task()
         if current_task is not None:
@@ -221,17 +273,28 @@ class OrchestratorEngine:
             kb_token = _kb_dispatch_fn.set(_dispatch_to_kb)
 
         try:
-            # Step 02: LLM planning pass
-            plan = await create_plan(run_id, task, self.registry, self._client, emitter, budget_usd=budget_usd, user_context=user_context)
-            # Decomposition is now lazy: each subtask is decomposed at dispatch
-            # time (inside _dispatch_subtask) so the decomposer sees a workspace
-            # that reflects completed upstream dependencies.
+            # Resolve run mode — auto uses a cheap Haiku classifier first.
+            effective_mode = mode
+            if mode == RunMode.auto:
+                effective_mode = await self._classify_task(task)
+                logger.info("[%s] Auto-classified run mode: %s", run_id, effective_mode.value)
 
-            emitter.emit(
-                SSEEventType.plan_created,
-                message=f"Plan: {len(plan.subtasks)} subtask(s)",
-                data=plan.model_dump(mode="json"),
-            )
+            # Step 02: plan — either via LLM planner or a synthetic single-subtask plan.
+            if effective_mode == RunMode.direct:
+                plan = self._make_direct_plan(run_id, task)
+                emitter.emit(
+                    SSEEventType.plan_created,
+                    message="Direct mode: single-agent execution (planner skipped)",
+                    data={**plan.model_dump(mode="json"), "run_mode": effective_mode.value},
+                )
+            else:
+                plan = await create_plan(run_id, task, self.registry, self._client, emitter, budget_usd=budget_usd, user_context=user_context)
+                emitter.emit(
+                    SSEEventType.plan_created,
+                    message=f"Plan: {len(plan.subtasks)} subtask(s)"
+                            + (" (auto-classified)" if mode == RunMode.auto else ""),
+                    data={**plan.model_dump(mode="json"), "run_mode": effective_mode.value},
+                )
 
             # Step 03-06: scheduling loop
             await self._execute_plan(run_id, plan, ctx, emitter)

@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     # Subtasks then execute as the planner produced them, with no extra ReAct loop.
     enable_decomposer: bool = True
 
+    # Agent used when mode="direct" or when auto-classification routes to direct.
+    # Must match an agent_id in the manifests directory.
+    direct_agent_id: str = ""
+
     # How long (seconds) the engine waits for human input before timing out and
     # accepting the partial result.  Default: 30 minutes.
     human_input_timeout_s: float = 1800
