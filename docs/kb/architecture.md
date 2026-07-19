@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
-last_updated: 2026-07-15
-last_verified_sha: 4470b3b
+last_updated: 2026-07-18
+last_verified_sha: 1b25579
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -38,8 +38,13 @@ variants so multiple API replicas can share a run — see
    [`orchestrator/engine.py`](../../src/agentflow/orchestrator/engine.py)) registers the
    current asyncio Task in `self._run_tasks[run_id]` (used by `cancel_run()`), creates a
    `StreamEmitter` (`stream_registry.create`), a `RunContext` (`context_store.create`),
-   and a bus channel (`task_bus.create_run`), then names the run via a cheap Haiku call
-   and writes `runs/<run_id>/meta.json`. Two `ContextVar` tokens are then armed for the
+   and a bus channel (`task_bus.create_run`), then kicks off `_generate_run_name()` and
+   `_is_single_agent_task()` concurrently via `asyncio.create_task` — both are independent
+   cheap `settings.reporter_model` calls that only need the task string, so running them
+   together (and alongside the setup below) avoids stacking their latency sequentially
+   before real work starts. `_generate_run_name()`'s result is awaited immediately to
+   write `runs/<run_id>/meta.json`; `_is_single_agent_task()`'s result is awaited later,
+   right before it gates plan-vs-direct routing (step 3). Two `ContextVar` tokens are then armed for the
    lifetime of the run: `_current_sink` (artifact tracking, from
    `tools/artifact_tracker.py`) and `_kb_dispatch_fn` (from `tools/kb_dispatcher.py`),
    which is set to an async closure that dispatches an ad-hoc `KnowledgebaseAgent` subtask
@@ -98,17 +103,27 @@ variants so multiple API replicas can share a run — see
    messages. Before each tool dispatch, `_checked_call_tool()` consults the per-loop
    `tool_call_counts` dict against `AgentManifest.tool_limits` and short-circuits with
    an error result if a per-tool call budget is exceeded. If
-   `AgentManifest.thinking_budget_tokens` is set, each `messages.create()` call
-   includes `thinking={"type": "enabled", "budget_tokens": N}` and — when the manifest
-   also has tools — `betas=["interleaved-thinking-2025-05-14"]`; `max_tokens` is
-   automatically clamped to at least `thinking_budget_tokens + 1024`.
+   `AgentManifest.thinking_effort` (or, absent that, `settings.agent_thinking_effort`) is
+   non-empty, each `messages.create()` call includes adaptive thinking —
+   `thinking={"type": "adaptive", "display": "summarized"}` plus
+   `output_config={"effort": thinking_effort}` — with no beta header (adaptive thinking
+   auto-enables interleaved thinking on current-gen models). `display="summarized"` is
+   required: the API's default (`"omitted"`) would stream `thinking` blocks with empty
+   text, silently breaking both the `agent:thought` events and thinking-token accounting
+   below. Unlike the old `budget_tokens` style, adaptive thinking has no numeric budget to
+   clamp `max_tokens` to or shrink under a tight per-task budget — instead, thinking is
+   skipped outright for any iteration whose budget-derived `max_tokens` is below 1024
+   (`_budget_to_max_tokens()` can floor it as low as 256 near budget exhaustion), since
+   enabling thinking there would consume most of a tiny allowance and cut the turn off
+   before it produces a usable tool call or answer.
    Response content is converted to plain dicts via `_to_dict_content()` before
    being stored in the message history — SDK objects are never kept (thinking-block
    `signature` fields are preserved exactly, as the API requires them echoed back
-   unchanged). Per non-`end_turn` turn, thinking blocks and text blocks are each
-   accumulated into a single `thinking_text` string and emitted as **one** combined
-   `agent:thought` SSE event (with `turn_index`); for `end_turn` turns only
-   `final_text` is collected from text blocks and no thought event is emitted.
+   unchanged). Every turn (including `end_turn`), only `thinking`-typed blocks are
+   accumulated into a `thinking_text` string and emitted as an `agent:thought` SSE
+   event (with `turn_index`) before any stop-reason branch — a turn that ends via
+   `end_turn` without calling a tool still surfaces its reasoning. `final_text` is
+   collected separately from `text` blocks and is never mixed into the thought event.
    Multiple text blocks within one response are concatenated (`+=`) rather than
    overwritten. After each tool-result batch the loop
    calls `ctx.pop_user_message(self.agent_id)` and — if a message is queued for this
@@ -200,14 +215,22 @@ variants so multiple API replicas can share a run — see
 - **`agents/agent.py` — `Agent`**: single generic, manifest-driven class for every agent
   type; runs the tool-calling loop against Claude, tracks token/cost usage per call,
   and returns an `AgentResult` (`success`/`partial`/`failed`). The model used for each
-  API call is `manifest.model or settings.agent_model`, so manifests (e.g. the planner)
-  can declare a per-agent model override via `AgentManifest.model`. The loop dispatches
+  API call is `manifest.model or settings.agent_model`, resolved once per loop as
+  `resolved_model`, so manifests (e.g. the planner) can declare a per-agent model
+  override via `AgentManifest.model`. Cost accounting uses `_pricing_for(resolved_model)`
+  — a small model-id-prefix pricing table (Opus/Sonnet-4.x/Haiku-4.5/Haiku-3 tiers) that
+  falls back to the flat `settings.cost_per_1m_*` rates for unrecognised models — rather
+  than always pricing at `agent_model`'s rate, so a manifest override to a different
+  pricing tier is still budgeted correctly; cache write/read prices are derived from the
+  input price at Anthropic's fixed 1.25x / 0.1x ratio. `_budget_to_max_tokens()` takes
+  this same resolved input/output pricing as parameters instead of reading
+  `settings.cost_per_1m_*` directly. The loop dispatches
   tool calls through `_checked_call_tool()`, which enforces per-tool call budgets declared
   in `AgentManifest.tool_limits` by incrementing an in-loop counter and returning a hard
   error result (without invoking the tool) when the limit is exceeded. When
-  `AgentManifest.thinking_budget_tokens` is set, extended thinking is enabled on every
-  LLM call; thinking blocks are emitted as `agent:thought` SSE events and kept in the
-  message history for subsequent turns. **Iteration-limit behaviour** is controlled by
+  `AgentManifest.thinking_effort` is set, adaptive extended thinking is enabled on every
+  LLM call at that effort level; thinking blocks are emitted as `agent:thought` SSE events
+  and kept in the message history for subsequent turns. **Iteration-limit behaviour** is controlled by
   `AgentManifest.on_iteration_limit` (`IterationLimitAction` enum in `core/models.py`):
   - `"stop"` (default) — return `AgentStatus.partial` immediately, as before.
   - `"finalize"` — inject `manifest.iteration_limit_message` (or `_DEFAULT_FINALIZE_MESSAGE`)
@@ -217,12 +240,16 @@ variants so multiple API replicas can share a run — see
   - `"ask_user"` — if `ctx` is available, acquires `ctx.human_input_lock`, emits
     `run:awaiting_input`, and blocks until the user responds via HITL. `action="continue"`
     with `iteration_increase=N` extends `max_iterations` by N and resumes; `action="cancel"`
-    returns `AgentStatus.partial` immediately. Falls back to `"stop"` when `ctx` is None. Thinking tokens are extracted via
-  `usage.thinking_tokens` (via `getattr` for forward-compatibility). `AgentResult`
+    returns `AgentStatus.partial` immediately. Falls back to `"stop"` when `ctx` is None.
+
+  Thinking tokens are not broken out in the Messages API `usage` object (they're billed
+  as part of `output_tokens`), so both `Agent` and `LLMClient` estimate them via the
+  shared `llm.estimate_thinking_tokens()` helper (~4 chars/token over `thinking` block
+  text) rather than maintaining two independent copies of the same estimate. `AgentResult`
   carries `thinking_tokens` as a separate counter (a subset of `output_tokens`) and a
   `hit_max_tokens: bool` flag (set when `stop_reason=="max_tokens"`); thinking tokens are
-  priced at `cost_per_1m_thinking_tokens` while regular output tokens use
-  `cost_per_1m_output_tokens`. On `max_tokens`, the partial assistant message is popped
+  priced at the resolved model's output rate (see `_pricing_for()` above) — the same rate
+  regular output tokens use, since Anthropic bills thinking as output. On `max_tokens`, the partial assistant message is popped
   from history (resumption starts from the last clean state), but pending tool calls ARE
   still dispatched so clients receive paired `agent:progress` / `agent:tool_result` SSE
   events — the results are not appended to history. SSE events emitted during the loop
@@ -280,7 +307,10 @@ variants so multiple API replicas can share a run — see
 - **`llm/client.py` — `LLMClient`**: wraps the Anthropic SDK with automatic prompt-cache
   `cache_control` injection on system/tool blocks and tracks cumulative `UsageStats`
   (fields: `total_requests`, `total_input_tokens`, `total_output_tokens`,
-  `total_thinking_tokens`, `cache_creation_tokens`, `cache_read_tokens`). Internally
+  `total_thinking_tokens`, `cache_creation_tokens`, `cache_read_tokens`). Also exports
+  `estimate_thinking_tokens(content)`, the char-count estimate over `thinking` blocks
+  shared with `agents/agent.py`'s per-call cost accounting (see above) so the two never
+  drift apart. Internally
   uses `messages.stream()` / `beta.messages.stream()` + `get_final_message()` instead
   of `messages.create()` so that long agent turns are not cut off by the Anthropic SDK's
   10-minute non-streaming timeout. Rate limiting is delegated to the Anthropic SDK

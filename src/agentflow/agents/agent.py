@@ -21,7 +21,7 @@ import anthropic
 
 from agentflow.config import settings
 from agentflow.core.models import AgentManifest, AgentOutput, AgentResult, AgentStatus, IterationLimitAction, SSEEventType, TaskEnvelope
-from agentflow.llm import LLMClient
+from agentflow.llm import LLMClient, estimate_thinking_tokens
 from agentflow.tools import tool_registry
 from agentflow.tools.mcp_tools import mcp_session
 
@@ -225,18 +225,51 @@ def _parse_final_output(text: str) -> tuple[dict[str, Any], str]:
     return {}, text
 
 
-def _budget_to_max_tokens(remaining_budget: float, last_input_tokens: int) -> int:
+# Per-model list pricing (USD per 1M input/output tokens), keyed by model-id
+# prefix so dated snapshot IDs (e.g. "claude-haiku-4-5-20251001") still match.
+# settings.cost_per_1m_* only reflects agent_model's pricing, so a manifest
+# that overrides `model` to a different tier would otherwise be costed with
+# the wrong rate — this table keeps per-task budget enforcement accurate
+# regardless of which model actually served the call. Cache write/read follow
+# Anthropic's fixed 1.25x / 0.1x-of-input ratio; thinking tokens bill at the
+# output rate. Unrecognised models fall back to the configured global rates.
+_MODEL_PRICING: dict[str, tuple[float, float]] = {
+    "claude-opus-4": (5.0, 25.0),
+    "claude-sonnet-5": (3.0, 15.0),  # GA rate; intro rate is $2.00/$10.00 through 2026-08-31
+    "claude-sonnet-4": (3.0, 15.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+    "claude-3-haiku": (0.25, 1.25),
+}
+
+
+def _pricing_for(model: str) -> tuple[float, float, float, float, float]:
+    """Return (input, output, thinking, cache_write, cache_read) USD/1M tokens for *model*."""
+    for prefix, (input_price, output_price) in _MODEL_PRICING.items():
+        if model.startswith(prefix):
+            return (input_price, output_price, output_price, input_price * 1.25, input_price * 0.1)
+    return (
+        settings.cost_per_1m_input_tokens,
+        settings.cost_per_1m_output_tokens,
+        settings.cost_per_1m_thinking_tokens,
+        settings.cost_per_1m_cache_write_tokens,
+        settings.cost_per_1m_cache_read_tokens,
+    )
+
+
+def _budget_to_max_tokens(remaining_budget: float, last_input_tokens: int, input_price: float, output_price: float) -> int:
     """Compute how many output tokens we can afford with *remaining_budget*.
 
     We subtract an estimate of the next call's input cost (based on the previous
     call's input token count) to leave room for it, then convert the remainder to
-    output tokens using the configured output token price.
+    output tokens using *output_price* (the price of the model actually in use —
+    see _pricing_for; using a flat global rate here would misprice any subtask
+    whose manifest overrides `model` to a different tier).
     """
-    estimated_input_cost = last_input_tokens * settings.cost_per_1m_input_tokens / 1_000_000
+    estimated_input_cost = last_input_tokens * input_price / 1_000_000
     output_budget = remaining_budget - estimated_input_cost
     if output_budget <= 0:
         return 256  # minimum to at least elicit an end_turn
-    tokens = int(output_budget / (settings.cost_per_1m_output_tokens / 1_000_000))
+    tokens = int(output_budget / (output_price / 1_000_000))
     return max(256, min(settings.agent_max_tokens_cap, tokens))
 
 
@@ -392,7 +425,13 @@ class Agent:
         iteration = 0
         tool_call_counts: dict[str, int] = {}
         tool_limits: dict[str, int] = self.manifest.tool_limits or {}
-        thinking_budget = self.manifest.thinking_budget_tokens or (settings.agent_thinking_budget_tokens or None)
+        thinking_effort = self.manifest.thinking_effort or settings.agent_thinking_effort or None
+
+        # Model is fixed for the lifetime of this loop — resolve pricing once so
+        # both the budget→max_tokens conversion and the per-call cost accounting
+        # below use the rate for the model actually being called.
+        resolved_model = self.manifest.model or settings.agent_model
+        model_input_price, model_output_price, model_thinking_price, model_cache_write_price, model_cache_read_price = _pricing_for(resolved_model)
 
         while True:
             # --- Determine max_tokens for this iteration ---
@@ -405,7 +444,7 @@ class Agent:
                         self.agent_id, task_budget, iteration,
                     )
                     break
-                max_tokens = _budget_to_max_tokens(remaining, last_input_tokens)
+                max_tokens = _budget_to_max_tokens(remaining, last_input_tokens, model_input_price, model_output_price)
             else:
                 if not _finalizing and iteration >= max_iterations:
                     action = self.manifest.on_iteration_limit
@@ -455,7 +494,7 @@ class Agent:
                 max_tokens = settings.agent_max_tokens_fallback
 
             create_kwargs: dict[str, Any] = {
-                "model": self.manifest.model or settings.agent_model,
+                "model": resolved_model,
                 "max_tokens": max_tokens,
                 "system": system_prompt,
                 "messages": _with_message_cache_breakpoint(messages),
@@ -466,11 +505,21 @@ class Agent:
                     # Disable tool use so the model is forced to produce text output.
                     create_kwargs["tool_choice"] = {"type": "none"}
 
-            if thinking_budget:
-                create_kwargs["max_tokens"] = max(create_kwargs["max_tokens"], thinking_budget + 1024)
-                create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
-                if anthropic_tools:
-                    create_kwargs["betas"] = ["interleaved-thinking-2025-05-14"]
+            if thinking_effort:
+                # Adaptive thinking (current-gen models only — see resolved_model) has no
+                # fixed token budget to cap or shrink, unlike the old enabled/budget_tokens
+                # style. Instead, skip it outright when max_tokens is too tight to spare
+                # headroom for thinking on top of an actual response — e.g. a near-exhausted
+                # per-task budget slice, where _budget_to_max_tokens already sized max_tokens
+                # down to as little as 256. Enabling thinking there would let it consume most
+                # of a tiny allowance, truncating the turn before it produces a usable tool
+                # call or answer. No beta header is needed — adaptive thinking auto-enables
+                # interleaved thinking. display="summarized" is required: the API default
+                # ("omitted") streams thinking blocks with empty text, which would silently
+                # break both the agent:thought SSE events below and thinking-token accounting.
+                if create_kwargs["max_tokens"] >= 1024:
+                    create_kwargs["thinking"] = {"type": "adaptive", "display": "summarized"}
+                    create_kwargs["output_config"] = {"effort": thinking_effort}
 
             try:
                 response = await self.client.messages.create(**create_kwargs)
@@ -490,11 +539,7 @@ class Agent:
             call_cache_write = u.cache_creation_input_tokens or 0
             call_cache_read = u.cache_read_input_tokens or 0
             # The API doesn't expose a thinking token breakdown in usage; estimate from blocks.
-            call_thinking = getattr(u, "thinking_tokens", 0) or sum(
-                len(getattr(block, "thinking", "")) // 4
-                for block in response.content
-                if block.type == "thinking"
-            )
+            call_thinking = estimate_thinking_tokens(response.content)
             call_regular_output = u.output_tokens - call_thinking
             last_input_tokens = u.input_tokens
             total_input_tokens += u.input_tokens
@@ -503,11 +548,11 @@ class Agent:
             total_cache_creation_tokens += call_cache_write
             total_cache_read_tokens += call_cache_read
             total_cost_usd += (
-                u.input_tokens * settings.cost_per_1m_input_tokens
-                + call_regular_output * settings.cost_per_1m_output_tokens
-                + call_thinking * settings.cost_per_1m_thinking_tokens
-                + call_cache_write * settings.cost_per_1m_cache_write_tokens
-                + call_cache_read * settings.cost_per_1m_cache_read_tokens
+                u.input_tokens * model_input_price
+                + call_regular_output * model_output_price
+                + call_thinking * model_thinking_price
+                + call_cache_write * model_cache_write_price
+                + call_cache_read * model_cache_read_price
             ) / 1_000_000
             iteration += 1
 
@@ -521,6 +566,22 @@ class Agent:
             for block in response.content:
                 if block.type == "text":
                     final_text += getattr(block, "text", "")
+
+            # Emit thinking blocks as thought events so clients can display live reasoning.
+            # Runs before every stop_reason branch below (including end_turn) so thinking is
+            # surfaced on every turn — a single-turn response that ends via end_turn without
+            # ever calling a tool previously never reached this code, silently dropping its
+            # thinking content. Only "thinking" blocks are collected — mixing in "text" blocks
+            # would leak the model's final answer into the thought stream as if it were
+            # reasoning. Use block.type rather than isinstance so BetaThinkingBlock (beta
+            # endpoint) and ThinkingBlock (standard endpoint) are both matched.
+            thinking_text = ""
+            if thinking_effort:
+                for block in response.content:
+                    if block.type == "thinking":
+                        thinking_text += getattr(block, "thinking", None) or ""
+            if thinking_text:
+                emitter.emit(SSEEventType.agent_thought, agent_id=self.agent_id, message=thinking_text, turn_index=iteration)
 
             if response.stop_reason == "end_turn":
                 break
@@ -569,23 +630,6 @@ class Agent:
                         )
                 break
 
-            # Emit thinking blocks as thought events so clients can display live reasoning.
-            # Use block.type rather than isinstance so BetaThinkingBlock (beta endpoint)
-            # and ThinkingBlock (standard endpoint) are both matched.
-            thinking_text = ""
-            if thinking_budget:
-                for block in response.content:
-                    text = None
-                    if block.type == "thinking":
-                        text = getattr(block, "thinking", None)
-                    elif block.type == "text":
-                        text = getattr(block, "text", None)
-                    
-                    if text:
-                        thinking_text += text
-            if thinking_text:
-                emitter.emit(SSEEventType.agent_thought, agent_id=self.agent_id, message=thinking_text, turn_index=iteration)
-
             # Execute all tool calls concurrently, then feed results back
             tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
             tool_results = await asyncio.gather(
@@ -609,7 +653,7 @@ class Agent:
         # With extended thinking the model may end via thinking + tool use without ever
         # producing a text block.  Fall back to the last thinking block so the reporter
         # receives a meaningful summary instead of an empty string.
-        if not final_text and thinking_budget:
+        if not final_text and thinking_effort:
             final_text = ""
             for block in reversed(last_response_content):
                 if block.type == "thinking":

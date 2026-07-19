@@ -12,7 +12,7 @@ from agentflow.core.models import AgentManifest, AgentStatus, SSEEventType, Task
 def _make_manifest(
     tools: list[str] | None = None,
     tool_limits: dict | None = None,
-    thinking_budget_tokens: int | None = None,
+    thinking_effort: str | None = None,
 ) -> AgentManifest:
     return AgentManifest(
         agent_id="TestAgent",
@@ -22,7 +22,7 @@ def _make_manifest(
         mcp_servers=[],
         system_prompt="You are a test agent. Return raw JSON: {\"result\": \"done\"}",
         tool_limits=tool_limits,
-        thinking_budget_tokens=thinking_budget_tokens,
+        thinking_effort=thinking_effort,
     )
 
 
@@ -290,55 +290,48 @@ def test_cache_breakpoint_targets_last_user_message():
 
 @pytest.mark.asyncio
 async def test_thinking_config_passed_to_llm():
-    """When thinking_budget_tokens is set, the create call includes thinking= param."""
+    """When thinking_effort is set, the create call includes adaptive thinking + effort."""
     mock_client = MagicMock()
     mock_client.messages.create = AsyncMock(return_value=_mock_response())
 
-    agent = Agent(_make_manifest(thinking_budget_tokens=2048), mock_client)
+    agent = Agent(_make_manifest(thinking_effort="medium"), mock_client)
     await agent.run(_make_envelope(), MagicMock())
 
     call_kwargs = mock_client.messages.create.call_args[1]
-    assert call_kwargs["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+    assert call_kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert call_kwargs["output_config"] == {"effort": "medium"}
 
 
 @pytest.mark.asyncio
-async def test_thinking_max_tokens_enforced():
-    """max_tokens is bumped to at least thinking_budget + 1024."""
-    mock_client = MagicMock()
-    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+async def test_thinking_never_uses_betas():
+    """Adaptive thinking needs no beta header, with or without tools on the manifest."""
+    for tools in ([], ["file_read"]):
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(return_value=_mock_response())
 
-    agent = Agent(_make_manifest(thinking_budget_tokens=4096), mock_client)
-    await agent.run(_make_envelope(), MagicMock())
+        agent = Agent(_make_manifest(tools=tools, thinking_effort="high"), mock_client)
+        await agent.run(_make_envelope(), MagicMock())
 
-    call_kwargs = mock_client.messages.create.call_args[1]
-    assert call_kwargs["max_tokens"] >= 4096 + 1024
-
-
-@pytest.mark.asyncio
-async def test_thinking_betas_added_when_tools_present():
-    """betas header is included when thinking is enabled alongside tools."""
-    mock_client = MagicMock()
-    mock_client.messages.create = AsyncMock(return_value=_mock_response())
-
-    agent = Agent(_make_manifest(tools=["file_read"], thinking_budget_tokens=1024), mock_client)
-    await agent.run(_make_envelope(), MagicMock())
-
-    call_kwargs = mock_client.messages.create.call_args[1]
-    assert "betas" in call_kwargs
-    assert "interleaved-thinking-2025-05-14" in call_kwargs["betas"]
+        call_kwargs = mock_client.messages.create.call_args[1]
+        assert "betas" not in call_kwargs
 
 
 @pytest.mark.asyncio
-async def test_thinking_no_betas_without_tools():
-    """betas header is omitted when thinking is enabled but the manifest has no tools."""
+async def test_thinking_skipped_when_max_tokens_too_tight():
+    """Thinking is skipped for an iteration whose budget-derived max_tokens can't spare headroom."""
     mock_client = MagicMock()
     mock_client.messages.create = AsyncMock(return_value=_mock_response())
 
-    agent = Agent(_make_manifest(tools=[], thinking_budget_tokens=1024), mock_client)
-    await agent.run(_make_envelope(), MagicMock())
+    envelope = _make_envelope()
+    envelope.constraints.budget_usd = 0.003  # tiny — _budget_to_max_tokens floors to 256
+
+    agent = Agent(_make_manifest(thinking_effort="high"), mock_client)
+    await agent.run(envelope, MagicMock())
 
     call_kwargs = mock_client.messages.create.call_args[1]
-    assert "betas" not in call_kwargs
+    assert call_kwargs["max_tokens"] < 1024
+    assert "thinking" not in call_kwargs
+    assert "output_config" not in call_kwargs
 
 
 @pytest.mark.asyncio
@@ -363,7 +356,7 @@ async def test_thinking_blocks_emitted_as_thought_events():
     emitter = MagicMock()
     emitter.emit = MagicMock()
 
-    agent = Agent(_make_manifest(thinking_budget_tokens=1024), mock_client)
+    agent = Agent(_make_manifest(thinking_effort="high"), mock_client)
     result = await agent.run(_make_envelope(), emitter)
 
     assert result.status == AgentStatus.success
@@ -376,7 +369,7 @@ async def test_thinking_blocks_emitted_as_thought_events():
 
 @pytest.mark.asyncio
 async def test_thinking_uses_global_default():
-    """When manifest has no thinking_budget_tokens, the global setting is used."""
+    """When manifest has no thinking_effort, the global setting is used."""
     mock_client = MagicMock()
     mock_client.messages.create = AsyncMock(return_value=_mock_response())
 
@@ -384,25 +377,25 @@ async def test_thinking_uses_global_default():
     await agent.run(_make_envelope(), MagicMock())
 
     call_kwargs = mock_client.messages.create.call_args[1]
-    assert "thinking" in call_kwargs
-    assert call_kwargs["thinking"]["budget_tokens"] == settings.agent_thinking_budget_tokens
+    assert call_kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert call_kwargs["output_config"]["effort"] == settings.agent_thinking_effort
 
 
 @pytest.mark.asyncio
-async def test_thinking_disabled_when_global_zero():
-    """When global agent_thinking_budget_tokens is 0 and manifest has no value, thinking is off."""
+async def test_thinking_disabled_when_global_empty():
+    """When global agent_thinking_effort is "" and manifest has no value, thinking is off."""
     from unittest.mock import patch
 
     mock_client = MagicMock()
     mock_client.messages.create = AsyncMock(return_value=_mock_response())
 
-    with patch.object(settings, "agent_thinking_budget_tokens", 0):
+    with patch.object(settings, "agent_thinking_effort", ""):
         agent = Agent(_make_manifest(), mock_client)
         await agent.run(_make_envelope(), MagicMock())
 
     call_kwargs = mock_client.messages.create.call_args[1]
     assert "thinking" not in call_kwargs
-    assert "betas" not in call_kwargs
+    assert "output_config" not in call_kwargs
 
 
 def test_cache_breakpoint_no_double_marking():

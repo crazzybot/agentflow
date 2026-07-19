@@ -8,7 +8,9 @@ sources:
   - src/agentflow/logging_config.py
   - tests/
   - skills/python-coding/
-status: current
+status: stale  # config.py drift from ENABLE_DECOMPOSER/direct_agent_id/AGENT_THINKING_EFFORT
+               # additions (commits 3557340..1b25579) — out of scope for the Claude-API
+               # review that last touched this doc; needs its own reconciliation pass.
 ---
 
 # Conventions & Patterns
@@ -48,7 +50,9 @@ contradict the source):
   `settings = Settings()` singleton. Pricing fields (`cost_per_1m_input_tokens`,
   `cost_per_1m_output_tokens`, `cost_per_1m_cache_write_tokens`,
   `cost_per_1m_cache_read_tokens`, `cost_per_1m_thinking_tokens`) default to
-  claude-sonnet-4-6 rates and can be overridden in `.env`.
+  claude-sonnet-5's standard rate and can be overridden in `.env`; they also serve as
+  the fallback rate in `agents/agent.py`'s `_MODEL_PRICING` table for any model not
+  explicitly listed there (used when a manifest overrides `model` to a different tier).
 - **Error handling**: raise specific, narrow exception types; never swallow exceptions
   silently; add context with `raise SomeError(...) from exc` when re-wrapping.
 - **Logging**: standard `logging` module, never `print()`. `logging_config.py` centralizes

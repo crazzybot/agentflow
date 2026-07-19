@@ -23,6 +23,22 @@ logger = logging.getLogger(__name__)
 _MAX_RETRIES = 4
 
 
+def estimate_thinking_tokens(content: list) -> int:
+    """Estimate thinking tokens from response content blocks.
+
+    The Messages API usage object does not break thinking tokens out from
+    output_tokens (they are billed as part of output_tokens), so this is a
+    ~4-chars-per-token estimate over the ``thinking`` block text. Shared by
+    the client's usage stats and the agent loop's cost accounting so the two
+    never drift from independently-maintained copies of the same estimate.
+    """
+    return sum(
+        len(getattr(block, "thinking", "") or "") // 4
+        for block in content
+        if getattr(block, "type", "") == "thinking"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Usage stats
 # ---------------------------------------------------------------------------
@@ -137,11 +153,7 @@ class _MessagesProxy:
         usage = response.usage
         input_tokens: int = usage.input_tokens
         output_tokens: int = usage.output_tokens
-        thinking_tokens: int = getattr(usage, "thinking_tokens", 0) or sum(
-            len(getattr(block, "thinking", "")) // 4
-            for block in response.content
-            if getattr(block, "type", "") == "thinking"
-        )
+        thinking_tokens: int = estimate_thinking_tokens(response.content)
         cache_creation: int = getattr(usage, "cache_creation_input_tokens", 0) or 0
         cache_read: int = getattr(usage, "cache_read_input_tokens", 0) or 0
 
@@ -175,7 +187,7 @@ class LLMClient:
 
         client = LLMClient(api_key=settings.anthropic_api_key)
         response = await client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-sonnet-5",
             system="You are ...",
             messages=[...],
             max_tokens=1024,

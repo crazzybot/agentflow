@@ -5,8 +5,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     anthropic_api_key: str = ""
-    planner_model: str = "claude-sonnet-4-6"
-    agent_model: str = "claude-sonnet-4-6"
+    planner_model: str = "claude-sonnet-5"
+    agent_model: str = "claude-sonnet-5"
     reporter_model: str = "claude-haiku-4-5-20251001"
 
     task_timeout_ms: int = 3_600_000  # 1 hour — budget exhaustion is the real limiter
@@ -29,7 +29,12 @@ class Settings(BaseSettings):
     capture_events: bool = False
     capture_results: bool = False
 
-    # Pricing (USD per 1M tokens) — defaults match claude-sonnet-4-6
+    # Pricing (USD per 1M tokens) — defaults match claude-sonnet-5's standard rate.
+    # (Sonnet 5 has an introductory rate of $2.00/$10.00 through 2026-08-31; not
+    # hardcoded here since it would silently under-price after that date — override
+    # via .env if you want to track the introductory rate while it's active.)
+    # These are also the fallback rates for any model not in agents/agent.py's
+    # _MODEL_PRICING table (used when a manifest overrides `model` to another tier).
     cost_per_1m_input_tokens: float = 3.0
     cost_per_1m_output_tokens: float = 15.0
     cost_per_1m_cache_write_tokens: float = 3.75
@@ -59,10 +64,14 @@ class Settings(BaseSettings):
     # Must match an agent_id in the manifests directory.
     direct_agent_id: str = ""
 
-    # Global extended-thinking budget (tokens) applied to every agent that does
-    # not declare its own thinking_budget_tokens in its manifest.
-    # Set to 0 to disable extended thinking globally.
-    agent_thinking_budget_tokens: int = 5000
+    # Global extended-thinking effort level ("low" | "medium" | "high" | "xhigh" | "max")
+    # applied to every agent that does not declare its own thinking_effort in its
+    # manifest. All current-gen models (Sonnet 5, Opus 4.6+) use adaptive thinking,
+    # which is governed by effort rather than a fixed token budget — there is no
+    # exact equivalent of the old per-agent token-budget knob, but effort still
+    # lets manifests ask for deeper (higher-effort) reasoning than the default.
+    # Set to "" (empty string) to disable extended thinking globally.
+    agent_thinking_effort: str = "high"
 
     # How long (seconds) the engine waits for human input before timing out and
     # accepting the partial result.  Default: 30 minutes.

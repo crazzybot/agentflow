@@ -13,7 +13,9 @@ sources:
   - src/agentflow/orchestrator/stream_redis.py
   - src/agentflow/api/routes.py
   - src/agentflow/main.py
-status: current
+status: stale  # config.py drift from ENABLE_DECOMPOSER/direct_agent_id/AGENT_THINKING_EFFORT
+               # additions (commits 3557340..1b25579) — out of scope for the Claude-API
+               # review that last touched this doc; needs its own reconciliation pass.
 ---
 
 # Redis-Backed State Backend

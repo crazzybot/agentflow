@@ -141,7 +141,7 @@ class OrchestratorEngine:
     async def _generate_run_name(self, task: str) -> str:
         try:
             response = await self._client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model=settings.reporter_model,
                 max_tokens=24,
                 messages=[{
                     "role": "user",
@@ -178,7 +178,7 @@ class OrchestratorEngine:
         """
         try:
             response = await self._client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model=settings.reporter_model,
                 max_tokens=32,
                 system=(
                     "Classify this AI task. Reply with ONLY valid JSON: "
@@ -246,7 +246,13 @@ class OrchestratorEngine:
         task_bus.create_run(run_id)
 
         created_at = datetime.now(timezone.utc).isoformat()
-        name = await self._generate_run_name(task)
+        # Both are independent cheap Haiku calls that only need `task` — run them
+        # concurrently (and alongside the run setup below) instead of stacking
+        # their latency sequentially before any real work starts.
+        name_task = asyncio.create_task(self._generate_run_name(task))
+        is_direct_task = asyncio.create_task(self._is_single_agent_task(task))
+
+        name = await name_task
         self._write_meta(run_id, task, name, created_at)
 
         emitter.emit(SSEEventType.run_started, message=f"Run {run_id} started")
@@ -276,7 +282,7 @@ class OrchestratorEngine:
             # Step 02: classify then plan.  A cheap Haiku call decides whether the
             # task warrants multi-agent planning or can be routed directly to a
             # single agent.  Falls back to the full planner on any error.
-            if await self._is_single_agent_task(task):
+            if await is_direct_task:
                 logger.info("[%s] Auto-classified as single-agent task — skipping planner", run_id)
                 plan = self._make_direct_plan(run_id, task)
                 emitter.emit(

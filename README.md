@@ -154,14 +154,15 @@ All settings are read from environment variables (or a `.env` file).
 | Variable | Default | Description |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | *(required)* | Anthropic API key |
-| `PLANNER_MODEL` | `claude-sonnet-4-6` | Model used for the LLM planning pass |
-| `AGENT_MODEL` | `claude-sonnet-4-6` | Model used inside each agent's agentic loop |
+| `PLANNER_MODEL` | `claude-sonnet-5` | Model used for the LLM planning pass |
+| `AGENT_MODEL` | `claude-sonnet-5` | Model used inside each agent's agentic loop |
 | `REPORTER_MODEL` | `claude-haiku-4-5-20251001` | Model used to compile the final report |
 | `TASK_TIMEOUT_MS` | `3600000` | Per-subtask wall-clock timeout (ms) |
 | `TASK_MAX_RETRIES` | `1` | Retry attempts before falling back or failing |
 | `AGENT_MAX_TOKENS_FALLBACK` | `8192` | `max_tokens` when no budget is set for the subtask |
 | `AGENT_MAX_ITERATIONS` | `10` | Maximum tool-use loop iterations per subtask |
 | `AGENT_MIN_ITERATION_BUDGET_USD` | `0.002` | Minimum remaining USD budget to attempt another iteration |
+| `AGENT_THINKING_EFFORT` | `high` | Global adaptive-thinking effort (`low`/`medium`/`high`/`xhigh`/`max`); `""` disables. Manifest `thinking_effort` overrides per agent. |
 | `PLANNER_MAX_ITERATIONS` | `15` | Maximum tool-use iterations for the planning pass |
 | `ENABLE_PROMPT_CACHING` | `true` | Inject Anthropic cache headers on every call |
 | `CAPTURE_EVENTS` | `false` | Write SSE events to `workspace/runs/{id}/events.jsonl` |

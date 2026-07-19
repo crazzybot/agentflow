@@ -91,4 +91,4 @@ decomposition_prompt: |
 fallback_for: []
 max_concurrency: 2
 max_iterations: 15
-thinking_budget_tokens: 4096
+thinking_effort: high

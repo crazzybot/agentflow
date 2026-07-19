@@ -30,4 +30,4 @@ system_prompt: |
 fallback_for: []
 max_concurrency: 1
 max_iterations: 4
-thinking_budget_tokens: 2048
+thinking_effort: medium
