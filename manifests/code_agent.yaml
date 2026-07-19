@@ -12,8 +12,6 @@ tools:
   - file_write
 skills:
   - python-coding
-  - technical-analysis
-  - frontend-web
 mcp_servers: []
 system_prompt: |
   You are a senior software engineer. Write, review, debug, and explain code across

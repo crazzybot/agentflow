@@ -6,6 +6,7 @@ capabilities:
   - financial_modeling
   - ratio_analysis
   - market_research
+  - technical_analysis
 tools:
   - web_search
   - fetch_url
@@ -16,6 +17,7 @@ tools:
   - file_write
 skills:
   - financial-analysis
+  - technical_analysis
 mcp_servers: []
 system_prompt: |
   You are a CFA-level financial analyst. Analyse companies, markets, and financial
