@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
-last_updated: 2026-07-18
-last_verified_sha: 1b25579
+last_updated: 2026-07-19
+last_verified_sha: c3fec38
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -51,24 +51,40 @@ variants so multiple API replicas can share a run — see
    via `_dispatch_subtask()` — enabling built-in tools (e.g. `download_document`) to
    trigger KB ingest without a direct reference to the engine. `_kb_dispatch_fn` is only
    armed when `KnowledgebaseAgent` is registered in `_agent_instances`.
-3. **Plan** — `create_plan()` in
-   [`orchestrator/planner.py`](../../src/agentflow/orchestrator/planner.py) builds an
-   in-memory `AgentManifest` (tools: `file_read`/`bash_exec_readonly`/`web_search`/`fetch_url`;
-   model: `settings.planner_model`; `max_iterations`: `settings.planner_max_iterations`) and
-   delegates to a one-shot `Agent.run()` call rather than maintaining its own ReAct loop.
-   The planner's system prompt instructs the model to explore the workspace (5-8 tool calls)
-   and then emit a JSON `ExecutionPlan` of `Subtask`s (agent id, instruction, `depends_on`,
-   optional `budget_fraction`). SSE events (tool calls, thought blocks) flow through the same
-   `StreamEmitter` infrastructure as every other agent, with `agent_id="planner"`. If the
-   agent's `output.structured` has no `"subtasks"` key, `create_plan()` raises `RuntimeError`
-   (no silent fallback); the engine catches it and emits `run:error`.
-4. **Decompose** — decomposition is now **lazy**: `engine.run()` no longer calls
-   `expand_plan()` eagerly. Instead, `_dispatch_subtask()` calls `decompose_subtask()`
+3. **Plan** — every run is auto-classified first: the `is_direct_task` result awaited
+   from step 2 (`_is_single_agent_task()`) decides whether the planner runs at all.
+   - If `True` (auto-classified as a single-agent task), `_make_direct_plan()` builds a
+     synthetic one-subtask `ExecutionPlan` that routes the whole task verbatim to
+     `settings.direct_agent_id` (`DIRECT_AGENT_ID` in `.env`) — `create_plan()` is skipped
+     entirely, so there's zero planner LLM overhead. `_make_direct_plan()` raises
+     `RuntimeError` if `direct_agent_id` is unset or does not name a registered agent (the
+     engine catches it and emits `run:error`), so **auto-classification requires
+     `DIRECT_AGENT_ID` to be configured** — without it, any task the classifier calls
+     `"direct"` fails the run rather than silently falling back to the planner.
+   - Otherwise, `create_plan()` in
+     [`orchestrator/planner.py`](../../src/agentflow/orchestrator/planner.py) builds an
+     in-memory `AgentManifest` (tools: `file_read`/`bash_exec_readonly`/`web_search`/`fetch_url`;
+     model: `settings.planner_model`; `max_iterations`: `settings.planner_max_iterations`) and
+     delegates to a one-shot `Agent.run()` call rather than maintaining its own ReAct loop.
+     The planner's system prompt instructs the model to explore the workspace (5-8 tool calls)
+     and then emit a JSON `ExecutionPlan` of `Subtask`s (agent id, instruction, `depends_on`,
+     optional `budget_fraction`). SSE events (tool calls, thought blocks) flow through the same
+     `StreamEmitter` infrastructure as every other agent, with `agent_id="planner"`. If the
+     agent's `output.structured` has no `"subtasks"` key, `create_plan()` raises `RuntimeError`
+     (no silent fallback); the engine catches it and emits `run:error`.
+
+   Either branch emits `plan:created` (message text distinguishes "Single-agent mode:
+   planner skipped (auto-classified)" from the subtask count).
+4. **Decompose** — gated by `settings.enable_decomposer` (`ENABLE_DECOMPOSER` in `.env`,
+   default `true`); setting it `false` skips this step entirely and every subtask runs
+   exactly as the planner (or direct-mode) produced it, with no extra ReAct loop. When
+   enabled, decomposition is **lazy**: `engine.run()` does not call `expand_plan()`
+   eagerly. Instead, `_dispatch_subtask()` calls `decompose_subtask()`
    for any manifest with a `decomposition_prompt` at dispatch time — after the subtask's
    `depends_on` are satisfied — so the decomposer sees the workspace in its completed
    state (see step 5 and the decomposer component entry below). The engine passes
    `task=ctx.task` so the decomposer has the full top-level task framing. `decompose_subtask()`
-   now returns `(list[Subtask], context: str)` where `context` is the synthesised
+   returns `(list[Subtask], context: str)` where `context` is the synthesised
    `<decomposer_context>` block the decomposer wrote before its JSON array. When non-empty,
    the engine prepends this block as `<workspace_context>…</workspace_context>` to every
    micro-task instruction (and to the original subtask instruction in the single-task

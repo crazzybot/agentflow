@@ -1,16 +1,14 @@
 ---
 title: Conventions & Patterns
-last_updated: 2026-07-15
-last_verified_sha: 17a27d3
+last_updated: 2026-07-19
+last_verified_sha: c3fec38
 sources:
   - pyproject.toml
   - src/agentflow/config.py
   - src/agentflow/logging_config.py
   - tests/
   - skills/python-coding/
-status: stale  # config.py drift from ENABLE_DECOMPOSER/direct_agent_id/AGENT_THINKING_EFFORT
-               # additions (commits 3557340..1b25579) — out of scope for the Claude-API
-               # review that last touched this doc; needs its own reconciliation pass.
+status: current
 ---
 
 # Conventions & Patterns

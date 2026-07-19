@@ -1,7 +1,7 @@
 ---
 title: Redis-Backed State Backend
-last_updated: 2026-07-15
-last_verified_sha: 17a27d3
+last_updated: 2026-07-19
+last_verified_sha: c3fec38
 sources:
   - src/agentflow/config.py
   - src/agentflow/core/redis_client.py
@@ -13,9 +13,7 @@ sources:
   - src/agentflow/orchestrator/stream_redis.py
   - src/agentflow/api/routes.py
   - src/agentflow/main.py
-status: stale  # config.py drift from ENABLE_DECOMPOSER/direct_agent_id/AGENT_THINKING_EFFORT
-               # additions (commits 3557340..1b25579) — out of scope for the Claude-API
-               # review that last touched this doc; needs its own reconciliation pass.
+status: current
 ---
 
 # Redis-Backed State Backend
