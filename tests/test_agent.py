@@ -4,7 +4,13 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 from anthropic.types import TextBlock, ThinkingBlock
 
-from agentflow.agents.agent import Agent, _with_message_cache_breakpoint, _parse_final_output
+from agentflow.agents.agent import (
+    Agent,
+    _format_upstream_context,
+    _parse_final_output,
+    _UPSTREAM_SUMMARY_INLINE_THRESHOLD,
+    _with_message_cache_breakpoint,
+)
 from agentflow.config import settings
 from agentflow.core.models import AgentManifest, AgentStatus, SSEEventType, TaskConstraints, TaskContext, TaskEnvelope
 
@@ -802,6 +808,51 @@ async def test_upstream_artifacts_included_in_initial_message():
     assert "<upstream_context>" in initial_text
     assert "src/models.py" in initial_text
     assert "Wrote models" in initial_text
+
+
+# ---------------------------------------------------------------------------
+# Upstream-context pointer-only injection for oversized summaries (Fix 2)
+# ---------------------------------------------------------------------------
+
+def test_small_upstream_summary_inlined_in_full():
+    """Summaries at or under the threshold are inlined verbatim — no more silent
+    hard-clipping at a fixed 500 chars regardless of actual size."""
+    summary = "x" * (_UPSTREAM_SUMMARY_INLINE_THRESHOLD - 1)
+    block = _format_upstream_context({"st_1": summary}, {})
+    assert summary in block
+    assert "Full output written to" not in block
+
+
+def test_oversized_upstream_summary_spills_to_file_with_pointer(tmp_path, monkeypatch):
+    """A summary over the threshold is spilled to disk via the same
+    write_overflow_file() mechanism as oversized tool results, instead of being
+    silently sliced with no indication anything was cut — this is the bug Fix 2
+    replaces (the old code did str(summary)[:500] with no marker at all)."""
+    monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path))
+
+    summary = "A" * 3_000 + "B" * 3_000  # well over the threshold
+    block = _format_upstream_context({"st_1": summary}, {})
+
+    assert "Full output written to" in block
+    assert ".tool_output/upstream_result_st_1.txt" in block
+    assert "A" * 100 in block  # head preview present
+    assert "B" * 100 in block  # tail preview present — not head-only
+
+    spilled = tmp_path / ".tool_output" / "upstream_result_st_1.txt"
+    assert spilled.exists()
+    assert spilled.read_text() == summary
+
+
+def test_upstream_context_still_lists_file_paths_alongside_spilled_summary(tmp_path, monkeypatch):
+    """Files already written by an upstream agent were always passed as paths,
+    never inlined — Fix 2 only changes the free-text summary side."""
+    monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path))
+
+    summary = "A" * 5_000
+    block = _format_upstream_context({"st_1": summary}, {"st_1": ["report.md"]})
+
+    assert "Files written:" in block
+    assert "report.md" in block
 
 
 @pytest.mark.asyncio

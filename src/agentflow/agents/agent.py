@@ -128,6 +128,15 @@ def _collect_written_paths(tool_use_blocks: list, tool_results: list[dict]) -> l
     ]
 
 
+# Upstream summaries at or under this size are inlined in full into every
+# downstream dependent's initial message. Above it, the summary is spilled to
+# disk and replaced with a preview + pointer instead — because this injection
+# happens once per DAG edge, inlining raw text here multiplies with graph
+# depth in a way a single agent's own tool-result cap (Fix 1) never sees. See
+# docs/context-optimization-plan.md, Fix 2.
+_UPSTREAM_SUMMARY_INLINE_THRESHOLD = 2_000
+
+
 def _format_upstream_context(
     prior_results: dict[str, Any],
     upstream_artifacts: dict[str, list[str]],
@@ -136,7 +145,11 @@ def _format_upstream_context(
 
     Combines text summaries from prior_results with file paths from
     upstream_artifacts so downstream agents know both what happened and
-    where the output files are.
+    where the output files are. A summary over
+    _UPSTREAM_SUMMARY_INLINE_THRESHOLD chars is spilled to disk via the same
+    write_overflow_file() mechanism used for oversized tool results (Fix 1)
+    rather than silently sliced — a downstream agent that needs the full
+    content can file_read the pointer path on demand.
     """
     if not prior_results and not upstream_artifacts:
         return ""
@@ -146,7 +159,10 @@ def _format_upstream_context(
         lines.append(f'Upstream task "{dep_id}":')
         summary = prior_results.get(dep_id, "")
         if summary:
-            lines.append(f"  Summary: {str(summary)[:500]}")
+            summary = str(summary)
+            if len(summary) > _UPSTREAM_SUMMARY_INLINE_THRESHOLD:
+                summary = write_overflow_file("upstream_result", dep_id, summary)
+            lines.append(f"  Summary: {summary}")
         paths = upstream_artifacts.get(dep_id, [])
         if paths:
             lines.append("  Files written:")

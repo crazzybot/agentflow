@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-07-21
-last_verified_sha: a4569d6
+last_verified_sha: ade963f
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -291,7 +291,17 @@ variants so multiple API replicas can share a run — see
   grows across iterations. `_format_upstream_context()` builds
   the `<upstream_context>` XML block injected into a downstream agent's initial user
   message, combining text summaries from `prior_results` with file paths from
-  `upstream_artifacts` so the agent knows both what happened and which files to read;
+  `upstream_artifacts` so the agent knows both what happened and which files to read.
+  Because this injection fires once per DAG edge (inlined text multiplies with graph
+  depth, unlike a single agent's own tool-result cap), each summary is capped
+  separately: at or under `_UPSTREAM_SUMMARY_INLINE_THRESHOLD` (2,000 chars) it's
+  inlined in full; above it, it's spilled to disk via the same `write_overflow_file()`
+  used for oversized tool results (`.tool_output/upstream_result_<dep_id>.txt`) and
+  replaced with a head+tail preview + pointer. This replaced a prior silent
+  `str(summary)[:500]` slice that clipped every summary at a fixed size with no
+  indication anything was cut and no way to recover the rest — see
+  `docs/context-optimization-plan.md`, Fix 2. `upstream_artifacts` paths were never
+  inlined (they're already just file paths) and are unaffected.
   `_parse_final_output()` splits the model's final text into
   `(structured: dict, prose: str)` — it handles raw JSON, markdown-fenced JSON (the
   common case where the model prepends a summary), and inline JSON without a fence,
