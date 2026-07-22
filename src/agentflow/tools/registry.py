@@ -22,6 +22,13 @@ class ToolDefinition:
     input_schema: dict[str, Any]
     handler: Callable[..., Awaitable[str]]
     impact: ToolImpact = ToolImpact.read_only
+    # Result-side context budget. When the handler's return value exceeds this,
+    # the caller (Agent._call_tool) writes the full result to a scratch file and
+    # replaces it with a head/tail preview + pointer, instead of blindly slicing
+    # the string. None means unbounded — reserve this for tools that already do
+    # their own structured pagination (e.g. file_read), so their result isn't
+    # double-truncated by a second, uncoordinated cap.
+    max_result_chars: int | None = 8_000
 
     def to_anthropic_param(self) -> dict[str, Any]:
         return {

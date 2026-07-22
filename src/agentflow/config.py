@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     # Max lines file_read returns in a single call (prevents context flooding)
     file_read_max_lines: int = 200
 
+    # Max chars file_read returns in a single call, as a backstop alongside
+    # file_read_max_lines for files with pathologically long lines (minified
+    # code, long log lines) that would otherwise blow past a reasonable
+    # response size while still under the line cap.
+    file_read_max_chars: int = 12_000
+
     # Max iterations the agentic planner may use for workspace exploration
     planner_max_iterations: int = 15
 

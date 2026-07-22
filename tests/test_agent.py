@@ -147,6 +147,73 @@ async def test_agent_tool_not_available_returns_error_message():
 
 
 # ---------------------------------------------------------------------------
+# Result-size budget: oversized tool_result spills to disk (Fix 1)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_oversized_tool_result_spills_to_file_with_pointer(tmp_path, monkeypatch):
+    """A tool result over its ToolDefinition.max_result_chars is written to
+    .tool_output/ and replaced with a pointer — never a blind slice — because
+    Agent._call_tool is the single choke point where tool_use_id is available
+    for a collision-safe filename."""
+    from agentflow.tools.registry import tool_registry
+
+    monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path))
+    tool_def = tool_registry.get("python_exec")
+    monkeypatch.setattr(tool_def, "max_result_chars", 50)
+
+    block = MagicMock()
+    block.id = "toolu_overflow1"
+    block.name = "python_exec"
+    block.input = {"code": "print('x' * 500)", "purpose": "test overflow"}
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    agent = Agent(_make_manifest(tools=["python_exec"]), MagicMock())
+    result = await agent._call_tool(block, [tool_def], emitter, turn_index=0)
+
+    content = result["content"]
+    assert "Full output written to" in content
+    assert ".tool_output/python_exec_toolu_overflow1.txt" in content
+
+    spilled = tmp_path / ".tool_output" / "python_exec_toolu_overflow1.txt"
+    assert spilled.exists()
+    assert "x" * 500 in spilled.read_text()
+
+
+@pytest.mark.asyncio
+async def test_tool_use_input_never_mutated_by_result_capping(tmp_path, monkeypatch):
+    """The assistant's own tool_use.input must stay untouched in message history —
+    only the tool_result (new info from the environment) may be capped. Editing a
+    past tool_use.input retroactively makes the model read its own prior request
+    as truncated, which it reads identically to a real mid-generation cutoff and
+    reacts to by redundantly retrying the call (see docs/context-optimization-plan.md)."""
+    from agentflow.tools.registry import tool_registry
+
+    monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path))
+    tool_def = tool_registry.get("python_exec")
+    monkeypatch.setattr(tool_def, "max_result_chars", 50)
+
+    original_input = {"code": "print('x' * 500)", "purpose": "test overflow"}
+    block = MagicMock()
+    block.id = "toolu_overflow2"
+    block.name = "python_exec"
+    block.input = dict(original_input)
+
+    emitter = MagicMock()
+    emitter.emit = MagicMock()
+
+    agent = Agent(_make_manifest(tools=["python_exec"]), MagicMock())
+    await agent._call_tool(block, [tool_def], emitter, turn_index=0)
+
+    # block.input (what becomes the assistant message's tool_use.input on replay)
+    # is exactly what was passed in — capping only ever touches the returned
+    # tool_result content, never the call's own arguments.
+    assert block.input == original_input
+
+
+# ---------------------------------------------------------------------------
 # tool_limits enforcement tests
 # ---------------------------------------------------------------------------
 

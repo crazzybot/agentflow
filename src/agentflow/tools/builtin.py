@@ -19,7 +19,14 @@ from agentflow.tools.registry import ToolDefinition, ToolImpact, tool_registry
 logger = logging.getLogger(__name__)
 
 _HTTP_HEADERS = {"User-Agent": "AgentFlow/0.1 (https://github.com/agentflow)"}
-_MAX_CONTENT = 8_000  # chars returned to the LLM
+
+# Where oversized tool results get spilled to disk. Deliberately separate from
+# any directory swept by _record_artifact — these are incidental tool output
+# (raw stdout, fetched pages), not run deliverables, and must not bleed into
+# downstream agents' upstream-context injection or the final report.
+_TOOL_OUTPUT_DIR = ".tool_output"
+_OVERFLOW_PREVIEW_HEAD = 1_000
+_OVERFLOW_PREVIEW_TAIL = 1_000
 
 
 # ---------------------------------------------------------------------------
@@ -49,12 +56,39 @@ def _safe_path(relative: str) -> Path | None:
     return target
 
 
-def _truncate(text: str, label: str = "") -> str:
-    if len(text) <= _MAX_CONTENT:
-        return text
-    omitted = len(text) - _MAX_CONTENT
-    suffix = f"\n… [{omitted} chars truncated{(' in ' + label) if label else ''}]"
-    return text[:_MAX_CONTENT] + suffix
+def write_overflow_file(tool_name: str, call_id: str, full_text: str) -> str:
+    """Spill an oversized tool result to a scratch file; return a pointer message.
+
+    Called from Agent._call_tool once a handler's result exceeds its
+    ToolDefinition.max_result_chars. Shows a head+tail preview (not just the
+    head) so an error or final result near the end of e.g. bash stdout isn't
+    hidden — and always names the tool_use_id in the filename so concurrent
+    tool calls (dispatched via asyncio.gather) can never collide.
+
+    Deliberately does NOT call _record_artifact: this file is recoverable via
+    file_read on demand, but must not be treated as a run deliverable.
+    """
+    ws = _workspace()
+    out_dir = ws / _TOOL_OUTPUT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe_call_id = re.sub(r"[^A-Za-z0-9_-]", "_", call_id)
+    rel_path = f"{_TOOL_OUTPUT_DIR}/{tool_name}_{safe_call_id}.txt"
+    (out_dir / f"{tool_name}_{safe_call_id}.txt").write_text(full_text, encoding="utf-8")
+
+    total = len(full_text)
+    if total <= _OVERFLOW_PREVIEW_HEAD + _OVERFLOW_PREVIEW_TAIL:
+        preview = full_text
+    else:
+        head = full_text[:_OVERFLOW_PREVIEW_HEAD]
+        tail = full_text[-_OVERFLOW_PREVIEW_TAIL:]
+        omitted = total - _OVERFLOW_PREVIEW_HEAD - _OVERFLOW_PREVIEW_TAIL
+        preview = f"{head}\n… [{omitted:,} chars omitted] …\n{tail}"
+
+    return (
+        f"[Result: {total:,} chars — showing first {_OVERFLOW_PREVIEW_HEAD:,} and last "
+        f"{_OVERFLOW_PREVIEW_TAIL:,}. Full output written to {rel_path} — use file_read "
+        f"on that path to page through it.]\n\n{preview}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +114,7 @@ async def _fetch_url(url: str) -> str:
                 if entry is not None:
                     title = (entry.findtext(f"{{{ns}}}title") or "").strip()
                     summary = " ".join((entry.findtext(f"{{{ns}}}summary") or "").split())
-                    return _truncate(f"**{title}**\n\n{summary}", label=url)
+                    return f"**{title}**\n\n{summary}"
             except Exception:
                 pass  # fall through to raw fetch on any error
 
@@ -88,7 +122,7 @@ async def _fetch_url(url: str) -> str:
         try:
             resp = await client.get(url, headers=_HTTP_HEADERS)
             resp.raise_for_status()
-            return _truncate(resp.text, label=url)
+            return resp.text
         except httpx.HTTPStatusError as exc:
             return f"HTTP {exc.response.status_code} for {url}"
         except httpx.RequestError as exc:
@@ -98,7 +132,9 @@ async def _fetch_url(url: str) -> str:
 tool_registry.register(ToolDefinition(
     name="fetch_url",
     description=(
-        "Fetch the raw text content of any URL (HTML, JSON, plain text). Returns up to 8 000 characters. "
+        "Fetch the raw text content of any URL (HTML, JSON, plain text). If the page is large, "
+        "a head/tail preview is returned along with a path to the full content — use file_read "
+        "on that path to page through the rest. "
         "arxiv.org/abs/ URLs are automatically resolved to title + abstract via the Atom API."
     ),
     input_schema={
@@ -232,6 +268,22 @@ def _numbered(lines: list[str], offset: int) -> str:
     return "".join(f"{offset + i + 1:4}: {line}" for i, line in enumerate(lines))
 
 
+def _write_preview_note(content: str) -> str:
+    """A short sanity-check snippet of *content* for a write confirmation message.
+
+    Deliberately small (300 chars) and explicitly labeled as a preview of
+    content that was already written in full — never a bare slice with an
+    ellipsis, which reads to the model as "the write was cut off" rather than
+    "here's a peek at what you just wrote". See docs/context-optimization-plan.md
+    for why that distinction matters: editing/truncating the model's own
+    generated tool input in a way that looks incomplete causes it to redundantly
+    retry the write.
+    """
+    if len(content) <= 300:
+        return f"(content written in full):\n{content}"
+    return f"(preview of the {len(content)} chars written in full — first 300 shown):\n{content[:300]}…"
+
+
 async def _file_read(
     path: str,
     start_line: int | None = None,
@@ -255,11 +307,20 @@ async def _file_read(
     total_lines = len(lines)
     limit = max_lines if max_lines is not None else settings.file_read_max_lines
 
+    char_limit = settings.file_read_max_chars
+
     if pattern is not None:
         blocks: list[str] = []
         seen: set[int] = set()
+        match_count = 0
+        shown_count = 0
+        acc_chars = 0
+        truncated = False
         for i, line in enumerate(lines):
             if re.search(pattern, line):
+                match_count += 1
+                if truncated:
+                    continue  # keep counting total matches, stop building output
                 lo = max(0, i - context_lines)
                 hi = min(total_lines, i + context_lines + 1)
                 new_indices = [j for j in range(lo, hi) if j not in seen]
@@ -268,10 +329,22 @@ async def _file_read(
                 seen.update(new_indices)
                 block_lines = lines[lo:hi]
                 rendered = _numbered(block_lines, lo) if include_line_numbers else "".join(block_lines)
-                blocks.append(f"--- match at line {i + 1} ---\n{rendered}")
+                block = f"--- match at line {i + 1} ---\n{rendered}"
+                if acc_chars + len(block) > char_limit and blocks:
+                    truncated = True
+                    continue
+                blocks.append(block)
+                shown_count += 1
+                acc_chars += len(block)
         if not blocks:
             return f"[total_lines={total_lines}]\nNo matches for pattern {pattern!r} in {path}"
-        return f"[total_lines={total_lines}]\n" + "\n".join(blocks)
+        header = f"[total_lines={total_lines}, matches={match_count}]"
+        if truncated:
+            header += (
+                f"  ← showing {shown_count} of {match_count} matches (size budget reached); "
+                "narrow the pattern or reduce context_lines to see more"
+            )
+        return header + "\n" + "\n".join(blocks)
 
     lo = max(0, (start_line - 1) if start_line is not None else 0)
     hi = min(total_lines, end_line if end_line is not None else total_lines)
@@ -281,6 +354,21 @@ async def _file_read(
         hi = lo + limit
 
     selected = lines[lo:hi]
+
+    # Apply char-budget cap on top of the line cap: some files have
+    # pathologically long lines (minified code, long log lines) that blow
+    # past a reasonable response size even while under max_lines. Always
+    # keep at least one line so a follow-up call makes forward progress.
+    prefix_overhead = 6 if include_line_numbers else 0  # "1234: " per line
+    acc_chars = 0
+    char_capped_at = len(selected)
+    for i, ln in enumerate(selected):
+        acc_chars += len(ln) + prefix_overhead
+        if acc_chars > char_limit and i > 0:
+            char_capped_at = i
+            break
+    selected = selected[:char_capped_at]
+
     from_line = lo + 1
     to_line = lo + len(selected)
     has_more = to_line < total_lines
@@ -355,11 +443,10 @@ async def _file_write(
             new_total = len(new_text.splitlines())
             new_line_count = len(block.splitlines()) if block else 0
             new_end = lo + new_line_count
-            preview = content[:3000] + ("…" if len(content) > 3000 else "")
             return (
                 f"Replaced lines {start_line}-{end_line} in {path} "
-                f"(file now {new_total} lines; new content at lines {lo + 1}-{new_end}):\n"
-                f"{preview}"
+                f"(file now {new_total} lines; new content at lines {lo + 1}-{new_end}) "
+                f"{_write_preview_note(content)}"
             )
 
         if mode == "replace_pattern":
@@ -394,11 +481,10 @@ async def _file_write(
             new_total = len(new_text.splitlines())
             new_line_count = len(block.splitlines()) if block else 0
             new_end = start_idx + 1 + new_line_count
-            preview = content[:3000] + ("…" if len(content) > 3000 else "")
             return (
                 f"Replaced content between lines {start_idx + 1} and {end_idx + 1} in {path} "
-                f"(file now {new_total} lines; new content at lines {start_idx + 2}-{new_end}):\n"
-                f"{preview}"
+                f"(file now {new_total} lines; new content at lines {start_idx + 2}-{new_end}) "
+                f"{_write_preview_note(content)}"
             )
 
         return f"Error: unknown mode {mode!r}"
@@ -413,11 +499,15 @@ tool_registry.register(ToolDefinition(
         "Read a file from the agent workspace. Path is relative to the workspace root. "
         "Always returns a metadata header '[from_line=X, to_line=Y, total_lines=Z]' followed "
         "by the file content with line numbers (use include_line_numbers=false to omit them). "
-        "At most max_lines lines are returned per call (default from settings, typically 200); "
-        "if the file is larger the header says 'use start_line=N to read more'. "
+        "At most max_lines lines are returned per call (default from settings, typically 200), "
+        "and the response is additionally capped by a total character budget for files with very "
+        "long lines; if the file is larger the header says 'use start_line=N to read more'. "
         "Use start_line/end_line to read a specific range (1-indexed, inclusive). "
-        "Use pattern (regex) to return matching lines plus context_lines of surrounding context. "
-        "Prefer this tool over bash cat/head/tail for reading files."
+        "Use pattern (regex) to return matching lines plus context_lines of surrounding context; "
+        "if there are more matches than fit the size budget, the header reports how many were "
+        "shown out of the total and suggests narrowing the pattern. "
+        "Prefer this tool over bash cat/head/tail for reading files — including for paging through "
+        "large tool outputs that other tools point you to on disk."
     ),
     input_schema={
         "type": "object",
@@ -434,6 +524,11 @@ tool_registry.register(ToolDefinition(
     },
     handler=_file_read,
     impact=ToolImpact.read_only,
+    # file_read already manages its own result budget via max_lines/file_read_max_chars
+    # with structured from_line/to_line pointers — the generic result cap must not
+    # double-truncate on top of that (it would desync the header's claimed to_line
+    # from what actually made it into the response).
+    max_result_chars=None,
 ))
 
 tool_registry.register(ToolDefinition(
@@ -502,7 +597,7 @@ async def _bash_exec(command: str, purpose: str, timeout_seconds: int = 30) -> s
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
         output = stdout.decode(errors="replace")
-        return f"exit_code={proc.returncode}\n{_truncate(output, label='stdout')}"
+        return f"exit_code={proc.returncode}\n{output}"
     except asyncio.TimeoutError:
         return f"Command timed out after {timeout_seconds}s"
     except Exception as exc:
@@ -629,7 +724,7 @@ async def _python_exec(code: str, purpose: str, timeout_seconds: int = 30) -> st
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
         output = stdout.decode(errors="replace")
-        return f"exit_code={proc.returncode}\n{_truncate(output, label='python output')}"
+        return f"exit_code={proc.returncode}\n{output}"
     except asyncio.TimeoutError:
         return f"Python exec timed out after {timeout_seconds}s"
     except Exception as exc:

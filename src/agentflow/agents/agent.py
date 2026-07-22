@@ -23,17 +23,13 @@ from agentflow.config import settings
 from agentflow.core.models import AgentManifest, AgentOutput, AgentResult, AgentStatus, IterationLimitAction, SSEEventType, TaskEnvelope
 from agentflow.llm import LLMClient, estimate_thinking_tokens
 from agentflow.tools import tool_registry
+from agentflow.tools.builtin import write_overflow_file
 from agentflow.tools.mcp_tools import mcp_session
 
 if TYPE_CHECKING:
     from agentflow.orchestrator.stream import StreamEmitter
 
 logger = logging.getLogger(__name__)
-
-# Web pages and large tool outputs can be arbitrarily long. Capping them here
-# prevents a single fetch_url call from dominating every subsequent loop iteration
-# (the full messages array is re-sent on each turn).
-_MAX_TOOL_RESULT_CHARS = 8_000
 
 # Injected as a user turn when on_iteration_limit == "finalize" and the agent
 # exhausts its iteration budget without producing a final text response.
@@ -711,11 +707,18 @@ class Agent:
             result_text = await tool_registry.execute(block.name, block.input) \
                 if block.name in {t.name for t in tool_registry.all()} \
                 else await tool_def.handler(**block.input)
+
+            max_chars = tool_def.max_result_chars
+            if max_chars is not None and len(result_text) > max_chars:
+                # Spill to disk + pointer rather than a blind slice. Only ever
+                # applied to the tool_result (new environment info given to the
+                # model) — never to the assistant's own tool_use.input, which
+                # must stay untouched in history or the model reads its own past
+                # request as truncated and redundantly retries it. See
+                # docs/context-optimization-plan.md.
+                result_text = write_overflow_file(block.name, block.id, result_text)
         else:
             result_text = f"Tool {block.name!r} is not available for this agent."
-
-        if len(result_text) > _MAX_TOOL_RESULT_CHARS:
-            result_text = result_text[:_MAX_TOOL_RESULT_CHARS] + "\n… [truncated]"
 
         logger.debug("[%s] Tool %r → %s…", self.agent_id, block.name, result_text[:80])
         emitter.emit(
