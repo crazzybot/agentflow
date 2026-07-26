@@ -576,6 +576,8 @@ class OrchestratorEngine:
             constraints=TaskConstraints(
                 budget_usd=task_budget_usd,
                 timeout_ms=settings.task_timeout_ms,
+                model_tier=subtask.model_tier,
+                thinking_effort=subtask.thinking_effort,
             ),
         )
 

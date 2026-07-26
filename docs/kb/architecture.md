@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
-last_updated: 2026-07-21
-last_verified_sha: ade963f
+last_updated: 2026-07-26
+last_verified_sha: d14223a
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -68,10 +68,12 @@ variants so multiple API replicas can share a run — see
      delegates to a one-shot `Agent.run()` call rather than maintaining its own ReAct loop.
      The planner's system prompt instructs the model to explore the workspace (5-8 tool calls)
      and then emit a JSON `ExecutionPlan` of `Subtask`s (agent id, instruction, `depends_on`,
-     optional `budget_fraction`). SSE events (tool calls, thought blocks) flow through the same
-     `StreamEmitter` infrastructure as every other agent, with `agent_id="planner"`. If the
-     agent's `output.structured` has no `"subtasks"` key, `create_plan()` raises `RuntimeError`
-     (no silent fallback); the engine catches it and emits `run:error`.
+     optional `budget_fraction`, and optional `model_tier`/`thinking_effort` cost-tuning
+     overrides — see the cost-tiering paragraph under the `Agent` component below). SSE events
+     (tool calls, thought blocks) flow through the same `StreamEmitter` infrastructure as every
+     other agent, with `agent_id="planner"`. If the agent's `output.structured` has no
+     `"subtasks"` key, `create_plan()` raises `RuntimeError` (no silent fallback); the engine
+     catches it and emits `run:error`.
 
    Either branch emits `plan:created` (message text distinguishes "Single-agent mode:
    planner skipped (auto-classified)" from the subtask count).
@@ -118,9 +120,11 @@ variants so multiple API replicas can share a run — see
    concurrently via `_checked_call_tool()` and feeding results back as `tool_result`
    messages. Before each tool dispatch, `_checked_call_tool()` consults the per-loop
    `tool_call_counts` dict against `AgentManifest.tool_limits` and short-circuits with
-   an error result if a per-tool call budget is exceeded. If
-   `AgentManifest.thinking_effort` (or, absent that, `settings.agent_thinking_effort`) is
-   non-empty, each `messages.create()` call includes adaptive thinking —
+   an error result if a per-tool call budget is exceeded. If the resolved
+   `thinking_effort` (see the `Agent` component's cost-tiering precedence below —
+   `envelope.constraints.thinking_effort` if the planner set one for this subtask, else
+   `AgentManifest.thinking_effort`, else `settings.agent_thinking_effort`) is non-empty,
+   each `messages.create()` call includes adaptive thinking —
    `thinking={"type": "adaptive", "display": "summarized"}` plus
    `output_config={"effort": thinking_effort}` — with no beta header (adaptive thinking
    auto-enables interleaved thinking on current-gen models). `display="summarized"` is
@@ -181,12 +185,27 @@ variants so multiple API replicas can share a run — see
   fraction normalization (equal split when omitted; renormalization when fractions do not
   sum to 1) runs on the parsed subtask list. If `output.structured` has no `"subtasks"`
   key, `create_plan()` raises `RuntimeError` — the engine emits `run:error`.
+  Each subtask may also carry optional `modelTier`/`thinkingEffort` cost-tuning fields
+  (`_COST_TUNING_INSTRUCTIONS` in the system prompt asks the planner to set these only
+  when a subtask's difficulty clearly diverges from its target agent's typical work, e.g.
+  downgrading a mechanical formatting pass to `"economy"`). `_validate_choice()` checks
+  each value against `_VALID_MODEL_TIERS`/`_VALID_THINKING_EFFORTS` and drops (logs a
+  warning, does not raise) anything the model gets wrong — these are optimization hints,
+  not plan-correctness-critical fields, so a malformed value falls back to the target
+  agent's own manifest default rather than failing the whole plan. Parsed onto
+  `Subtask.model_tier`/`Subtask.thinking_effort`, then forwarded into
+  `TaskConstraints.model_tier`/`.thinking_effort` by `_dispatch_subtask()` — see the
+  `Agent` component's cost-tiering paragraph below for how they're resolved.
 - **`orchestrator/decomposer.py` — `decompose_subtask()` / `expand_plan()`**: splits a
   subtask into micro-subtasks using the manifest's `decomposition_prompt`, run as a
   nested `Agent` ReAct loop. Invoked **lazily** inside `_dispatch_subtask()` (not
   eagerly at plan time) so the decomposer always sees completed upstream workspace state.
   `_DECOMPOSER_TOOLS` is `frozenset({"file_read", "bash_exec_readonly"})` — read-only
-  exploration only; no writes or arbitrary code execution. The decomposer manifest always
+  exploration only; no writes or arbitrary code execution. Its manifest hardcodes
+  `model_tier="economy"` — pure workspace exploration plus JSON splitting doesn't need the
+  target agent's own (often pricier) tier, and unlike the planner's cost-tuning fields this
+  decision is safe as an unconditional default rather than a per-call judgment call. The
+  decomposer manifest always
   uses `on_iteration_limit=IterationLimitAction.finalize` (set in `decompose_subtask()`),
   so when it exhausts its exploration iterations it receives a finalization prompt and
   makes one final tool-free LLM call to produce its output instead of silently returning
@@ -230,10 +249,24 @@ variants so multiple API replicas can share a run — see
   cross-replica streaming.
 - **`agents/agent.py` — `Agent`**: single generic, manifest-driven class for every agent
   type; runs the tool-calling loop against Claude, tracks token/cost usage per call,
-  and returns an `AgentResult` (`success`/`partial`/`failed`). The model used for each
-  API call is `manifest.model or settings.agent_model`, resolved once per loop as
-  `resolved_model`, so manifests (e.g. the planner) can declare a per-agent model
-  override via `AgentManifest.model`. Cost accounting uses `_pricing_for(resolved_model)`
+  and returns an `AgentResult` (`success`/`partial`/`failed`).
+  **Model/thinking-effort resolution (cost tiering)** — most to least specific:
+  1. `manifest.model` — an explicit raw model id is a hard ops-level pin; wins over
+     everything, including a planner-assigned override, since it represents a fixed
+     requirement (e.g. "this agent must always run on Opus").
+  2. `envelope.constraints.model_tier` / `.thinking_effort` — a planner-assigned
+     per-subtask-instance override (see `orchestrator/planner.py`'s cost-tuning fields
+     above), resolved to a model id via `settings.resolve_model_tier()`.
+  3. `manifest.model_tier` / `manifest.thinking_effort` — the agent's own declared
+     default tier/effort (e.g. `decompose_subtask()`'s hardcoded `"economy"`).
+  4. `settings.agent_model` / `settings.agent_thinking_effort` — the global fallback.
+  Named tiers (`"economy"` | `"standard"` | `"premium"`) are defined in `config.py` as
+  `model_tier_economy`/`_standard`/`_premium` and resolved by `settings.resolve_model_tier()`,
+  which returns `None` for an unset or unrecognised tier name (non-fatal — the caller
+  falls through to the next precedence level) rather than raising. Re-tiering an entire
+  fleet of manifests is then a three-setting `.env` change rather than editing every
+  manifest's raw `model` field. The resolved value is stored once per loop as
+  `resolved_model`. Cost accounting uses `_pricing_for(resolved_model)`
   — a small model-id-prefix pricing table (Opus/Sonnet-4.x/Haiku-4.5/Haiku-3 tiers) that
   falls back to the flat `settings.cost_per_1m_*` rates for unrecognised models — rather
   than always pricing at `agent_model`'s rate, so a manifest override to a different
@@ -243,9 +276,10 @@ variants so multiple API replicas can share a run — see
   `settings.cost_per_1m_*` directly. The loop dispatches
   tool calls through `_checked_call_tool()`, which enforces per-tool call budgets declared
   in `AgentManifest.tool_limits` by incrementing an in-loop counter and returning a hard
-  error result (without invoking the tool) when the limit is exceeded. When
-  `AgentManifest.thinking_effort` is set, adaptive extended thinking is enabled on every
-  LLM call at that effort level; thinking blocks are emitted as `agent:thought` SSE events
+  error result (without invoking the tool) when the limit is exceeded. When the resolved
+  `thinking_effort` is non-empty (manifest default or planner-assigned override — see the
+  cost-tiering precedence above), adaptive extended thinking is enabled on every LLM call
+  at that effort level; thinking blocks are emitted as `agent:thought` SSE events
   and kept in the message history for subsequent turns. **Iteration-limit behaviour** is controlled by
   `AgentManifest.on_iteration_limit` (`IterationLimitAction` enum in `core/models.py`):
   - `"stop"` (default) — return `AgentStatus.partial` immediately, as before.

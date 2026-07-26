@@ -19,6 +19,8 @@ def _make_manifest(
     tools: list[str] | None = None,
     tool_limits: dict | None = None,
     thinking_effort: str | None = None,
+    model: str | None = None,
+    model_tier: str | None = None,
 ) -> AgentManifest:
     return AgentManifest(
         agent_id="TestAgent",
@@ -29,16 +31,22 @@ def _make_manifest(
         system_prompt="You are a test agent. Return raw JSON: {\"result\": \"done\"}",
         tool_limits=tool_limits,
         thinking_effort=thinking_effort,
+        model=model,
+        model_tier=model_tier,
     )
 
 
-def _make_envelope(run_id: str = "run-1") -> TaskEnvelope:
+def _make_envelope(
+    run_id: str = "run-1",
+    model_tier: str | None = None,
+    thinking_effort: str | None = None,
+) -> TaskEnvelope:
     return TaskEnvelope(
         parent_run_id=run_id,
         agent_id="TestAgent",
         instruction="Do a test",
         context=TaskContext(),
-        constraints=TaskConstraints(),
+        constraints=TaskConstraints(model_tier=model_tier, thinking_effort=thinking_effort),
     )
 
 
@@ -876,3 +884,74 @@ async def test_no_prior_messages_injection():
     # Fresh start: only one user message
     assert len(call_messages) == 1
     assert call_messages[0]["role"] == "user"
+
+
+# ---------------------------------------------------------------------------
+# model_tier / thinking_effort resolution precedence
+# (envelope override > manifest value > settings default; manifest.model
+#  is a hard pin that always beats both tier sources)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_manifest_model_tier_resolves_to_configured_model():
+    """A manifest with no explicit `model` but a model_tier resolves via settings."""
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+
+    agent = Agent(_make_manifest(model_tier="economy"), mock_client)
+    await agent.run(_make_envelope(), MagicMock())
+
+    call_kwargs = mock_client.messages.create.call_args[1]
+    assert call_kwargs["model"] == settings.model_tier_economy
+
+
+@pytest.mark.asyncio
+async def test_envelope_model_tier_overrides_manifest_model_tier():
+    """A planner-assigned per-subtask model_tier wins over the manifest's own tier."""
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+
+    agent = Agent(_make_manifest(model_tier="economy"), mock_client)
+    await agent.run(_make_envelope(model_tier="premium"), MagicMock())
+
+    call_kwargs = mock_client.messages.create.call_args[1]
+    assert call_kwargs["model"] == settings.model_tier_premium
+
+
+@pytest.mark.asyncio
+async def test_explicit_manifest_model_beats_tier_overrides():
+    """An explicit manifest.model is a hard pin — it wins over both tier sources."""
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+
+    agent = Agent(_make_manifest(model="claude-pinned-model", model_tier="economy"), mock_client)
+    await agent.run(_make_envelope(model_tier="premium"), MagicMock())
+
+    call_kwargs = mock_client.messages.create.call_args[1]
+    assert call_kwargs["model"] == "claude-pinned-model"
+
+
+@pytest.mark.asyncio
+async def test_unrecognised_model_tier_falls_back_to_agent_model():
+    """An unknown tier name (e.g. a typo) is non-fatal — falls back to settings.agent_model."""
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+
+    agent = Agent(_make_manifest(model_tier="deluxe"), mock_client)
+    await agent.run(_make_envelope(), MagicMock())
+
+    call_kwargs = mock_client.messages.create.call_args[1]
+    assert call_kwargs["model"] == settings.agent_model
+
+
+@pytest.mark.asyncio
+async def test_envelope_thinking_effort_overrides_manifest_default():
+    """A planner-assigned per-subtask thinking_effort wins over the manifest's own default."""
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+
+    agent = Agent(_make_manifest(thinking_effort="low"), mock_client)
+    await agent.run(_make_envelope(thinking_effort="max"), MagicMock())
+
+    call_kwargs = mock_client.messages.create.call_args[1]
+    assert call_kwargs["output_config"]["effort"] == "max"

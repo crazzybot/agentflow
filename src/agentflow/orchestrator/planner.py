@@ -28,6 +28,27 @@ logger = logging.getLogger(__name__)
 # Tools the planner is allowed to call during its exploration phase.
 _PLANNER_TOOLS = ["file_read", "bash_exec_readonly", "web_search", "fetch_url"]
 
+_VALID_MODEL_TIERS = {"economy", "standard", "premium"}
+_VALID_THINKING_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+
+
+def _validate_choice(value: str | None, allowed: set[str], field_name: str, subtask_id: str) -> str | None:
+    """Return *value* if it's in *allowed*, else None (logged, non-fatal).
+
+    These are optimization hints, not correctness-critical fields — a malformed or
+    invalid value from the planner should silently fall back to the target agent's
+    own manifest default rather than failing the whole plan.
+    """
+    if value is None:
+        return None
+    if value not in allowed:
+        logger.warning(
+            "[planner] Subtask %s: ignoring invalid %s %r (allowed: %s)",
+            subtask_id, field_name, value, sorted(allowed),
+        )
+        return None
+    return value
+
 _SYSTEM_PROMPT_BASE = """\
 You are an orchestration planner. You have read-only tools to explore the workspace
 before you commit to a plan.
@@ -86,6 +107,39 @@ Context inheritance — critical when writing downstream instructions:
 """
 
 
+_COST_TUNING_INSTRUCTIONS = """
+Cost/quality tuning — optional, omit for the common case:
+Each subtask MAY include "modelTier" and/or "thinkingEffort" fields that override the
+target agent's own manifest default for THIS ONE subtask instance only:
+- "modelTier": "economy" | "standard" | "premium" — shifts which model tier serves this
+  subtask. Use "economy" for mechanical, low-reasoning work (reformatting, simple
+  extraction, checklist verification) even when the target agent's own work is usually
+  more demanding. Use "premium" only for an unusually hard instance of normally-simple
+  work. Never use "economy" for a subtask whose output quality matters to the final
+  report (financial figures, code correctness, user-facing prose) — the target agent's
+  default tier already fits that.
+- "thinkingEffort": "low" | "medium" | "high" | "xhigh" | "max" — overrides the target
+  agent's default reasoning effort for this subtask instance.
+Omit both fields on most subtasks — the target agent's manifest default already fits its
+typical work. Only set them when this specific instance's difficulty clearly diverges
+from what that agent normally handles.
+The JSON schema with both optional fields:
+{
+  "subtasks": [
+    {
+      "id": "st_1",
+      "agentId": "AgentId",
+      "instruction": "...",
+      "dependsOn": [],
+      "expectedOutput": "...",
+      "modelTier": "economy",
+      "thinkingEffort": "low"
+    }
+  ]
+}
+"""
+
+
 _BUDGET_ALLOCATION_INSTRUCTIONS = """
 Budget allocation:
 A total run budget in USD has been allocated for this task. Each subtask must include a
@@ -121,7 +175,7 @@ async def create_plan(
     user_context: dict | None = None,
 ) -> ExecutionPlan:
     # Build system prompt
-    system_prompt = _SYSTEM_PROMPT_BASE
+    system_prompt = _SYSTEM_PROMPT_BASE + _COST_TUNING_INSTRUCTIONS
     if budget_usd is not None:
         system_prompt += _BUDGET_ALLOCATION_INSTRUCTIONS
 
@@ -194,6 +248,10 @@ async def create_plan(
                 depends_on=st.get("dependsOn", []),
                 expected_output=st.get("expectedOutput", ""),
                 budget_fraction=st.get("budgetFraction"),
+                model_tier=_validate_choice(st.get("modelTier"), _VALID_MODEL_TIERS, "modelTier", st["id"]),
+                thinking_effort=_validate_choice(
+                    st.get("thinkingEffort"), _VALID_THINKING_EFFORTS, "thinkingEffort", st["id"]
+                ),
             )
             for st in plan_data["subtasks"]
         ]

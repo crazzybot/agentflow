@@ -85,6 +85,10 @@ async def decompose_subtask(
         system_prompt=manifest.decomposition_prompt or "",  # guaranteed non-None at call site
         max_iterations=settings.decomposer_max_iterations,
         on_iteration_limit=IterationLimitAction.finalize,
+        # Read-only exploration + JSON splitting — no domain reasoning worth the
+        # target agent's own (often premium) tier. Economy tier is cheap enough that
+        # this decision can be a hardcoded default rather than a setting.
+        model_tier="economy",
     )
 
     instruction_parts = []

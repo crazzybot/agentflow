@@ -44,7 +44,12 @@ class AgentManifest(BaseModel):
     system_prompt: str
     decomposition_prompt: str | None = None
     fallback_for: list[str] = Field(default_factory=list)
-    model: str | None = None  # model override; None → settings.agent_model
+    model: str | None = None  # explicit model-id override; wins over model_tier and settings.agent_model
+    # Named cost tier ("economy" | "standard" | "premium"), resolved to a model id via
+    # settings.resolve_model_tier(). Lets a whole fleet of manifests be re-tiered by
+    # changing three settings instead of editing every manifest's raw model id. Ignored
+    # when `model` is set.
+    model_tier: str | None = None
     max_concurrency: int = 3
     max_iterations: int | None = None  # None → fall back to settings.agent_max_iterations
     tool_limits: dict[str, int] | None = None  # per-task call budgets e.g. {"fetch_url": 5}
@@ -63,6 +68,11 @@ class AgentManifest(BaseModel):
 class TaskConstraints(BaseModel):
     budget_usd: float | None = None  # per-task budget; None → use token/iteration fallbacks
     timeout_ms: int = 300_000
+    # Planner-assigned overrides for this specific subtask instance (from Subtask.model_tier /
+    # Subtask.thinking_effort). Take precedence over the target agent's manifest defaults —
+    # see Agent._agentic_loop's resolution order — but not over a manifest's explicit `model`.
+    model_tier: str | None = None
+    thinking_effort: str | None = None
 
 
 class TaskContext(BaseModel):
@@ -150,6 +160,13 @@ class Subtask(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     expected_output: str = ""
     budget_fraction: float | None = None  # share of the total run budget for this subtask
+    # Optional per-subtask overrides the planner may set when it judges this specific
+    # instance warrants a different cost/quality trade-off than the target agent's
+    # manifest default (e.g. downgrading a mechanical formatting pass, or raising effort
+    # for an unusually hard instance of a normally-simple agent). None → agent manifest
+    # default applies unchanged. See Agent._agentic_loop for resolution order.
+    model_tier: str | None = None  # "economy" | "standard" | "premium"
+    thinking_effort: str | None = None  # "low" | "medium" | "high" | "xhigh" | "max"
 
 
 class ExecutionPlan(BaseModel):

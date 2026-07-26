@@ -9,6 +9,15 @@ class Settings(BaseSettings):
     agent_model: str = "claude-sonnet-5"
     reporter_model: str = "claude-haiku-4-5-20251001"
 
+    # Named cost tiers, resolved by AgentManifest.model_tier / Subtask.model_tier via
+    # resolve_model_tier() below. Re-tiering a whole fleet of agents (e.g. swapping which
+    # model "premium" points at) is then one env var change instead of editing every
+    # manifest's raw `model` field. `standard` intentionally mirrors agent_model's default
+    # so leaving model_tier unset and setting model_tier="standard" behave identically.
+    model_tier_economy: str = "claude-haiku-4-5-20251001"
+    model_tier_standard: str = "claude-sonnet-5"
+    model_tier_premium: str = "claude-opus-4-8"
+
     task_timeout_ms: int = 3_600_000  # 1 hour — budget exhaustion is the real limiter
     task_max_retries: int = 1
 
@@ -77,7 +86,7 @@ class Settings(BaseSettings):
     # exact equivalent of the old per-agent token-budget knob, but effort still
     # lets manifests ask for deeper (higher-effort) reasoning than the default.
     # Set to "" (empty string) to disable extended thinking globally.
-    agent_thinking_effort: str = "high"
+    agent_thinking_effort: str = ""
 
     # How long (seconds) the engine waits for human input before timing out and
     # accepting the partial result.  Default: 30 minutes.
@@ -93,6 +102,19 @@ class Settings(BaseSettings):
     redis_key_ttl: int = 86_400
     # Maximum connections in the shared Redis pool.
     redis_max_connections: int = 50
+
+    def resolve_model_tier(self, tier: str | None) -> str | None:
+        """Resolve a named cost tier to a model id, or None if *tier* is unset/unrecognised.
+
+        Callers treat None as "no override" and fall back to their own default —
+        an unrecognised tier name (e.g. a typo in a manifest or a planner-emitted
+        value) is intentionally non-fatal for the same reason.
+        """
+        return {
+            "economy": self.model_tier_economy,
+            "standard": self.model_tier_standard,
+            "premium": self.model_tier_premium,
+        }.get(tier or "")
 
 
 settings = Settings()

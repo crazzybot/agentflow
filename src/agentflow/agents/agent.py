@@ -437,12 +437,29 @@ class Agent:
         iteration = 0
         tool_call_counts: dict[str, int] = {}
         tool_limits: dict[str, int] = self.manifest.tool_limits or {}
-        thinking_effort = self.manifest.thinking_effort or settings.agent_thinking_effort or None
+        # Resolution order (most to least specific):
+        #   1. envelope.constraints — a planner-assigned override for this one subtask
+        #      instance (Subtask.thinking_effort / Subtask.model_tier, see planner.py).
+        #   2. manifest — the agent's own declared default.
+        #   3. settings — the global fallback.
+        # model_tier is a *soft* knob: manifest.model, an explicit raw model id, always
+        # wins over both tier sources since it represents a hard ops-level pin.
+        thinking_effort = (
+            envelope.constraints.thinking_effort
+            or self.manifest.thinking_effort
+            or settings.agent_thinking_effort
+            or None
+        )
 
         # Model is fixed for the lifetime of this loop — resolve pricing once so
         # both the budget→max_tokens conversion and the per-call cost accounting
         # below use the rate for the model actually being called.
-        resolved_model = self.manifest.model or settings.agent_model
+        resolved_model = (
+            self.manifest.model
+            or settings.resolve_model_tier(envelope.constraints.model_tier)
+            or settings.resolve_model_tier(self.manifest.model_tier)
+            or settings.agent_model
+        )
         model_input_price, model_output_price, model_thinking_price, model_cache_write_price, model_cache_read_price = _pricing_for(resolved_model)
 
         while True:

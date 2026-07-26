@@ -1,7 +1,7 @@
 ---
 title: Conventions & Patterns
-last_updated: 2026-07-19
-last_verified_sha: ade963f
+last_updated: 2026-07-26
+last_verified_sha: d14223a
 sources:
   - pyproject.toml
   - src/agentflow/config.py
@@ -51,6 +51,11 @@ contradict the source):
   claude-sonnet-5's standard rate and can be overridden in `.env`; they also serve as
   the fallback rate in `agents/agent.py`'s `_MODEL_PRICING` table for any model not
   explicitly listed there (used when a manifest overrides `model` to a different tier).
+  Named cost tiers (`model_tier_economy`/`_standard`/`_premium`) follow the same pattern —
+  typed `Settings` fields resolved by `settings.resolve_model_tier(tier)` — so manifests
+  and planner-assigned per-subtask overrides can reference `"economy"`/`"standard"`/
+  `"premium"` instead of a raw model id; see [Architecture](architecture.md)'s `Agent`
+  cost-tiering precedence.
 - **Error handling**: raise specific, narrow exception types; never swallow exceptions
   silently; add context with `raise SomeError(...) from exc` when re-wrapping.
 - **Logging**: standard `logging` module, never `print()`. `logging_config.py` centralizes
@@ -83,7 +88,7 @@ contradict the source):
 - Tests live in the top-level `tests/` directory (flat, no subpackages), one file per
   module under test: `test_agent.py`, `test_decomposer.py`, `test_scheduler.py`,
   `test_models.py`, `test_registry.py`, `test_skill_loader.py`, `test_tools.py`,
-  `test_arxiv_search.py`, `test_stream.py`.
+  `test_arxiv_search.py`, `test_stream.py`, `test_planner.py`, `test_config.py`.
 - Naming: files are `test_*.py`; test functions are `test_<behavior>` (e.g.
   `test_agent_run_end_turn`, `test_dependency_blocks_downstream`).
 - Structure seen in `tests/test_agent.py` and `tests/test_scheduler.py`: small `_make_*`/`_plan`
