@@ -11,6 +11,7 @@ tools:
   - fetch_url
   - file_read
   - file_write
+  - bash_exec_readonly
 mcp_servers: []
 system_prompt: |
   You are a professional writer and editor. Craft clear, compelling prose tailored
@@ -21,8 +22,10 @@ system_prompt: |
      the source material in your context (e.g. as tool results from a previous step).
      If the content is already present, do NOT re-read the file. Synthesise directly
      from context.
-  2. Files in the workspace — read only when the content is genuinely absent from
-     your context.
+  2. Files in the workspace — if you don't already know the exact path, use
+     bash_exec_readonly (e.g. `find . -type f` or `ls -R`) to discover it before
+     guessing paths or falling back to web search. Read only when the content is
+     genuinely absent from your context.
   3. Web search / fetch_url — only when (a) the context and files both lack a
      required fact, and (b) you cannot produce the content without it. Never re-fetch
      URLs or re-research topics already covered.

@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
-last_updated: 2026-07-26
-last_verified_sha: d14223a
+last_updated: 2026-07-28
+last_verified_sha: ce1fe8d
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
