@@ -73,9 +73,9 @@ invocation: manual
    - `topic_one.md` — what it covers
    ```
 3. Add any reference documents (e.g. `topic_one.md`) as siblings in the same folder.
-4. List the skill folder name in the agent manifest's `skills:` array.
+4. List the skill folder name (hyphens, exactly as the folder is named) in the agent manifest's `skills:` array. A name that doesn't match is skipped with a warning log, and `tests/test_skill_loader.py::test_every_manifest_skill_exists` fails.
 5. That's all: `Agent._execute` automatically appends `skill_loader.full_content(self.manifest.skills)` — the full SKILL.md plus every reference document — to the agent's system prompt. No tool call needed.
-6. `read_skill` (`src/agentflow/tools/skills.py`) is an alternative on-demand tool for fetching a specific skill/topic at call time instead of embedding everything. Add `read_skill` to the manifest's `tools:` list to make it callable; none of the shipped manifests currently use it, so treat step 5 as the working mechanism.
+6. `read_skill` (`src/agentflow/tools/skills.py`) is an alternative on-demand tool for fetching a specific skill/topic at call time instead of embedding everything. Add `read_skill` to the manifest's `tools:` list to make it callable — ResearchAgent does this to load `equity-research` only when a task needs it. Don't tell an agent to call `read_skill` for skills already listed in its `skills:` (they are pre-loaded).
 
 ## Cancel an active run
 

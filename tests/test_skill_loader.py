@@ -69,3 +69,27 @@ def test_full_content_says_no_read_skill_needed():
         content = loader.full_content(["my-skill"])
         assert "read_skill" in content
         assert "no need to call" in content
+
+
+def test_full_content_warns_on_invalid_or_missing_skill(caplog):
+    with tempfile.TemporaryDirectory() as tmp:
+        loader = SkillLoader(tmp)
+        with caplog.at_level("WARNING"):
+            content = loader.full_content(["bad_name", "missing-skill"])
+    assert "bad_name" not in content
+    assert "not a valid skill name" in caplog.text
+    assert "missing-skill" in caplog.text
+
+
+def test_every_manifest_skill_exists():
+    """Each skill a manifest declares must resolve to a skills/ folder — a typo
+    (e.g. an underscore) otherwise silently drops the skill from the agent."""
+    import yaml
+
+    repo = Path(__file__).resolve().parent.parent
+    for manifest_path in sorted((repo / "manifests").glob("*.yaml")):
+        manifest = yaml.safe_load(manifest_path.read_text())
+        for skill in manifest.get("skills") or []:
+            assert (repo / "skills" / skill / "SKILL.md").exists(), (
+                f"{manifest_path.name}: skill {skill!r} not found in skills/"
+            )

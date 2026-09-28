@@ -39,6 +39,26 @@ def estimate_thinking_tokens(content: list) -> int:
     )
 
 
+# Model-id prefixes that accept adaptive thinking (`thinking={"type": "adaptive"}`)
+# and `output_config.effort`. Haiku 4.5 and older models reject both with a 400, so
+# callers must not send them there — e.g. when the "economy" tier resolves to Haiku.
+_ADAPTIVE_THINKING_PREFIXES = (
+    "claude-fable-",
+    "claude-mythos-",
+    "claude-opus-5",
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-sonnet-5",
+    "claude-sonnet-4-6",
+)
+
+
+def supports_adaptive_thinking(model: str) -> bool:
+    """Return True if *model* accepts adaptive thinking and ``output_config.effort``."""
+    return model.startswith(_ADAPTIVE_THINKING_PREFIXES)
+
+
 # ---------------------------------------------------------------------------
 # Usage stats
 # ---------------------------------------------------------------------------

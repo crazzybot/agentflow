@@ -398,8 +398,9 @@ async def test_thinking_never_uses_betas():
 
 
 @pytest.mark.asyncio
-async def test_thinking_skipped_when_max_tokens_too_tight():
-    """Thinking is skipped for an iteration whose budget-derived max_tokens can't spare headroom."""
+async def test_thinking_downgraded_to_low_effort_when_max_tokens_too_tight():
+    """A too-tight max_tokens drops the thinking config but sends effort=low — omitting
+    effort entirely would let Sonnet 5 / Opus 5+ think at their default "high" effort."""
     mock_client = MagicMock()
     mock_client.messages.create = AsyncMock(return_value=_mock_response())
 
@@ -412,7 +413,7 @@ async def test_thinking_skipped_when_max_tokens_too_tight():
     call_kwargs = mock_client.messages.create.call_args[1]
     assert call_kwargs["max_tokens"] < 1024
     assert "thinking" not in call_kwargs
-    assert "output_config" not in call_kwargs
+    assert call_kwargs["output_config"] == {"effort": "low"}
 
 
 @pytest.mark.asyncio
@@ -955,3 +956,73 @@ async def test_envelope_thinking_effort_overrides_manifest_default():
 
     call_kwargs = mock_client.messages.create.call_args[1]
     assert call_kwargs["output_config"]["effort"] == "max"
+
+
+# ---------------------------------------------------------------------------
+# Adaptive-thinking model guard, pricing table, thinking fallback
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_thinking_not_sent_to_model_without_adaptive_thinking():
+    """Haiku 4.5 rejects adaptive thinking/effort — e.g. a high-effort agent re-tiered to economy."""
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+
+    agent = Agent(_make_manifest(thinking_effort="high", model="claude-haiku-4-5-20251001"), mock_client)
+    await agent.run(_make_envelope(), MagicMock())
+
+    call_kwargs = mock_client.messages.create.call_args[1]
+    assert "thinking" not in call_kwargs
+    assert "output_config" not in call_kwargs
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("claude-sonnet-5", (2.0, 10.0, 10.0, 2.5, 0.2)),
+        ("claude-opus-5-5", (4.0, 20.0, 20.0, 5.0, 0.2)),
+        ("claude-opus-5", (5.0, 25.0, 25.0, 6.25, 0.5)),
+        ("claude-opus-4-8", (5.0, 25.0, 25.0, 6.25, 0.5)),
+        ("claude-sonnet-4-6", (3.0, 15.0, 15.0, 3.75, 0.3)),
+        ("claude-haiku-4-5-20251001", (1.0, 5.0, 5.0, 1.25, 0.1)),
+    ],
+)
+def test_pricing_for_known_models(model, expected):
+    from agentflow.agents.agent import _pricing_for
+
+    assert _pricing_for(model) == pytest.approx(expected)
+
+
+def test_pricing_for_unknown_model_falls_back_to_settings():
+    from agentflow.agents.agent import _pricing_for
+
+    assert _pricing_for("some-future-model") == (
+        settings.cost_per_1m_input_tokens,
+        settings.cost_per_1m_output_tokens,
+        settings.cost_per_1m_thinking_tokens,
+        settings.cost_per_1m_cache_write_tokens,
+        settings.cost_per_1m_cache_read_tokens,
+    )
+
+
+@pytest.mark.asyncio
+async def test_final_text_falls_back_to_last_thinking_block_once():
+    """With no text block, the final output is the last thinking block — not duplicated."""
+    response = MagicMock()
+    response.stop_reason = "end_turn"
+    response.content = [
+        ThinkingBlock(type="thinking", thinking="first thought", signature="s1"),
+        ThinkingBlock(type="thinking", thinking="final conclusion", signature="s2"),
+    ]
+    response.usage.input_tokens = 100
+    response.usage.output_tokens = 20
+    response.usage.cache_creation_input_tokens = 0
+    response.usage.cache_read_input_tokens = 0
+
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=response)
+
+    agent = Agent(_make_manifest(thinking_effort="high", model="claude-sonnet-5"), mock_client)
+    result = await agent.run(_make_envelope(), MagicMock())
+
+    assert result.output.text == "final conclusion"

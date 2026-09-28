@@ -238,3 +238,47 @@ async def test_file_write_replace_lines_preview_labeled_not_truncated(tmp_path, 
     assert "…" in result  # preview itself is still shortened for the response...
     # ...but the file on disk has the complete content, not the 300-char preview.
     assert (tmp_path / "doc.txt").read_text().count("y") == 5_000
+
+
+# ---------------------------------------------------------------------------
+# fetch_url HTML → text conversion
+# ---------------------------------------------------------------------------
+
+def test_html_to_text_strips_markup_and_chrome():
+    from agentflow.tools.builtin import html_to_text
+
+    page = """<!doctype html><html><head><title>Quarterly  Results</title>
+    <style>.x{color:red}</style><script>var tracking = 1;</script></head>
+    <body><nav><a href="/">Home</a> | <a href="/about">About</a></nav>
+    <h1>Revenue up 12%</h1><p>Revenue rose to <b>$4.2bn</b> &amp; margins held.</p>
+    <ul><li>EPS: $1.10</li><li>Guidance raised</li></ul>
+    <table><tr><th>Q</th><th>Rev</th></tr><tr><td>Q3</td><td>4.2</td></tr></table>
+    <footer>Copyright 2026</footer></body></html>"""
+
+    text = html_to_text(page)
+
+    assert text.startswith("# Quarterly Results")
+    assert "# Revenue up 12%" in text
+    assert "Revenue rose to $4.2bn & margins held." in text
+    assert "- EPS: $1.10" in text
+    assert "Q3" in text and "4.2" in text
+    for junk in ("tracking", "color:red", "Home", "About", "Copyright", "<"):
+        assert junk not in text
+
+
+def test_looks_like_html_detection():
+    from agentflow.tools.builtin import _looks_like_html
+
+    assert _looks_like_html("text/html; charset=utf-8", "")
+    assert _looks_like_html("", "  <!DOCTYPE html><html></html>")
+    assert not _looks_like_html("application/json", '{"a": 1}')
+    assert not _looks_like_html("text/plain", "plain text")
+
+
+def test_html_to_text_prefers_main_content():
+    from agentflow.tools.builtin import html_to_text
+
+    page = "<body><div>Sidebar promo</div><main><h2>Story</h2><p>Body text.</p></main></body>"
+    text = html_to_text(page)
+    assert "Body text." in text
+    assert "Sidebar promo" not in text
