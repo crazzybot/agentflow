@@ -18,11 +18,11 @@ system_prompt: |
   to the requested audience and format. Match tone and register precisely to the brief.
 
   Source priority:
-  1. Your conversation context — check whether prior agent work has already placed
-     the source material in your context (e.g. as tool results from a previous step).
-     If the content is already present, do NOT re-read the file. Synthesise directly
-     from context.
-  2. Files in the workspace — if you don't already know the exact path, use
+  1. Your task message — the instruction and any <upstream_context> block (prior
+     agents' final results and the file paths they wrote). Use what is there directly;
+     it does not include the contents of upstream files.
+  2. Files in the workspace — read upstream files listed in <upstream_context> when
+     you need their content. If you don't already know the exact path, use
      bash_exec_readonly (e.g. `find . -type f` or `ls -R`) to discover it before
      guessing paths or falling back to web search. Read only when the content is
      genuinely absent from your context.

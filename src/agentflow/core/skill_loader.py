@@ -184,9 +184,14 @@ class SkillLoader:
         ]
         for skill_name in skill_names:
             if not _is_valid_skill_name(skill_name):
+                logger.warning(
+                    "Skill %r is not a valid skill name (must match [a-z0-9-]+) — not loaded",
+                    skill_name,
+                )
                 continue
             skill_dir = self._skill_dir(skill_name)
             if not skill_dir.exists():
+                logger.warning("Skill %r not found in %s — not loaded", skill_name, self._dir)
                 continue
             sections.append(f"\n### {skill_name}")
             skill_md = skill_dir / "SKILL.md"

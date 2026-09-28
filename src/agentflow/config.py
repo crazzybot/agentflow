@@ -7,7 +7,17 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     planner_model: str = "claude-sonnet-5"
     agent_model: str = "claude-sonnet-5"
+    # Cheap model for the small bookkeeping calls (run naming, direct/plan routing).
     reporter_model: str = "claude-haiku-4-5-20251001"
+
+    # Final report synthesis — the user-facing output of every run, so it defaults to
+    # the "standard" tier rather than reporter_model. Set REPORT_MODEL to pin a raw
+    # model id instead (wins over the tier).
+    report_model: str = ""
+    report_model_tier: str = "standard"
+    report_max_tokens: int = 16_000
+    # Reasoning effort for report synthesis; ignored for models without adaptive thinking.
+    report_thinking_effort: str = "low"
 
     # Named cost tiers, resolved by AgentManifest.model_tier / Subtask.model_tier via
     # resolve_model_tier() below. Re-tiering a whole fleet of agents (e.g. swapping which
@@ -38,20 +48,16 @@ class Settings(BaseSettings):
     capture_events: bool = False
     capture_results: bool = False
 
-    # Pricing (USD per 1M tokens) — defaults match claude-sonnet-5's standard rate.
-    # (Sonnet 5 has an introductory rate of $2.00/$10.00 through 2026-08-31; not
-    # hardcoded here since it would silently under-price after that date — override
-    # via .env if you want to track the introductory rate while it's active.)
-    # These are also the fallback rates for any model not in agents/agent.py's
-    # _MODEL_PRICING table (used when a manifest overrides `model` to another tier).
-    cost_per_1m_input_tokens: float = 3.0
-    cost_per_1m_output_tokens: float = 15.0
-    cost_per_1m_cache_write_tokens: float = 3.75
-    cost_per_1m_cache_read_tokens: float = 0.30
-    # Extended thinking tokens are output tokens billed separately.
-    # Defaults to the output token rate (correct for current Anthropic pricing).
-    # Override via COST_PER_1M_THINKING_TOKENS in .env if the model charges differently.
-    cost_per_1m_thinking_tokens: float = 15.0
+    # Pricing (USD per 1M tokens) — defaults match claude-sonnet-5's standard rate
+    # ($2/$10; the launch "introductory" rate became permanent on 2026-09-01).
+    # These are only the fallback rates for a model not in agents/agent.py's
+    # _MODEL_PRICING table — every listed model is priced from that table.
+    cost_per_1m_input_tokens: float = 2.0
+    cost_per_1m_output_tokens: float = 10.0
+    cost_per_1m_cache_write_tokens: float = 2.50
+    cost_per_1m_cache_read_tokens: float = 0.20
+    # Thinking tokens are billed as output tokens.
+    cost_per_1m_thinking_tokens: float = 10.0
 
     # Max times a partial result triggers a continuation before accepting it
     max_continuations: int = 3
@@ -79,14 +85,13 @@ class Settings(BaseSettings):
     # Must match an agent_id in the manifests directory.
     direct_agent_id: str = ""
 
-    # Global extended-thinking effort level ("low" | "medium" | "high" | "xhigh" | "max")
-    # applied to every agent that does not declare its own thinking_effort in its
-    # manifest. All current-gen models (Sonnet 5, Opus 4.6+) use adaptive thinking,
-    # which is governed by effort rather than a fixed token budget — there is no
-    # exact equivalent of the old per-agent token-budget knob, but effort still
-    # lets manifests ask for deeper (higher-effort) reasoning than the default.
-    # Set to "" (empty string) to disable extended thinking globally.
-    agent_thinking_effort: str = ""
+    # Global reasoning effort ("low" | "medium" | "high" | "xhigh" | "max") applied to
+    # every agent that does not declare its own thinking_effort in its manifest (and
+    # isn't given one by the planner). Sent explicitly because the model default differs
+    # by model: Sonnet 5 / Opus 5+ think adaptively at "high" when the parameter is
+    # omitted, while Sonnet/Opus 4.6 don't think at all. Ignored for models without
+    # adaptive thinking (e.g. Haiku 4.5). Set to "" to omit it and use the model default.
+    agent_thinking_effort: str = "medium"
 
     # How long (seconds) the engine waits for human input before timing out and
     # accepting the partial result.  Default: 30 minutes.

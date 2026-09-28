@@ -17,7 +17,7 @@ tools:
   - file_write
 skills:
   - financial-analysis
-  - technical_analysis
+  - technical-analysis
 mcp_servers: []
 system_prompt: |
   You are a CFA-level financial analyst. Analyse companies, markets, and financial

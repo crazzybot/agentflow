@@ -21,7 +21,7 @@ import anthropic
 
 from agentflow.config import settings
 from agentflow.core.models import AgentManifest, AgentOutput, AgentResult, AgentStatus, IterationLimitAction, SSEEventType, TaskEnvelope
-from agentflow.llm import LLMClient, estimate_thinking_tokens
+from agentflow.llm import LLMClient, estimate_thinking_tokens, supports_adaptive_thinking
 from agentflow.tools import tool_registry
 from agentflow.tools.builtin import write_overflow_file
 from agentflow.tools.mcp_tools import mcp_session
@@ -237,28 +237,42 @@ def _parse_final_output(text: str) -> tuple[dict[str, Any], str]:
     return {}, text
 
 
-# Per-model list pricing (USD per 1M input/output tokens), keyed by model-id
-# prefix so dated snapshot IDs (e.g. "claude-haiku-4-5-20251001") still match.
-# settings.cost_per_1m_* only reflects agent_model's pricing, so a manifest
-# that overrides `model` to a different tier would otherwise be costed with
-# the wrong rate — this table keeps per-task budget enforcement accurate
-# regardless of which model actually served the call. Cache write/read follow
-# Anthropic's fixed 1.25x / 0.1x-of-input ratio; thinking tokens bill at the
-# output rate. Unrecognised models fall back to the configured global rates.
-_MODEL_PRICING: dict[str, tuple[float, float]] = {
-    "claude-opus-4": (5.0, 25.0),
-    "claude-sonnet-5": (3.0, 15.0),  # GA rate; intro rate is $2.00/$10.00 through 2026-08-31
-    "claude-sonnet-4": (3.0, 15.0),
-    "claude-haiku-4-5": (1.0, 5.0),
-    "claude-3-haiku": (0.25, 1.25),
+# Per-model list pricing (USD per 1M input/output tokens, cache-read multiplier),
+# keyed by model-id prefix so dated snapshot IDs (e.g. "claude-haiku-4-5-20251001")
+# still match. First match wins, so more specific prefixes must come first
+# ("claude-opus-5-5" before "claude-opus-5"). settings.cost_per_1m_* only reflects
+# agent_model's pricing, so a subtask routed to a different tier would otherwise be
+# costed with the wrong rate. Cache writes (5-minute TTL) are 1.25x input; cache reads
+# are input x the per-model multiplier (0.1x standard). Thinking tokens bill at the
+# output rate. Unrecognised models fall back to the configured global rates (logged).
+# Source: https://platform.claude.com/docs/en/about-claude/pricing (checked 2026-09-27).
+_MODEL_PRICING: dict[str, tuple[float, float, float]] = {
+    "claude-fable-5-1": (10.0, 50.0, 0.025),
+    "claude-mythos-5-1": (10.0, 50.0, 0.025),
+    "claude-fable-5": (10.0, 50.0, 0.1),
+    "claude-mythos-5": (10.0, 50.0, 0.1),
+    "claude-opus-5-5": (4.0, 20.0, 0.05),
+    "claude-opus-5": (5.0, 25.0, 0.1),
+    "claude-opus-4": (5.0, 25.0, 0.1),  # 4.5–4.8; 4.0/4.1 are retired
+    "claude-sonnet-5": (2.0, 10.0, 0.1),
+    "claude-sonnet-4": (3.0, 15.0, 0.1),
+    "claude-haiku-4-5": (1.0, 5.0, 0.1),
+    "claude-3-haiku": (0.25, 1.25, 0.1),
 }
+
+_warned_unpriced_models: set[str] = set()
 
 
 def _pricing_for(model: str) -> tuple[float, float, float, float, float]:
     """Return (input, output, thinking, cache_write, cache_read) USD/1M tokens for *model*."""
-    for prefix, (input_price, output_price) in _MODEL_PRICING.items():
+    for prefix, (input_price, output_price, cache_read_mult) in _MODEL_PRICING.items():
         if model.startswith(prefix):
-            return (input_price, output_price, output_price, input_price * 1.25, input_price * 0.1)
+            return (input_price, output_price, output_price, input_price * 1.25, input_price * cache_read_mult)
+    if model not in _warned_unpriced_models:
+        _warned_unpriced_models.add(model)
+        logger.warning(
+            "No pricing entry for model %r — budgeting with the global COST_PER_1M_* rates", model,
+        )
     return (
         settings.cost_per_1m_input_tokens,
         settings.cost_per_1m_output_tokens,
@@ -534,21 +548,21 @@ class Agent:
                     # Disable tool use so the model is forced to produce text output.
                     create_kwargs["tool_choice"] = {"type": "none"}
 
-            if thinking_effort:
-                # Adaptive thinking (current-gen models only — see resolved_model) has no
-                # fixed token budget to cap or shrink, unlike the old enabled/budget_tokens
-                # style. Instead, skip it outright when max_tokens is too tight to spare
-                # headroom for thinking on top of an actual response — e.g. a near-exhausted
-                # per-task budget slice, where _budget_to_max_tokens already sized max_tokens
-                # down to as little as 256. Enabling thinking there would let it consume most
-                # of a tiny allowance, truncating the turn before it produces a usable tool
-                # call or answer. No beta header is needed — adaptive thinking auto-enables
-                # interleaved thinking. display="summarized" is required: the API default
-                # ("omitted") streams thinking blocks with empty text, which would silently
-                # break both the agent:thought SSE events below and thinking-token accounting.
+            if thinking_effort and supports_adaptive_thinking(resolved_model):
+                # Adaptive thinking has no fixed token budget to cap; effort is the knob.
+                # When max_tokens is too tight to spare room for thinking on top of an
+                # actual response (e.g. a near-exhausted budget slice, where
+                # _budget_to_max_tokens can size it down to 256), send only effort="low"
+                # instead: simply omitting `thinking` would NOT turn it off on Sonnet 5 /
+                # Opus 5+, which think adaptively at their default ("high") effort when
+                # the parameter is absent. No beta header is needed. display="summarized"
+                # is required: the API default ("omitted") streams thinking blocks with
+                # empty text, which would break the agent:thought SSE events below.
                 if create_kwargs["max_tokens"] >= 1024:
                     create_kwargs["thinking"] = {"type": "adaptive", "display": "summarized"}
                     create_kwargs["output_config"] = {"effort": thinking_effort}
+                else:
+                    create_kwargs["output_config"] = {"effort": "low"}
 
             try:
                 response = await self.client.messages.create(**create_kwargs)
@@ -683,12 +697,12 @@ class Agent:
         # producing a text block.  Fall back to the last thinking block so the reporter
         # receives a meaningful summary instead of an empty string.
         if not final_text and thinking_effort:
-            final_text = ""
             for block in reversed(last_response_content):
                 if block.type == "thinking":
-                    text = getattr(block, "thinking", "")
-                    if thinking_text and text.strip():
-                        final_text += thinking_text
+                    text = getattr(block, "thinking", "") or ""
+                    if text.strip():
+                        final_text = text
+                        break
 
         # Extract structured JSON and clean prose from the final model output.
         # Agents are instructed to return raw JSON, but often prepend a summary

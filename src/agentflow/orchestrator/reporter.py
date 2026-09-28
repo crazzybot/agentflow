@@ -10,13 +10,19 @@ from typing import Any
 
 from agentflow.config import settings
 from agentflow.core.models import AgentResult, AgentStatus, ExecutionPlan
-from agentflow.llm import LLMClient
+from agentflow.llm import LLMClient, supports_adaptive_thinking
 
 logger = logging.getLogger(__name__)
 
-# Max characters to include from a single agent result. Keeps the synthesis
-# prompt predictable in size regardless of how verbose individual agents are.
-_MAX_RESULT_CHARS = 8_000
+# Safety ceiling on characters taken from a single agent result. Set far above
+# normal agent output so it never trims ordinary results (the old 8k cap silently
+# cut real content from the final report); hitting it is logged loudly.
+_MAX_RESULT_CHARS = 100_000
+
+_TRUNCATION_NOTE = (
+    "\n\n> **Note:** this report was cut off because it reached the output token limit "
+    "(REPORT_MAX_TOKENS). Some sections may be missing."
+)
 
 _SYNTHESIS_PROMPT = """\
 You are a report writer. Given a user task and results produced by specialist agents,
@@ -58,8 +64,20 @@ def _result_text(result: AgentResult) -> str:
         parts.append(json.dumps(result.output.structured, indent=2))
     text = "\n\n".join(parts) if parts else ""
     if len(text) > _MAX_RESULT_CHARS:
+        logger.warning(
+            "Result for task %s is %d chars — truncating to %d for report synthesis",
+            result.task_id, len(text), _MAX_RESULT_CHARS,
+        )
         text = text[:_MAX_RESULT_CHARS] + "\n… [truncated]"
     return text
+
+
+def _report_model() -> str:
+    return (
+        settings.report_model
+        or settings.resolve_model_tier(settings.report_model_tier)
+        or settings.reporter_model
+    )
 
 
 async def compile_report(
@@ -111,15 +129,27 @@ async def compile_report(
         "[%s] Requesting report synthesis (leaf nodes: %s, ~%d chars)",
         run_id, sorted(leaf_ids), len(synthesis_input),
     )
-    response = await client.messages.create(
-        model=settings.reporter_model,
-        max_tokens=2048,
-        system=_SYNTHESIS_PROMPT,
-        messages=[{"role": "user", "content": synthesis_input}],
-    )
-    report_body = next(
-        (block.text for block in response.content if hasattr(block, "text")), "" # type: ignore
+    model = _report_model()
+    create_kwargs: dict[str, Any] = {
+        "model": model,
+        "max_tokens": settings.report_max_tokens,
+        "system": _SYNTHESIS_PROMPT,
+        "messages": [{"role": "user", "content": synthesis_input}],
+    }
+    if settings.report_thinking_effort and supports_adaptive_thinking(model):
+        create_kwargs["output_config"] = {"effort": settings.report_thinking_effort}
+    response = await client.messages.create(**create_kwargs)
+    # Join every text block — with thinking enabled the first block is not text,
+    # and a long answer may arrive split across several text blocks.
+    report_body = "".join(
+        block.text for block in response.content if getattr(block, "type", "") == "text"
     ).strip()
+    if response.stop_reason == "max_tokens":
+        logger.warning(
+            "[%s] Report synthesis hit max_tokens=%d — report is truncated",
+            run_id, settings.report_max_tokens,
+        )
+        report_body += _TRUNCATION_NOTE
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     cost_line = ""

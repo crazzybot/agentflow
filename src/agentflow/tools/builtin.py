@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import html as html_lib
 import json
 import logging
 import mimetypes
 import os
 import re
 import time
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -97,6 +99,115 @@ def write_overflow_file(tool_name: str, call_id: str, full_text: str) -> str:
 
 _ARXIV_ABS_RE = re.compile(r"arxiv\.org/abs/([\w./]+)", re.IGNORECASE)
 
+# Elements whose content is never useful page text.
+_HTML_SKIP_TAGS = frozenset({
+    "script", "style", "noscript", "svg", "template", "iframe", "canvas",
+    "head", "nav", "footer", "form", "button", "select",
+})
+_HTML_BLOCK_TAGS = frozenset({
+    "p", "div", "section", "article", "main", "header", "aside", "br", "hr",
+    "table", "tr", "ul", "ol", "dl", "dt", "dd", "blockquote", "pre", "figure", "figcaption",
+})
+_HTML_VOID_TAGS = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+    "source", "track", "wbr",
+})
+
+
+class _HTMLTextExtractor(HTMLParser):
+    """Stdlib-only HTML → readable text (light markdown for headings/lists/cells).
+
+    Drops scripts, styles, navigation and other chrome so a fetched page costs
+    tokens for its content rather than its markup. When the page marks up its
+    content with <main> or <article>, only that content is kept.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._main_parts: list[str] = []
+        self._main_depth = 0
+        self._skip_depth = 0
+        self.title = ""
+        self._in_title = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "title":
+            self._in_title = True
+            return
+        if tag in _HTML_SKIP_TAGS:
+            if tag not in _HTML_VOID_TAGS:
+                self._skip_depth += 1
+            return
+        if self._skip_depth:
+            return
+        if tag in {"main", "article"}:
+            self._main_depth += 1
+        if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+            self._emit("\n\n" + "#" * int(tag[1]) + " ")
+        elif tag == "li":
+            self._emit("\n- ")
+        elif tag in {"td", "th"}:
+            self._emit(" | ")
+        elif tag in _HTML_BLOCK_TAGS:
+            self._emit("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "title":
+            self._in_title = False
+            return
+        if tag in _HTML_SKIP_TAGS:
+            if self._skip_depth:
+                self._skip_depth -= 1
+            return
+        if self._skip_depth:
+            return
+        if tag in {"h1", "h2", "h3", "h4", "h5", "h6", "p", "tr", "table", "pre", "blockquote"}:
+            self._emit("\n")
+        if tag in {"main", "article"} and self._main_depth:
+            self._main_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title:
+            self.title += data
+            return
+        if not self._skip_depth:
+            self._emit(data)
+
+    def _emit(self, chunk: str) -> None:
+        self._parts.append(chunk)
+        if self._main_depth:
+            self._main_parts.append(chunk)
+
+    def text(self) -> str:
+        raw = "".join(self._main_parts) if "".join(self._main_parts).strip() else "".join(self._parts)
+        lines = [re.sub(r"[ \t\r\f\v]+", " ", line).strip() for line in raw.split("\n")]
+        out = "\n".join(lines)
+        return re.sub(r"\n{3,}", "\n\n", out).strip()
+
+
+def html_to_text(markup: str) -> str:
+    """Convert an HTML document to compact readable text, prefixed with its title."""
+    parser = _HTMLTextExtractor()
+    try:
+        parser.feed(markup)
+        parser.close()
+    except Exception as exc:  # malformed markup — fall back to a crude tag strip
+        logger.debug("HTML parse failed (%s); using regex tag strip", exc)
+        stripped = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>|<[^>]+>", " ", markup)
+        return re.sub(r"\s+", " ", html_lib.unescape(stripped)).strip()
+    body = parser.text()
+    title = " ".join(parser.title.split())
+    return f"# {title}\n\n{body}" if title else body
+
+
+def _looks_like_html(content_type: str, body: str) -> bool:
+    if "html" in content_type.lower():
+        return True
+    head = body.lstrip()[:200].lower()
+    return head.startswith("<!doctype html") or head.startswith("<html")
+
+
 async def _fetch_url(url: str) -> str:
     # Redirect arxiv abstract page URLs to the Atom API so we get structured
     # text (title + abstract) instead of raw JavaScript-heavy HTML.
@@ -122,7 +233,10 @@ async def _fetch_url(url: str) -> str:
         try:
             resp = await client.get(url, headers=_HTTP_HEADERS)
             resp.raise_for_status()
-            return resp.text
+            body = resp.text
+            if _looks_like_html(resp.headers.get("content-type", ""), body):
+                return html_to_text(body)
+            return body
         except httpx.HTTPStatusError as exc:
             return f"HTTP {exc.response.status_code} for {url}"
         except httpx.RequestError as exc:
@@ -132,7 +246,8 @@ async def _fetch_url(url: str) -> str:
 tool_registry.register(ToolDefinition(
     name="fetch_url",
     description=(
-        "Fetch the raw text content of any URL (HTML, JSON, plain text). If the page is large, "
+        "Fetch the content of any URL. HTML pages are converted to readable text (scripts, "
+        "styles and navigation removed); JSON and plain text are returned as-is. If the page is large, "
         "a head/tail preview is returned along with a path to the full content — use file_read "
         "on that path to page through the rest. "
         "arxiv.org/abs/ URLs are automatically resolved to title + abstract via the Atom API."
