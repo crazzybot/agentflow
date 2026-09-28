@@ -1,7 +1,7 @@
 ---
 title: Conventions & Patterns
-last_updated: 2026-07-28
-last_verified_sha: ce1fe8d
+last_updated: 2026-09-27
+last_verified_sha: 0bd1f3e
 sources:
   - pyproject.toml
   - src/agentflow/config.py
@@ -48,9 +48,11 @@ contradict the source):
   `settings = Settings()` singleton. Pricing fields (`cost_per_1m_input_tokens`,
   `cost_per_1m_output_tokens`, `cost_per_1m_cache_write_tokens`,
   `cost_per_1m_cache_read_tokens`, `cost_per_1m_thinking_tokens`) default to
-  claude-sonnet-5's standard rate and can be overridden in `.env`; they also serve as
-  the fallback rate in `agents/agent.py`'s `_MODEL_PRICING` table for any model not
-  explicitly listed there (used when a manifest overrides `model` to a different tier).
+  claude-sonnet-5's standard rate ($2/$10 per 1M) and can be overridden in `.env`; they
+  are only the fallback rate for a model not listed in `agents/agent.py`'s
+  `_MODEL_PRICING` table (a warning is logged once per such model). When a new model
+  ships, add it to `_MODEL_PRICING` (and to `_ADAPTIVE_THINKING_PREFIXES` in
+  `llm/client.py` if it takes adaptive thinking/effort) rather than editing these defaults.
   Named cost tiers (`model_tier_economy`/`_standard`/`_premium`) follow the same pattern —
   typed `Settings` fields resolved by `settings.resolve_model_tier(tier)` — so manifests
   and planner-assigned per-subtask overrides can reference `"economy"`/`"standard"`/

@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
-last_updated: 2026-07-28
-last_verified_sha: ce1fe8d
+last_updated: 2026-09-27
+last_verified_sha: 0bd1f3e
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
@@ -123,19 +123,26 @@ variants so multiple API replicas can share a run — see
    an error result if a per-tool call budget is exceeded. If the resolved
    `thinking_effort` (see the `Agent` component's cost-tiering precedence below —
    `envelope.constraints.thinking_effort` if the planner set one for this subtask, else
-   `AgentManifest.thinking_effort`, else `settings.agent_thinking_effort`) is non-empty,
-   each `messages.create()` call includes adaptive thinking —
+   `AgentManifest.thinking_effort`, else `settings.agent_thinking_effort`, which defaults
+   to `"medium"`) is non-empty **and** `supports_adaptive_thinking(resolved_model)` (in
+   `llm/client.py` — an allowlist of model-id prefixes; Haiku 4.5 and older reject
+   adaptive thinking and `effort` with a 400, so e.g. a `thinking_effort: high` agent
+   re-tiered to `"economy"` sends neither), each `messages.create()` call includes adaptive thinking —
    `thinking={"type": "adaptive", "display": "summarized"}` plus
    `output_config={"effort": thinking_effort}` — with no beta header (adaptive thinking
    auto-enables interleaved thinking on current-gen models). `display="summarized"` is
    required: the API's default (`"omitted"`) would stream `thinking` blocks with empty
    text, silently breaking both the `agent:thought` events and thinking-token accounting
    below. Unlike the old `budget_tokens` style, adaptive thinking has no numeric budget to
-   clamp `max_tokens` to or shrink under a tight per-task budget — instead, thinking is
-   skipped outright for any iteration whose budget-derived `max_tokens` is below 1024
-   (`_budget_to_max_tokens()` can floor it as low as 256 near budget exhaustion), since
-   enabling thinking there would consume most of a tiny allowance and cut the turn off
-   before it produces a usable tool call or answer.
+   clamp `max_tokens` to or shrink under a tight per-task budget — instead, for any
+   iteration whose budget-derived `max_tokens` is below 1024 (`_budget_to_max_tokens()`
+   can floor it as low as 256 near budget exhaustion) the `thinking` config is dropped and
+   only `output_config={"effort": "low"}` is sent. Merely omitting the parameters would not
+   turn thinking off: Sonnet 5 / Opus 5+ think adaptively at their default `"high"` effort
+   when `thinking` is absent. The global default is explicit (`"medium"`) for the same
+   reason — `""` means "omit and use the model's own default", which differs by model.
+   If a run ends with no text block, the final output falls back to the last non-empty
+   `thinking` block.
    Response content is converted to plain dicts via `_to_dict_content()` before
    being stored in the message history — SDK objects are never kept (thinking-block
    `signature` fields are preserved exactly, as the API requires them echoed back
@@ -162,8 +169,15 @@ variants so multiple API replicas can share a run — see
 7. **Report** — once all subtasks are `completed`/`failed`, the engine gathers
    `ctx.all_results()`, computes a cost summary, and calls `compile_report()` in
    [`orchestrator/reporter.py`](../../src/agentflow/orchestrator/reporter.py), which
-   asks `settings.reporter_model` to synthesize leaf-node results (plus any partial/
-   failed notes) into `runs/<run_id>/report.md`.
+   synthesizes leaf-node results (plus any partial/failed notes) into
+   `runs/<run_id>/report.md`. The synthesis model is `settings.report_model` if set, else
+   `settings.report_model_tier` (default `"standard"`) resolved via `resolve_model_tier()`
+   — not the cheap `reporter_model`, which is only used for run naming and direct/plan
+   routing — with `max_tokens=settings.report_max_tokens` (16k) and
+   `output_config.effort=settings.report_thinking_effort` (skipped for models without
+   adaptive thinking). A `max_tokens` stop is logged and a visible truncation note is
+   appended to the report. Per-result input is capped at `_MAX_RESULT_CHARS` (100k — a
+   loudly-logged safety ceiling, not a routine trim).
 8. **Completion** — the engine emits `run_complete` (or `run_error`, or `run_cancelled`
    if the run was cancelled mid-flight) via the `StreamEmitter`, logs LLM usage stats,
    removes the task from `_run_tasks`, and tears down the run's bus/context entries.
@@ -235,7 +249,8 @@ variants so multiple API replicas can share a run — see
   from `Subtask.depends_on`; validates the plan is acyclic and exposes `ready()`
   (dependency-satisfied, non-failed nodes) for the execution loop.
 - **`orchestrator/reporter.py` — `compile_report()`**: synthesizes leaf-subtask results
-  (plus partial/failed sections) into the final `report.md` via one more LLM call.
+  (plus partial/failed sections) into the final `report.md` via one more LLM call on the
+  `report_model` / `report_model_tier` model (see step 7).
 - **`orchestrator/stream.py` — `StreamEmitter` / `StreamRegistry`**: per-run SSE event
   buffer; `emit()` appends an `SSEEvent` to an in-memory list and signals an
   `asyncio.Event` so waiting consumers are unblocked without polling (multiple
@@ -267,11 +282,15 @@ variants so multiple API replicas can share a run — see
   fleet of manifests is then a three-setting `.env` change rather than editing every
   manifest's raw `model` field. The resolved value is stored once per loop as
   `resolved_model`. Cost accounting uses `_pricing_for(resolved_model)`
-  — a small model-id-prefix pricing table (Opus/Sonnet-4.x/Haiku-4.5/Haiku-3 tiers) that
-  falls back to the flat `settings.cost_per_1m_*` rates for unrecognised models — rather
-  than always pricing at `agent_model`'s rate, so a manifest override to a different
-  pricing tier is still budgeted correctly; cache write/read prices are derived from the
-  input price at Anthropic's fixed 1.25x / 0.1x ratio. `_budget_to_max_tokens()` takes
+  — a model-id-prefix pricing table (Fable/Mythos 5.x, Opus 5.5/5/4.x, Sonnet 5/4.x,
+  Haiku 4.5/3; first match wins, so specific prefixes like `claude-opus-5-5` precede
+  `claude-opus-5`) that falls back to the flat `settings.cost_per_1m_*` rates (with a
+  one-time warning) for unrecognised models — rather than always pricing at
+  `agent_model`'s rate, so a manifest override to a different pricing tier is still
+  budgeted correctly. Each entry is `(input, output, cache_read_multiplier)`: cache writes
+  are 1.25x input (5-minute TTL) and cache reads are input × the per-model multiplier
+  (0.1x standard; 0.05x Opus 5.5; 0.025x Fable/Mythos 5.1). Sonnet 5 is $2/$10 — its
+  launch "introductory" rate became the permanent price. `_budget_to_max_tokens()` takes
   this same resolved input/output pricing as parameters instead of reading
   `settings.cost_per_1m_*` directly. The loop dispatches
   tool calls through `_checked_call_tool()`, which enforces per-tool call budgets declared
@@ -365,7 +384,13 @@ variants so multiple API replicas can share a run — see
     if `KnowledgebaseAgent` is active in the run. Returns the workspace-relative path and
     the KB ingest outcome.
   - `fetch_url` — transparently redirects `arxiv.org/abs/` URLs to the Atom API so
-    agents that accidentally call it on an arXiv link still get structured text. No
+    agents that accidentally call it on an arXiv link still get structured text. HTML
+    responses (by `content-type` or a leading `<!doctype html`/`<html`) are converted to
+    readable text by `html_to_text()` — a stdlib `HTMLParser` that drops
+    script/style/nav/footer/form chrome, keeps light markdown for headings, list items
+    and table cells, prefixes the `<title>`, and keeps only `<main>`/`<article>` content
+    when present. Typically ~10x fewer chars than the raw page. JSON/plain text pass
+    through unchanged. No
     longer self-truncates (`_truncate()`/`_MAX_CONTENT` were removed) — the generic
     result-size budget above handles it uniformly.
   - `file_read` — returns a `[from_line=X, to_line=Y, total_lines=Z]` header plus
@@ -425,7 +450,9 @@ Within one run, components talk through three mechanisms:
   `ctx.build_upstream_artifacts()` (dict of dep task ID → `files_written` list from
   that task's `AgentResult`). The agent receives both as an `<upstream_context>` block
   in its initial user message — it reads the exact files it needs rather than receiving
-  the full upstream conversation history. `RunContext`
+  the full upstream conversation history. The planner's system prompt ("Context
+  inheritance") states this explicitly so it tells downstream agents to read upstream
+  files by path rather than claiming their content is "already in context". `RunContext`
   also tracks `total_cost_usd()`/`remaining_budget_usd()` and arbitrates human-input
   requests when a budget is exhausted. Mid-run user messages (from `POST …/message`)
   are stored in per-agent queues: `register_agent(agent_id)` creates a queue when a
