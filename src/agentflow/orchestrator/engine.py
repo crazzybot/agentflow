@@ -250,7 +250,13 @@ class OrchestratorEngine:
         # concurrently (and alongside the run setup below) instead of stacking
         # their latency sequentially before any real work starts.
         name_task = asyncio.create_task(self._generate_run_name(task))
-        is_direct_task = asyncio.create_task(self._is_single_agent_task(task))
+        # Direct mode is opt-in: without DIRECT_AGENT_ID there is no agent to route a
+        # "direct" verdict to, so skip the classifier call and always plan.
+        is_direct_task = (
+            asyncio.create_task(self._is_single_agent_task(task))
+            if settings.direct_agent_id
+            else None
+        )
 
         name = await name_task
         self._write_meta(run_id, task, name, created_at)
@@ -279,10 +285,11 @@ class OrchestratorEngine:
             kb_token = _kb_dispatch_fn.set(_dispatch_to_kb)
 
         try:
-            # Step 02: classify then plan.  A cheap Haiku call decides whether the
-            # task warrants multi-agent planning or can be routed directly to a
-            # single agent.  Falls back to the full planner on any error.
-            if await is_direct_task:
+            # Step 02: classify then plan.  When direct mode is configured, a cheap
+            # Haiku call decides whether the task warrants multi-agent planning or
+            # can be routed directly to a single agent.  Falls back to the full
+            # planner on any error.
+            if is_direct_task is not None and await is_direct_task:
                 logger.info("[%s] Auto-classified as single-agent task — skipping planner", run_id)
                 plan = self._make_direct_plan(run_id, task)
                 emitter.emit(

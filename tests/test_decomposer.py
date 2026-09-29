@@ -133,8 +133,10 @@ async def test_decompose_returns_multi_subtasks_with_context():
         )
 
     assert len(subtasks) == 3
-    assert subtasks[0].id == "st_1_a"
-    assert subtasks[2].depends_on == ["st_1_a", "st_1_b"]
+    # Micro-task ids are namespaced under the parent so they can't collide with
+    # micro-tasks from another decomposed subtask in the same run.
+    assert subtasks[0].id == "st_1.st_1_a"
+    assert subtasks[2].depends_on == ["st_1.st_1_a", "st_1.st_1_b"]
     assert "src-layout" in ctx
     assert "SQLite" in ctx
 
@@ -223,3 +225,68 @@ async def test_decompose_passes_task_and_user_context():
     envelope = instance.run.call_args[0][0]
     assert "Top-level task description" in envelope.instruction
     assert envelope.context.user_context == {"key": "val"}
+
+
+async def _decompose(output: str, parent: Subtask | None = None):
+    with patch(_AGENT_PATCH) as MockAgent:
+        MockAgent.return_value.run = AsyncMock(return_value=_mock_agent_result(output))
+        return await decompose_subtask(
+            parent or _make_subtask(), _make_manifest(), "run-1", MagicMock(), MagicMock()
+        )
+
+
+@pytest.mark.asyncio
+async def test_decompose_namespaces_ids_so_parallel_parents_do_not_collide():
+    output = (
+        '[{"id": "step-1", "instruction": "a"}, '
+        '{"id": "step-2", "instruction": "b", "dependsOn": ["step-1"]}]'
+    )
+    first, _ = await _decompose(output, _make_subtask("st_1"))
+    second, _ = await _decompose(output, _make_subtask("st_2"))
+    assert [m.id for m in first] == ["st_1.step-1", "st_1.step-2"]
+    assert [m.id for m in second] == ["st_2.step-1", "st_2.step-2"]
+    assert second[1].depends_on == ["st_2.step-1"]
+
+
+@pytest.mark.asyncio
+async def test_decompose_does_not_inherit_parent_deps_into_micro_plan():
+    """Parent deps are already satisfied at dispatch time; carrying them into the
+    micro-plan used to create phantom nodes that crashed the micro scheduler."""
+    parent = Subtask(id="st_2", agent_id="CodeAgent", instruction="x", depends_on=["st_1"])
+    micro, _ = await _decompose(
+        '[{"id": "a", "instruction": "a"}, {"id": "b", "instruction": "b"}]', parent
+    )
+    assert micro[0].depends_on == []
+    assert micro[1].depends_on == ["st_2.a"]  # default: sequential chain
+
+
+@pytest.mark.asyncio
+async def test_decompose_drops_dependencies_outside_the_micro_plan():
+    parent = Subtask(id="st_2", agent_id="CodeAgent", instruction="x", depends_on=["st_1"])
+    micro, _ = await _decompose(
+        '[{"id": "a", "instruction": "a", "dependsOn": ["st_1", "ghost"]}, '
+        '{"id": "b", "instruction": "b", "dependsOn": ["a"]}]',
+        parent,
+    )
+    assert micro[0].depends_on == []
+    assert micro[1].depends_on == ["st_2.a"]
+
+
+@pytest.mark.asyncio
+async def test_decompose_cycle_falls_back_to_original():
+    parent = _make_subtask()
+    micro, _ = await _decompose(
+        '[{"id": "a", "instruction": "a", "dependsOn": ["b"]}, '
+        '{"id": "b", "instruction": "b", "dependsOn": ["a"]}]',
+        parent,
+    )
+    assert micro == [parent]
+
+
+@pytest.mark.asyncio
+async def test_decompose_duplicate_ids_fall_back_to_original():
+    parent = _make_subtask()
+    micro, _ = await _decompose(
+        '[{"id": "a", "instruction": "a"}, {"id": "a", "instruction": "b"}]', parent
+    )
+    assert micro == [parent]

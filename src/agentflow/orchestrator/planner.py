@@ -18,6 +18,7 @@ from agentflow.core.models import (
 )
 from agentflow.core.registry import AgentRegistry
 from agentflow.llm import LLMClient
+from agentflow.orchestrator.scheduler import DependencyGraph
 
 if TYPE_CHECKING:
     import anthropic
@@ -263,6 +264,15 @@ async def create_plan(
 
     if not subtasks:
         raise RuntimeError("Planner returned an empty subtasks list.")
+
+    unknown_agents = sorted({st.agent_id for st in subtasks if registry.get(st.agent_id) is None})
+    if unknown_agents:
+        raise RuntimeError(f"Planner assigned subtasks to unknown agent(s): {unknown_agents}")
+    try:
+        # Rejects duplicate ids, dependsOn references to ids not in the plan, and cycles
+        DependencyGraph(ExecutionPlan(run_id=run_id, subtasks=subtasks))
+    except ValueError as exc:
+        raise RuntimeError(f"Planner produced an invalid dependency graph: {exc}") from exc
 
     logger.info("[%s] Planner routing: %s", run_id, [(st.id, st.agent_id) for st in subtasks])
 

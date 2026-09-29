@@ -4,10 +4,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from agentflow.config import settings
 from agentflow.core.models import AgentResult
+from agentflow.core.prior_results import build_prior_results, build_upstream_artifacts
 
 if TYPE_CHECKING:
     from agentflow.core.models import HumanInputResponse
@@ -126,35 +127,13 @@ class RunContext:
         async with self._lock:
             return dict(self._results)
 
-    def build_prior_results(self, dep_ids: list[str]) -> dict[str, Any]:
-        """Return text output from completed dependencies.
-
-        Combines prose (output.text) and structured JSON (output.structured) so
-        downstream agents see the full upstream result.  _parse_final_output splits
-        the agent's final message into a prose preamble and an extracted JSON dict;
-        using text-or-structured loses the structured content whenever a non-empty
-        but minimal preamble is present.
-        """
-        result: dict[str, Any] = {}
-        for dep_id in dep_ids:
-            if dep_id not in self._results:
-                continue
-            output = self._results[dep_id].output
-            parts: list[str] = []
-            if output.text:
-                parts.append(output.text)
-            if output.structured:
-                parts.append(json.dumps(output.structured, indent=2))
-            result[dep_id] = "\n\n".join(parts) if parts else ""
-        return result
+    def build_prior_results(self, dep_ids: list[str]) -> dict[str, str]:
+        """Return text + structured output from completed dependencies."""
+        return build_prior_results(self._results, dep_ids)
 
     def build_upstream_artifacts(self, dep_ids: list[str]) -> dict[str, list[str]]:
         """Return file paths written by completed dependencies, keyed by task ID."""
-        return {
-            dep_id: self._results[dep_id].files_written
-            for dep_id in dep_ids
-            if dep_id in self._results and self._results[dep_id].files_written
-        }
+        return build_upstream_artifacts(self._results, dep_ids)
 
 
 class ContextStore:

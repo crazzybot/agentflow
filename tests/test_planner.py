@@ -85,3 +85,52 @@ async def test_create_plan_drops_invalid_tier_and_effort():
 
     assert plan.subtasks[0].model_tier is None
     assert plan.subtasks[0].thinking_effort is None
+
+
+# ---------------------------------------------------------------------------
+# create_plan — structural validation of the LLM-produced plan
+# ---------------------------------------------------------------------------
+
+async def _plan_from(plan_json: str, known_agents: set[str] | None = None):
+    with patch(_AGENT_PATCH) as MockAgent:
+        MockAgent.return_value.run = AsyncMock(return_value=_mock_plan_result(plan_json))
+        registry = MagicMock()
+        registry.summary.return_value = "CodeAgent: ..."
+        if known_agents is not None:
+            registry.get.side_effect = lambda aid: MagicMock() if aid in known_agents else None
+        return await create_plan("run-1", "do the thing", registry, MagicMock(), MagicMock())
+
+
+@pytest.mark.asyncio
+async def test_create_plan_rejects_unknown_dependency():
+    plan_json = """
+    {"subtasks": [
+        {"id": "st_1", "agentId": "CodeAgent", "instruction": "a", "dependsOn": ["research"]}
+    ]}
+    """
+    with pytest.raises(RuntimeError, match="invalid dependency graph.*research"):
+        await _plan_from(plan_json)
+
+
+@pytest.mark.asyncio
+async def test_create_plan_rejects_cycle():
+    plan_json = """
+    {"subtasks": [
+        {"id": "st_1", "agentId": "CodeAgent", "instruction": "a", "dependsOn": ["st_2"]},
+        {"id": "st_2", "agentId": "CodeAgent", "instruction": "b", "dependsOn": ["st_1"]}
+    ]}
+    """
+    with pytest.raises(RuntimeError, match="cycle"):
+        await _plan_from(plan_json)
+
+
+@pytest.mark.asyncio
+async def test_create_plan_rejects_unknown_agent():
+    plan_json = """
+    {"subtasks": [
+        {"id": "st_1", "agentId": "CodeAgent", "instruction": "a", "dependsOn": []},
+        {"id": "st_2", "agentId": "MadeUpAgent", "instruction": "b", "dependsOn": ["st_1"]}
+    ]}
+    """
+    with pytest.raises(RuntimeError, match="MadeUpAgent"):
+        await _plan_from(plan_json, known_agents={"CodeAgent"})

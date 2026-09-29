@@ -649,13 +649,24 @@ class Agent:
                     # replaying a broken call that will fail with a missing-argument error.
                     if messages and messages[-1].get("role") == "assistant":
                         messages.pop()
-                    # Still execute the tool calls so SSE events reach the client,
-                    # but discard the results — they must not enter the history.
-                    pending_tool_use = [b for b in response.content if b.type == "tool_use"]
-                    if pending_tool_use:
-                        await asyncio.gather(
-                            *[self._checked_call_tool(b, tools, emitter, tool_call_counts, tool_limits, iteration)
-                              for b in pending_tool_use]
+                    # Never execute these calls: a truncated bash_exec command or
+                    # file_write payload would run/write something the model never
+                    # finished specifying. Emit a paired result event per call so
+                    # clients tracking tool_call_id still see each call resolved.
+                    for b in response.content:
+                        if b.type != "tool_use":
+                            continue
+                        skipped = (
+                            f"Tool call {b.name!r} not executed: the response was cut off "
+                            "by max_tokens, so its input may be incomplete."
+                        )
+                        emitter.emit(
+                            SSEEventType.agent_tool_result,
+                            agent_id=self.agent_id,
+                            message=skipped,
+                            data={"tool": b.name, "result": skipped, "skipped": True},
+                            turn_index=iteration,
+                            tool_call_id=b.id,
                         )
                 else:
                     # For other unexpected stop reasons, execute any pending tool calls so

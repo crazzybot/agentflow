@@ -1026,3 +1026,42 @@ async def test_final_text_falls_back_to_last_thinking_block_once():
     result = await agent.run(_make_envelope(), MagicMock())
 
     assert result.output.text == "final conclusion"
+
+
+@pytest.mark.asyncio
+async def test_truncated_tool_calls_are_not_executed_on_max_tokens():
+    """A tool_use cut off by max_tokens may carry incomplete input (e.g. a half-written
+    bash command or file_write payload) — it must never run, but clients still get a
+    paired, skipped result event."""
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"
+    tool_block.id = "toolu_cut"
+    tool_block.name = "bash_exec"
+    tool_block.input = {"command": "rm -rf buil"}
+
+    resp = MagicMock()
+    resp.stop_reason = "max_tokens"
+    resp.content = [tool_block]
+    resp.usage.input_tokens = 100
+    resp.usage.output_tokens = 50
+    resp.usage.cache_creation_input_tokens = 0
+    resp.usage.cache_read_input_tokens = 0
+
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=resp)
+    emitter = MagicMock()
+
+    agent = Agent(_make_manifest(tools=["bash_exec"]), mock_client)
+    agent._call_tool = AsyncMock()
+    result = await agent.run(_make_envelope(), emitter)
+
+    agent._call_tool.assert_not_awaited()
+    assert result.status == AgentStatus.partial
+    assert result.hit_max_tokens is True
+    skipped = [
+        c for c in emitter.emit.call_args_list
+        if c.args and c.args[0] == SSEEventType.agent_tool_result
+    ]
+    assert len(skipped) == 1
+    assert skipped[0].kwargs["tool_call_id"] == "toolu_cut"
+    assert skipped[0].kwargs["data"]["skipped"] is True

@@ -33,11 +33,11 @@ import asyncio
 import json
 import logging
 import os
-from typing import Any
 
 import redis.asyncio as aioredis
 
 from agentflow.core.models import AgentResult, HumanInputResponse
+from agentflow.core.prior_results import build_prior_results, build_upstream_artifacts
 
 logger = logging.getLogger(__name__)
 
@@ -246,21 +246,13 @@ class RedisRunContext:
     # Synchronous context-building helpers  (use local cache only)
     # ------------------------------------------------------------------
 
-    def build_prior_results(self, dep_ids: list[str]) -> dict[str, Any]:
-        return {
-            dep_id: self._local_results[dep_id].output.text
-            or str(self._local_results[dep_id].output.structured)
-            for dep_id in dep_ids
-            if dep_id in self._local_results
-        }
+    def build_prior_results(self, dep_ids: list[str]) -> dict[str, str]:
+        """Return text + structured output from completed dependencies."""
+        return build_prior_results(self._local_results, dep_ids)
 
     def build_upstream_artifacts(self, dep_ids: list[str]) -> dict[str, list[str]]:
         """Return file paths written by completed dependencies, keyed by task ID."""
-        return {
-            dep_id: self._local_results[dep_id].files_written
-            for dep_id in dep_ids
-            if dep_id in self._local_results and self._local_results[dep_id].files_written
-        }
+        return build_upstream_artifacts(self._local_results, dep_ids)
 
 
 class RedisContextStore:

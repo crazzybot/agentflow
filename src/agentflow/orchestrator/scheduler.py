@@ -16,11 +16,19 @@ class DependencyGraph:
         self._subtasks: dict[str, Subtask] = {}
 
         for st in plan.subtasks:
+            if st.id in self._subtasks:
+                raise ValueError(f"Execution plan contains duplicate subtask id {st.id!r}")
             self._graph.add_node(st.id)
             self._subtasks[st.id] = st
 
         for st in plan.subtasks:
             for dep in st.depends_on:
+                # add_edge would silently create a phantom node for an unknown id,
+                # which ready() would later return and fail to look up.
+                if dep not in self._subtasks:
+                    raise ValueError(
+                        f"Subtask {st.id!r} depends on unknown subtask {dep!r}"
+                    )
                 # edge from dep → st (dep must complete before st)
                 self._graph.add_edge(dep, st.id)
 

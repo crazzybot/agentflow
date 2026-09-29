@@ -8,6 +8,7 @@ import logging
 import mimetypes
 import os
 import re
+import shlex
 import time
 from html.parser import HTMLParser
 from pathlib import Path
@@ -53,9 +54,29 @@ def _safe_path(relative: str) -> Path | None:
     """Resolve *relative* inside the workspace; return None on traversal."""
     ws = _workspace()
     target = (ws / relative).resolve()
-    if not str(target).startswith(str(ws)):
+    # is_relative_to, not a string-prefix check: "workspace-other/x" starts with
+    # the string "workspace" but is a sibling directory, not inside it.
+    if not target.is_relative_to(ws):
         return None
     return target
+
+
+# Environment variables passed through to agent subprocesses (bash_exec,
+# python_exec). Everything else — notably ANTHROPIC_API_KEY, TAVILY_API_KEY and
+# REDIS_URL — is withheld, so a prompt-injected command cannot read credentials
+# and exfiltrate them. Extend via SANDBOX_ENV_PASSTHROUGH when a toolchain needs more.
+_SANDBOX_ENV_ALLOWLIST = frozenset({
+    "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ", "TMPDIR", "USER", "LOGNAME", "SHELL",
+})
+
+
+def _sandbox_env() -> dict[str, str]:
+    """Return the scrubbed environment for agent subprocesses; HOME is the workspace."""
+    allowed = _SANDBOX_ENV_ALLOWLIST | set(settings.sandbox_env_passthrough)
+    env = {k: v for k, v in os.environ.items() if k in allowed}
+    # Keep any residual ~ expansion (and tool caches such as npm/uv) inside the workspace
+    env["HOME"] = str(_workspace())
+    return env
 
 
 def write_overflow_file(tool_name: str, call_id: str, full_text: str) -> str:
@@ -698,17 +719,13 @@ async def _bash_exec(command: str, purpose: str, timeout_seconds: int = 30) -> s
             "The workspace is already your current directory — use relative paths only."
         )
 
-    workspace = _workspace()
-    # Override HOME so any residual ~ expansion stays inside the workspace
-    env = {**os.environ, "HOME": str(workspace)}
-
     try:
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            cwd=str(workspace),
-            env=env,
+            cwd=str(_workspace()),
+            env=_sandbox_env(),
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
         output = stdout.decode(errors="replace")
@@ -745,40 +762,135 @@ tool_registry.register(ToolDefinition(
 # ---------------------------------------------------------------------------
 
 # Commands that are safe to run during read-only exploration.  Deliberately
-# conservative: no interpreters (python3, node), no network tools (curl, wget),
-# no editors, no process managers.
+# conservative: no interpreters (python3, node, awk), no command runners (env,
+# xargs), no stream editors (sed can write files and run commands), no
+# environment dumpers (printenv), no network tools, no editors.
 _READONLY_COMMANDS = frozenset({
     "find", "grep", "egrep", "fgrep",
     "ls", "cat", "head", "tail", "wc",
     "sort", "uniq", "diff", "comm",
     "echo", "printf", "test",
-    "awk", "sed", "cut", "tr",
+    "cut", "tr",
     "tree", "du", "stat", "file",
     "which", "basename", "dirname", "realpath", "pwd",
-    "env", "printenv",
-    "jq", "xargs",
+    "jq",
 })
+
+# Arguments that turn an otherwise read-only command into one that writes files
+# or runs other programs.
+_READONLY_FORBIDDEN_ARGS: dict[str, frozenset[str]] = {
+    "find": frozenset({
+        "-exec", "-execdir", "-ok", "-okdir", "-delete",
+        "-fprint", "-fprint0", "-fprintf", "-fls",
+    }),
+    "tree": frozenset({"-o"}),
+}
+
+# Stderr redirects that are harmless and common in exploration commands; removed
+# before validation so the '>' they contain is not rejected as an output redirect.
+_STDERR_REDIRECT_RE = re.compile(r"\s2>(?:&1|/dev/null)(?=\s|$)")
+
+# Unquoted, these trigger substitution, expansion, subshells or redirection — each
+# of which can smuggle a path or command past the token checks below (e.g.
+# `cat {..,x}/.env` or `cat .[.]/.env` both expand to ../.env). Inside double
+# quotes only $ and ` still expand. Single-quoted text is inert.
+_UNQUOTED_FORBIDDEN_CHARS = frozenset("`$(){}[]?<>!\n\r")
+_DQUOTED_FORBIDDEN_CHARS = frozenset("`$")
+
+_COMMAND_SEPARATORS = frozenset({"|", "||", "&&", ";", "&"})
+_PARENT_DIR_RE = re.compile(r"\.\.(?:/|$)")
+# A glob such as `.*` can match the ".." entry on older shells (macOS /bin/sh).
+_DOT_GLOB_RE = re.compile(r"(?:^|/)\.+\*")
+
+
+def _shell_metachar_error(command: str) -> str | None:
+    """Reject shell metacharacters that would expand before the command runs."""
+    quote: str | None = None
+    escaped = False
+    for ch in command:
+        if escaped:
+            escaped = False
+            continue
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if quote == '"':
+            if ch == '"':
+                quote = None
+            elif ch in _DQUOTED_FORBIDDEN_CHARS:
+                return f"{ch!r} inside double quotes is not allowed in bash_exec_readonly (use single quotes)"
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            continue
+        if ch in _UNQUOTED_FORBIDDEN_CHARS:
+            return (
+                f"Shell metacharacter {ch!r} is not allowed in bash_exec_readonly "
+                "(single-quote it if it is part of a search pattern)"
+            )
+    return None
+
+
+def _readonly_arg_error(cmd: str, arg: str, workspace: Path) -> str | None:
+    """Return an error if *arg* makes *cmd* write/execute or reach outside the workspace."""
+    if arg in _READONLY_FORBIDDEN_ARGS.get(cmd, frozenset()):
+        return f"'{cmd} {arg}' is not allowed in bash_exec_readonly"
+    if cmd == "sort" and (
+        arg.startswith("--output")
+        or (arg.startswith("-") and not arg.startswith("--") and "o" in arg[1:])
+    ):
+        return "'sort -o' (write to file) is not allowed in bash_exec_readonly"
+    if _PARENT_DIR_RE.search(arg) or _DOT_GLOB_RE.search(arg):
+        return f"Paths outside the workspace are not allowed in bash_exec_readonly: {arg!r}"
+    # Absolute paths, including ones attached to a flag (--file=/x, -f/x)
+    value = arg.split("=", 1)[1] if arg.startswith("--") and "=" in arg else arg
+    if value.startswith("-") and not value.startswith("--"):
+        value = value[2:]
+    if value.startswith("/") and not Path(value).resolve().is_relative_to(workspace):
+        return f"Paths outside the workspace are not allowed in bash_exec_readonly: {arg!r}"
+    return None
 
 
 def _check_readonly_command(command: str) -> str | None:
     """Return an error message if *command* is not safe for read-only use, else None."""
-    # Block any output redirection
-    if re.search(r'(?<![<&2])>{1,2}', command):
-        return "Output redirections (> and >>) are not allowed in bash_exec_readonly"
-    # Block sed in-place edits
-    if re.search(r'\bsed\b[^|;]*-[a-zA-Z]*i', command):
-        return "sed -i (in-place edit) is not allowed in bash_exec_readonly"
-    # Split on shell operators to get individual pipeline stages
-    segments = re.split(r'[|;&]+', command)
+    command = _STDERR_REDIRECT_RE.sub(" ", command)
+    if err := _shell_metachar_error(command):
+        return err
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError as exc:
+        return f"Could not parse command: {exc}"
+
+    # Split into pipeline stages / list elements. A quoted "|" also lands here as a
+    # separator token — that only makes the check stricter, never looser.
+    segments: list[list[str]] = [[]]
+    for tok in tokens:
+        if tok in _COMMAND_SEPARATORS:
+            segments.append([])
+        else:
+            segments[-1].append(tok)
+
+    workspace = _workspace()
     for seg in segments:
-        seg = seg.strip()
         if not seg:
             continue
-        first_word = seg.split()[0] if seg.split() else ""
-        cmd = os.path.basename(first_word)
-        if cmd and cmd not in _READONLY_COMMANDS:
+        cmd = os.path.basename(seg[0])
+        if cmd not in _READONLY_COMMANDS:
             allowed = ", ".join(sorted(_READONLY_COMMANDS))
             return f"Command '{cmd}' is not allowed in bash_exec_readonly. Allowed: {allowed}"
+        args = seg[1:]
+        # `uniq INPUT OUTPUT` writes its second positional argument
+        if cmd == "uniq" and len([a for a in args if not a.startswith("-")]) > 1:
+            return "'uniq INPUT OUTPUT' (write to file) is not allowed in bash_exec_readonly"
+        for arg in args:
+            if err := _readonly_arg_error(cmd, arg, workspace):
+                return err
     return None
 
 
@@ -794,7 +906,8 @@ tool_registry.register(ToolDefinition(
     description=(
         "Execute a read-only bash command in the workspace. "
         "Suitable for workspace exploration: find, grep, ls, cat, wc, diff, etc. "
-        "Write operations, output redirections, and arbitrary interpreters are blocked. "
+        "Write operations, output redirections, shell expansion ($, backticks, braces), "
+        "interpreters, and paths outside the workspace are blocked; single-quote search patterns. "
         "Use only relative paths — '~' and absolute paths are not permitted."
     ),
     input_schema={
@@ -836,6 +949,7 @@ async def _python_exec(code: str, purpose: str, timeout_seconds: int = 30) -> st
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(_workspace()),
+            env=_sandbox_env(),
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
         output = stdout.decode(errors="replace")
