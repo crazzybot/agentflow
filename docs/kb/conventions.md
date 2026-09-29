@@ -1,7 +1,7 @@
 ---
 title: Conventions & Patterns
-last_updated: 2026-09-27
-last_verified_sha: 0bd1f3e
+last_updated: 2026-09-28
+last_verified_sha: 0cdeee7
 sources:
   - pyproject.toml
   - src/agentflow/config.py
@@ -22,7 +22,9 @@ status: current
 - Run the app: `uv run uvicorn agentflow.main:app --reload` (API) or
   `uv run agentflow run "<task>"` (CLI). The console script `agentflow` maps to
   `agentflow.cli:main` (see `[project.scripts]`).
-- Run tests: `uv run pytest` (or `uv run pytest tests/ -v`).
+- Run tests: `uv run pytest` (or `uv run pytest tests/ -v`). `pyproject.toml` sets
+  `testpaths = ["tests"]` so projects that agents generate under `workspace/` (which ship
+  their own test suites) are never collected.
 - Dev-only deps (`pytest`, `pytest-asyncio`) live in `[dependency-groups].dev`, separate
   from runtime `dependencies`.
 - Runtime `dependencies` include `redis>=5.0.0`, used only when the optional Redis state
@@ -90,7 +92,10 @@ contradict the source):
 - Tests live in the top-level `tests/` directory (flat, no subpackages), one file per
   module under test: `test_agent.py`, `test_decomposer.py`, `test_scheduler.py`,
   `test_models.py`, `test_registry.py`, `test_skill_loader.py`, `test_tools.py`,
-  `test_arxiv_search.py`, `test_stream.py`, `test_planner.py`, `test_config.py`.
+  `test_arxiv_search.py`, `test_stream.py`, `test_planner.py`, `test_config.py`,
+  `test_reporter.py`, `test_engine.py` (run routing with `create_plan` patched and the
+  engine's own LLM helpers replaced by `AsyncMock`), and `test_context.py` (behaviour
+  that must match across the memory and Redis backends, parametrized over both).
 - Naming: files are `test_*.py`; test functions are `test_<behavior>` (e.g.
   `test_agent_run_end_turn`, `test_dependency_blocks_downstream`).
 - Structure seen in `tests/test_agent.py` and `tests/test_scheduler.py`: small `_make_*`/`_plan`

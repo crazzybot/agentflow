@@ -1,13 +1,14 @@
 ---
 title: Architecture Overview
-last_updated: 2026-09-27
-last_verified_sha: 0bd1f3e
+last_updated: 2026-09-28
+last_verified_sha: 0cdeee7
 sources:
   - src/agentflow/main.py
   - src/agentflow/orchestrator/
   - src/agentflow/agents/agent.py
   - src/agentflow/core/bus.py
   - src/agentflow/core/context.py
+  - src/agentflow/core/prior_results.py
   - src/agentflow/core/models.py
   - src/agentflow/llm/client.py
   - src/agentflow/tools/
@@ -51,16 +52,18 @@ variants so multiple API replicas can share a run — see
    via `_dispatch_subtask()` — enabling built-in tools (e.g. `download_document`) to
    trigger KB ingest without a direct reference to the engine. `_kb_dispatch_fn` is only
    armed when `KnowledgebaseAgent` is registered in `_agent_instances`.
-3. **Plan** — every run is auto-classified first: the `is_direct_task` result awaited
-   from step 2 (`_is_single_agent_task()`) decides whether the planner runs at all.
+3. **Plan** — when `settings.direct_agent_id` (`DIRECT_AGENT_ID`) is set, the run is
+   auto-classified first: the `is_direct_task` result awaited from step 2
+   (`_is_single_agent_task()`) decides whether the planner runs at all. When it is
+   unset (the default), the classifier task is never created — no Haiku call — and
+   every run goes straight to the planner.
    - If `True` (auto-classified as a single-agent task), `_make_direct_plan()` builds a
      synthetic one-subtask `ExecutionPlan` that routes the whole task verbatim to
      `settings.direct_agent_id` (`DIRECT_AGENT_ID` in `.env`) — `create_plan()` is skipped
      entirely, so there's zero planner LLM overhead. `_make_direct_plan()` raises
-     `RuntimeError` if `direct_agent_id` is unset or does not name a registered agent (the
-     engine catches it and emits `run:error`), so **auto-classification requires
-     `DIRECT_AGENT_ID` to be configured** — without it, any task the classifier calls
-     `"direct"` fails the run rather than silently falling back to the planner.
+     `RuntimeError` if `direct_agent_id` does not name a registered agent (the engine
+     catches it and emits `run:error`) — a misconfigured `DIRECT_AGENT_ID` fails loudly
+     rather than silently falling back to the planner.
    - Otherwise, `create_plan()` in
      [`orchestrator/planner.py`](../../src/agentflow/orchestrator/planner.py) builds an
      in-memory `AgentManifest` (tools: `file_read`/`bash_exec_readonly`/`web_search`/`fetch_url`;
@@ -198,7 +201,10 @@ variants so multiple API replicas can share a run — see
   caching, SSE emission, and JSON extraction via `_parse_final_output()`. Budget
   fraction normalization (equal split when omitted; renormalization when fractions do not
   sum to 1) runs on the parsed subtask list. If `output.structured` has no `"subtasks"`
-  key, `create_plan()` raises `RuntimeError` — the engine emits `run:error`.
+  key, `create_plan()` raises `RuntimeError` — the engine emits `run:error`. It also
+  raises (before any subtask runs) when a subtask names an agent not in the registry, or
+  when `DependencyGraph` rejects the plan (duplicate ids, a `dependsOn` naming an id not
+  in the plan, or a cycle).
   Each subtask may also carry optional `modelTier`/`thinkingEffort` cost-tuning fields
   (`_COST_TUNING_INSTRUCTIONS` in the system prompt asks the planner to set these only
   when a subtask's difficulty clearly diverges from its target agent's typical work, e.g.
@@ -233,7 +239,16 @@ variants so multiple API replicas can share a run — see
   parser). Failure modes are guarded explicitly: `AgentStatus.failed` logs a warning and
   returns the original subtask; `AgentStatus.partial` with empty output logs a specific
   "hit iteration limit" warning and also returns the original subtask (preventing a
-  silent `JSONDecodeError` from masking the real cause). When decomposition produces N > 1
+  silent `JSONDecodeError` from masking the real cause). Micro-task ids are namespaced
+  under the parent (`"{parent.id}.{id}"`, left alone if already prefixed) because results
+  are stored per run by subtask id — two parallel decomposed subtasks that both emit
+  `"step-1"` would otherwise overwrite each other. Only edges inside the micro-plan are
+  kept: the parent's own `depends_on` is never copied in (decomposition runs lazily, so
+  those deps are already satisfied), a micro-task without `dependsOn` chains after the
+  previous one, and any out-of-plan `dependsOn` entry is dropped with a warning. The
+  result is validated with `DependencyGraph`; a cycle or duplicate id falls back to the
+  original subtask. (`expand_plan()` — the unused eager path — re-attaches the parent's
+  deps to micro-plan roots.) When decomposition produces N > 1
   micro-subtasks, `_run_micro_subtasks()` schedules them as a **DAG** (using the same
   `DependencyGraph` scheduler as the top-level plan) so parallel branches within a
   decomposed subtask run concurrently. The sink micro-task — the one no other
@@ -246,7 +261,10 @@ variants so multiple API replicas can share a run — see
   writing ≤ 3 files, and (d) a final aggregator micro-task whose `dependsOn` lists every
   other micro-task ID.
 - **`orchestrator/scheduler.py` — `DependencyGraph`**: wraps a `networkx.DiGraph` built
-  from `Subtask.depends_on`; validates the plan is acyclic and exposes `ready()`
+  from `Subtask.depends_on`; validates the plan at construction (raises `ValueError` on
+  duplicate ids, a `depends_on` id not in the plan — which would otherwise become a
+  phantom node that `ready()` returns and then fails to look up — or a cycle) and
+  exposes `ready()`
   (dependency-satisfied, non-failed nodes) for the execution loop.
 - **`orchestrator/reporter.py` — `compile_report()`**: synthesizes leaf-subtask results
   (plus partial/failed sections) into the final `report.md` via one more LLM call on the
@@ -319,9 +337,11 @@ variants so multiple API replicas can share a run — see
   `hit_max_tokens: bool` flag (set when `stop_reason=="max_tokens"`); thinking tokens are
   priced at the resolved model's output rate (see `_pricing_for()` above) — the same rate
   regular output tokens use, since Anthropic bills thinking as output. On `max_tokens`, the partial assistant message is popped
-  from history (resumption starts from the last clean state), but pending tool calls ARE
-  still dispatched so clients receive paired `agent:progress` / `agent:tool_result` SSE
-  events — the results are not appended to history. SSE events emitted during the loop
+  from history (resumption starts from the last clean state), and pending tool calls are
+  **not** executed — their inputs may be truncated (a half-written `bash_exec` command or
+  `file_write` payload). Instead one `agent:tool_result` event per call is emitted with
+  `data.skipped=true` and the matching `tool_call_id`, so clients still see each call
+  resolved. SSE events emitted during the loop
   carry `turn_index` (1-based LLM call counter); `agent:progress` tool-call events carry
   `tool_call_id` (the Anthropic `tool_use` block ID); `_call_tool()` emits a matching
   `agent:tool_result` event (same `tool_call_id`) after the tool returns so clients can
@@ -374,7 +394,30 @@ variants so multiple API replicas can share a run — see
   the final report. `file_read` sets `max_result_chars=None` (exempt) because it
   already manages its own budget — see below.
 - **`tools/builtin.py` + `tools/arxiv_search.py` — built-in tool layer**: registers all
-  built-in `ToolDefinition`s into the global `tool_registry`. Key tools:
+  built-in `ToolDefinition`s into the global `tool_registry`. Sandbox boundaries:
+  - `_safe_path()` (used by `file_read`/`file_write`) resolves inside the workspace and
+    checks containment with `Path.is_relative_to` — not a string prefix, which a sibling
+    `workspace-other/` directory would pass. The artifact-content route uses the same check.
+  - `bash_exec`/`python_exec` run with `_sandbox_env()`: an allowlist (`PATH`, `LANG`,
+    `LC_*`, `TERM`, `TZ`, `TMPDIR`, `USER`, `LOGNAME`, `SHELL`) plus
+    `settings.sandbox_env_passthrough`, with `HOME` pinned to the workspace. Credentials
+    (`ANTHROPIC_API_KEY`, `TAVILY_API_KEY`, `REDIS_URL`) are never visible to agent
+    subprocesses. This is env scrubbing only — there is no OS-level sandbox, so full
+    `bash_exec`/`python_exec` can still read files outside the workspace.
+  - `bash_exec_readonly` (planner, decomposer, WriterAgent — all of which can also see
+    untrusted web or workspace content) is validated by `_check_readonly_command()`
+    before it reaches the shell: harmless stderr redirects (`2>&1`, `2>/dev/null`) are
+    stripped; a quote-aware scan rejects unquoted `` ` $ ( ) { } [ ] ? < > ! `` and
+    newlines, plus `$`/backticks inside double quotes (these expand before the command
+    runs, e.g. `cat {..,x}/.env`); the rest is tokenised with `shlex` and split on
+    `| || && ; &`. Every stage must start with a command in `_READONLY_COMMANDS` (no
+    `env`, `printenv`, `xargs`, `awk`, `sed`), and every argument is checked by
+    `_readonly_arg_error()`: `find -exec/-execdir/-ok/-delete/-fprint*`, `sort -o`,
+    `tree -o` and `uniq IN OUT` are refused, as are `..` segments, `.*` globs and
+    absolute paths (including flag-attached ones such as `--file=/x`) outside the
+    workspace. Agents are told to single-quote search patterns.
+
+  Key tools:
   - `arxiv_search` — searches arXiv Atom API; returns `title`, `abstract`, `url` (abs),
     and `pdf_url` (derived by replacing `/abs/` with `/pdf/` in the abs URL, normalised to
     https). Use `category=` to restrict to a subject area and avoid off-topic hits. The
@@ -448,7 +491,9 @@ Within one run, components talk through three mechanisms:
   summaries keyed by dep task ID — both `output.text` and `output.structured` are
   included when present so the synthesizer sees the full agent output) and
   `ctx.build_upstream_artifacts()` (dict of dep task ID → `files_written` list from
-  that task's `AgentResult`). The agent receives both as an `<upstream_context>` block
+  that task's `AgentResult`). Both are thin wrappers over the backend-agnostic helpers in
+  `core/prior_results.py`, which the Redis context also calls — so the two backends
+  cannot drift in what downstream agents see. The agent receives both as an `<upstream_context>` block
   in its initial user message — it reads the exact files it needs rather than receiving
   the full upstream conversation history. The planner's system prompt ("Context
   inheritance") states this explicitly so it tells downstream agents to read upstream
