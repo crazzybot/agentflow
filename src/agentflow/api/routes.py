@@ -302,7 +302,7 @@ async def get_run_artifact_content(run_id: str, artifact_id: str):
     from agentflow.config import settings
     workspace = Path(settings.workspace_dir).resolve()
     target = (workspace / artifact.path).resolve()
-    if not str(target).startswith(str(workspace)):
+    if not target.is_relative_to(workspace):
         raise HTTPException(status_code=400, detail="Invalid artifact path")
     if not target.exists():
         raise HTTPException(status_code=404, detail=f"Artifact file not found: {artifact.path}")

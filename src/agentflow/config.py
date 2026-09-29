@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     runs_dir: str = ".runs"
     skills_dir: str = "skills"
     sandbox_python: str = "sandbox/.venv/bin/python"
+    # Extra environment variable names passed through to bash_exec / python_exec
+    # beyond the built-in allowlist (PATH, LANG, …). Credentials are withheld by
+    # default; add only what a toolchain needs, e.g. SANDBOX_ENV_PASSTHROUGH='["NODE_OPTIONS"]'.
+    sandbox_env_passthrough: list[str] = []
     agent_max_iterations: int = 10  # fallback when no budget is set
     agent_max_tokens_fallback: int = 8_192  # max_tokens per call when no budget is set
     agent_max_tokens_cap: int = 32_768  # upper bound on max_tokens derived from budget

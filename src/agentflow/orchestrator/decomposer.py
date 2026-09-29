@@ -14,6 +14,7 @@ from agentflow.config import settings
 from agentflow.core.models import AgentManifest, AgentStatus, ExecutionPlan, IterationLimitAction, Subtask, TaskContext, TaskEnvelope
 from agentflow.core.registry import AgentRegistry
 from agentflow.llm import LLMClient
+from agentflow.orchestrator.scheduler import DependencyGraph
 
 if TYPE_CHECKING:
     from agentflow.orchestrator.stream import StreamEmitter
@@ -131,23 +132,59 @@ async def decompose_subtask(
         if not isinstance(items, list) or len(items) <= 1:
             return [subtask], context
 
+        # Namespace micro-task ids under the parent: results are stored per run by
+        # subtask id, so two decomposed subtasks that both emit e.g. "step-1"
+        # would otherwise overwrite each other's results.
+        prefix = f"{subtask.id}."
+
+        def _ns(raw_id: object) -> str:
+            raw = str(raw_id)
+            return raw if raw.startswith(prefix) else prefix + raw
+
+        micro_ids = [_ns(item["id"]) for item in items]
+        known_ids = set(micro_ids)
+
         micro: list[Subtask] = []
         micro_fraction = (subtask.budget_fraction / len(items)) if subtask.budget_fraction else None
-        for item in items:
-            base_deps = subtask.depends_on if not micro else [micro[-1].id]
+        for item, micro_id in zip(items, micro_ids):
+            if "dependsOn" in item:
+                # Only edges within this micro-plan are meaningful. The parent's own
+                # dependencies are already satisfied (decomposition runs lazily at
+                # dispatch time), and anything else would be a phantom node.
+                deps: list[str] = []
+                for dep in item["dependsOn"]:
+                    dep_id = _ns(dep)
+                    if dep_id in known_ids and dep_id != micro_id:
+                        deps.append(dep_id)
+                    else:
+                        logger.warning(
+                            "[decomposer] %s: dropping dependency %r of micro-task %s (not in this decomposition)",
+                            subtask.id, dep, micro_id,
+                        )
+            else:
+                deps = [micro[-1].id] if micro else []
             micro.append(
                 Subtask(
-                    id=item["id"],
+                    id=micro_id,
                     agent_id=item.get("agentId", subtask.agent_id),
                     instruction=item["instruction"],
-                    depends_on=item.get("dependsOn", base_deps),
+                    depends_on=deps,
                     expected_output=item.get("expectedOutput", ""),
                     budget_fraction=micro_fraction,
                 )
             )
+
+        try:
+            DependencyGraph(ExecutionPlan(run_id=run_id, subtasks=micro))
+        except ValueError as exc:
+            logger.warning(
+                "[decomposer] Invalid decomposition for %s (%s) — keeping original", subtask.id, exc,
+            )
+            return [subtask], context
+
         logger.info("[decomposer] Expanded %s → %d micro-subtasks", subtask.id, len(micro))
         return micro, context
-    except (json.JSONDecodeError, KeyError) as exc:
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
         logger.warning(
             "[decomposer] Could not parse decomposition for %s: %s — keeping original.\nRaw output was:\n%s",
             subtask.id, exc, result.output.text[:500],
@@ -180,6 +217,12 @@ async def expand_plan(
             continue
 
         micro, _ = await decompose_subtask(subtask, manifest, plan.run_id, client, emitter, task=task, user_context=user_context)
+        if micro != [subtask]:
+            # Eager expansion: micro-plan roots must still wait for the parent's deps.
+            micro = [
+                ms.model_copy(update={"depends_on": list(subtask.depends_on)}) if not ms.depends_on else ms
+                for ms in micro
+            ]
         expanded.extend(micro)
         tail_id[subtask.id] = micro[-1].id
 

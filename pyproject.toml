@@ -29,6 +29,8 @@ agentflow = "agentflow.cli:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Agent-generated projects under workspace/ ship their own tests; never collect them.
+testpaths = ["tests"]
 
 [build-system]
 requires = ["uv_build>=0.9.21,<0.10.0"]

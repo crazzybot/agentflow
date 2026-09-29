@@ -49,3 +49,20 @@ def test_topological_order():
     graph = DependencyGraph(plan)
     order = graph.topological_order()
     assert order.index("st_1") < order.index("st_2") < order.index("st_3")
+
+
+def test_unknown_dependency_rejected_at_construction():
+    """A dependsOn id missing from the plan used to become a phantom node that
+    ready() returned and then failed to look up (KeyError mid-run)."""
+    plan = _plan(Subtask(id="st_1", agent_id="A", instruction="A", depends_on=["research"]))
+    with pytest.raises(ValueError, match="unknown subtask 'research'"):
+        DependencyGraph(plan)
+
+
+def test_duplicate_subtask_id_rejected():
+    plan = _plan(
+        Subtask(id="st_1", agent_id="A", instruction="A"),
+        Subtask(id="st_1", agent_id="B", instruction="B"),
+    )
+    with pytest.raises(ValueError, match="duplicate"):
+        DependencyGraph(plan)

@@ -91,14 +91,14 @@ async def test_file_write_append_returns_total_line_count(tmp_path, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_bash_exec():
-    result = await tool_registry.execute("bash_exec", {"command": "echo hello_agentflow"})
+    result = await tool_registry.execute("bash_exec", {"command": "echo hello_agentflow", "purpose": "test"})
     assert "hello_agentflow" in result
     assert "exit_code=0" in result
 
 
 @pytest.mark.asyncio
 async def test_python_exec():
-    result = await tool_registry.execute("python_exec", {"code": "print(6 * 7)"})
+    result = await tool_registry.execute("python_exec", {"code": "print(6 * 7)", "purpose": "test"})
     assert "42" in result
     assert "exit_code=0" in result
 
@@ -282,3 +282,97 @@ def test_html_to_text_prefers_main_content():
     text = html_to_text(page)
     assert "Body text." in text
     assert "Sidebar promo" not in text
+
+
+# ---------------------------------------------------------------------------
+# Sandbox hardening: path containment, env scrubbing, read-only shell allowlist
+# ---------------------------------------------------------------------------
+
+from agentflow.tools.builtin import _check_readonly_command, _safe_path, _sandbox_env  # noqa: E402
+
+
+def test_safe_path_rejects_sibling_dir_sharing_the_workspace_prefix(tmp_path, monkeypatch):
+    ws = tmp_path / "workspace"
+    (tmp_path / "workspace-other").mkdir()
+    monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(ws))
+    assert _safe_path("../workspace-other/secret.txt") is None
+    assert _safe_path("sub/ok.txt") == (ws / "sub/ok.txt").resolve()
+
+
+def test_sandbox_env_withholds_credentials(tmp_path, monkeypatch):
+    monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
+    monkeypatch.setenv("REDIS_URL", "redis://secret")
+    env = _sandbox_env()
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "REDIS_URL" not in env
+    assert "PATH" in env
+    assert env["HOME"] == str(tmp_path.resolve())
+
+
+def test_sandbox_env_passthrough_is_configurable(tmp_path, monkeypatch):
+    monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path))
+    monkeypatch.setattr("agentflow.config.settings.sandbox_env_passthrough", ["NODE_OPTIONS"])
+    monkeypatch.setenv("NODE_OPTIONS", "--max-old-space-size=4096")
+    assert _sandbox_env()["NODE_OPTIONS"] == "--max-old-space-size=4096"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool,inp", [
+    ("bash_exec", {"command": "echo key=$ANTHROPIC_API_KEY", "purpose": "t"}),
+    ("python_exec", {"code": "import os; print('key=' + os.environ.get('ANTHROPIC_API_KEY', ''))", "purpose": "t"}),
+])
+async def test_exec_tools_cannot_read_api_key(tool, inp, tmp_path, monkeypatch):
+    monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
+    result = await tool_registry.execute(tool, inp)
+    assert "exit_code=0" in result
+    assert "sk-secret" not in result
+
+
+@pytest.mark.parametrize("command", [
+    "find . -name '*.py'",
+    "grep -rn 'def run' src | head -20",
+    "ls -la && cat README.md",
+    "find . -type f 2>/dev/null | wc -l",
+    "grep -rn \"def \\w+(\" src 2>&1",
+    "wc -l src/*.py",
+    "jq '.subtasks[0]' plan.json",
+    "sort -u names.txt | uniq -c",
+])
+def test_readonly_allows_exploration_commands(command, tmp_path, monkeypatch):
+    monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path))
+    assert _check_readonly_command(command) is None
+
+
+@pytest.mark.parametrize("command", [
+    "env",
+    "printenv ANTHROPIC_API_KEY",
+    "env rm -rf .",
+    "find . | xargs rm",
+    "awk 'BEGIN{system(\"id\")}'",
+    "sed -n 1p x",
+    "echo $(id)",
+    "echo `id`",
+    "echo \"$ANTHROPIC_API_KEY\"",
+    "ls\nrm -rf .",
+    "find . -exec rm {} \\;",
+    "find . -exec rm '{}' ';'",
+    "find . -delete",
+    "sort -o out.txt in.txt",
+    "uniq in.txt out.txt",
+    "tree -o out.txt",
+    "cat ../.env",
+    "cat {..,x}/.env",
+    "cat .[.]/.env",
+    "cat .*/.env",
+    "cat /etc/passwd",
+    "grep --file=/etc/passwd x",
+    "ls > listing.txt",
+    "cat < ../.env",
+    "(cd .. && cat .env)",
+    "cat 'unterminated",
+])
+def test_readonly_rejects_escapes(command, tmp_path, monkeypatch):
+    monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path))
+    assert _check_readonly_command(command) is not None
