@@ -1,17 +1,21 @@
 ---
 title: Architecture Overview
-last_updated: 2026-09-28
-last_verified_sha: 0cdeee7
+last_updated: 2026-09-30
+last_verified_sha: f3e5a83
 sources:
   - src/agentflow/main.py
+  - src/agentflow/api/routes.py
   - src/agentflow/orchestrator/
   - src/agentflow/agents/agent.py
   - src/agentflow/core/bus.py
   - src/agentflow/core/context.py
   - src/agentflow/core/prior_results.py
   - src/agentflow/core/models.py
+  - src/agentflow/core/registry.py
+  - src/agentflow/core/skill_loader.py
   - src/agentflow/llm/client.py
   - src/agentflow/tools/
+  - manifests/
 status: current
 ---
 
@@ -44,7 +48,7 @@ variants so multiple API replicas can share a run — see
    cheap `settings.reporter_model` calls that only need the task string, so running them
    together (and alongside the setup below) avoids stacking their latency sequentially
    before real work starts. `_generate_run_name()`'s result is awaited immediately to
-   write `runs/<run_id>/meta.json`; `_is_single_agent_task()`'s result is awaited later,
+   write `<runs_dir>/<run_id>/meta.json`; `_is_single_agent_task()`'s result is awaited later,
    right before it gates plan-vs-direct routing (step 3). Two `ContextVar` tokens are then armed for the
    lifetime of the run: `_current_sink` (artifact tracking, from
    `tools/artifact_tracker.py`) and `_kb_dispatch_fn` (from `tools/kb_dispatcher.py`),
@@ -101,8 +105,8 @@ variants so multiple API replicas can share a run — see
    FIRST_COMPLETED)` as tasks finish. `_dispatch_subtask()` calls
    `ctx.register_agent(agent_id)` so mid-run user messages are routed to that agent,
    builds a `TaskEnvelope` (instruction + prior results/messages + budget/timeout
-   constraints; planner-only context keys such as `prior_report` and
-   `prior_subtask_outputs` are stripped before the envelope is built so agents only
+   constraints; the planner-only follow-up keys `prior_run_id`, `prior_task`,
+   `prior_report` and `prior_subtask_outputs` are stripped before the envelope is built so agents only
    receive user-supplied extra context), and calls `Agent.run(envelope, emitter,
    ctx=ctx)`. It handles retries with exponential backoff, fallback-agent routing on
    final failure (deregistering the primary agent and registering the fallback before
@@ -173,7 +177,7 @@ variants so multiple API replicas can share a run — see
    `ctx.all_results()`, computes a cost summary, and calls `compile_report()` in
    [`orchestrator/reporter.py`](../../src/agentflow/orchestrator/reporter.py), which
    synthesizes leaf-node results (plus any partial/failed notes) into
-   `runs/<run_id>/report.md`. The synthesis model is `settings.report_model` if set, else
+   `<runs_dir>/<run_id>/report.md`. The synthesis model is `settings.report_model` if set, else
    `settings.report_model_tier` (default `"standard"`) resolved via `resolve_model_tier()`
    — not the cheap `reporter_model`, which is only used for run naming and direct/plan
    routing — with `max_tokens=settings.report_max_tokens` (16k) and
@@ -181,7 +185,7 @@ variants so multiple API replicas can share a run — see
    adaptive thinking). A `max_tokens` stop is logged and a visible truncation note is
    appended to the report. Per-result input is capped at `_MAX_RESULT_CHARS` (100k — a
    loudly-logged safety ceiling, not a routine trim).
-8. **Completion** — the engine emits `run_complete` (or `run_error`, or `run_cancelled`
+8. **Completion** — the engine emits `run:complete` (or `run:error`, or `run:cancelled`
    if the run was cancelled mid-flight) via the `StreamEmitter`, logs LLM usage stats,
    removes the task from `_run_tasks`, and tears down the run's bus/context entries.
 
@@ -275,7 +279,7 @@ variants so multiple API replicas can share a run — see
   consumers replay independently from position 0). `emit()` accepts optional
   `turn_index` (1-based LLM call iteration) and `tool_call_id` (Anthropic
   `tool_use` block ID) which are stored directly on `SSEEvent`; events are also
-  appended to `runs/<run_id>/events.jsonl` when `settings.capture_events` is set.
+  appended to `<runs_dir>/<run_id>/events.jsonl` when `settings.capture_events` is set.
   `stream_registry` is built by a `_make_stream_registry()` factory that returns a
   Redis-Streams-backed `RedisStreamRegistry` (`stream_redis.py`) when
   `STATE_BACKEND=redis`; the registry also exposes an async `connect()` for
@@ -480,13 +484,83 @@ variants so multiple API replicas can share a run — see
   (`max_retries=4`, exponential backoff on 429/500) rather than a per-process limiter,
   which would not coordinate across replicas.
 
+## Agent definition layer
+
+- **`manifests/*.yaml` → `core/registry.py` — `AgentRegistry`**: `main.py` builds one
+  registry at import time and calls `load_from_directory(settings.manifests_dir)`
+  (default `manifests/`). Each `*.json`/`*.yaml`/`*.yml` file is validated into an
+  `AgentManifest` (`core/models.py`). A file that fails validation is logged and skipped,
+  not fatal, and a second file with the same stem is skipped as a duplicate.
+  `OrchestratorEngine._build_agents()` then creates one generic `Agent` per manifest.
+  Registry lookups in use: `get()`/`all()`; `summary()` renders the agent roster
+  (domain, capabilities, tools including `<mcp-server>/*`, skills) that the planner
+  injects as `Available Agents:`; and `find_fallback(agent_id)` returns the manifest whose
+  `fallback_for` lists that id, which `_dispatch_subtask()` uses after the final retry fails.
+  **Declared but not enforced:** `capabilities` feeds only the planner roster (there
+  is a `by_capability()` index, but nothing calls it), and `AgentManifest.max_concurrency`
+  is not read anywhere. Parallelism is limited only by the DAG.
+- **`core/skill_loader.py` — `SkillLoader`** (global `skill_loader` over
+  `settings.skills_dir`, default `skills/`): at the start of `Agent.run()`, every skill
+  listed in `manifest.skills` is **pre-injected in full** into the cached system block via
+  `full_content()`. That means `SKILL.md` plus every other file in the skill dir, not just a
+  preamble. A skill therefore costs its whole size in (cached) input tokens on every
+  agent of that type. The `read_skill` tool (`tools/skills.py`) remains available for
+  on-demand reads, and names are validated (`[a-z0-9-]+`; topics disallow `..`). `preamble()`
+  (the lighter "advertise skills, load on demand" mode) exists but is currently unused.
+- **`tools/mcp_tools.py` — MCP adapter**: for each `manifest.mcp_servers` entry,
+  `Agent.run()` enters `mcp_session(config)` on an `AsyncExitStack`. The session stays
+  open for the whole subtask and closes when it ends. Its tools are wrapped as
+  `ToolDefinition`s (names sanitized to `[a-zA-Z0-9_-]{1,128}`) and appended to the
+  manifest's local tools. Transports: `sse` (default, `url`) or `stdio` (`command`/`args`).
+  Unlike `bash_exec`, a stdio server's env is `{**os.environ, **config.env}`, so it
+  **inherits the API process's credentials**; it is not passed through `_sandbox_env()`.
+  If the `mcp` package is missing, connectivity is disabled with a warning. No shipped
+  manifest currently declares an MCP server.
+
+## API surface & run persistence
+
+`api/routes.py` (mounted at `/api`) only calls the engine, `stream_registry` and
+`context_store`. Live-run endpoints:
+
+| Endpoint | Behaviour |
+| --- | --- |
+| `POST /runs` | Start a run (see lifecycle step 1). |
+| `GET /runs/{id}/stream` | SSE; `stream_registry.connect()` so any replica can serve it. |
+| `POST /runs/{id}/input` | HITL response → `ctx.provide_human_input()`; 409 if nothing pending. |
+| `POST /runs/{id}/cancel` | `engine.cancel_run()` cancels the run's asyncio Task; 404 if not active on **this** process. |
+| `POST /runs/{id}/message` | `ctx.push_user_message()` fan-out (see Data flow); 409 once the emitter is done. |
+| `POST /runs/{id}/followup` | Starts a **new** run whose `context` carries `prior_run_id`, `prior_task`, `prior_report` and `prior_subtask_outputs`, read from the old run's directory. The planner renders them as a "Prior Run" block; `_dispatch_subtask()` strips all four `prior_*` keys before building agent envelopes. |
+
+Past-run endpoints (`GET /runs`, `/runs/{id}`, `/events`, `/results`, `/report`,
+`/artifacts`, `/artifacts/{artifact_id}`) read the filesystem, not in-memory state.
+Each run's directory is `<runs_dir>/<run_id>/` (`settings.runs_dir`, default `.runs`)
+and holds `meta.json` (task, generated name, created_at), `events.jsonl` (when
+`capture_events` is set), `results.jsonl`, `artifacts.jsonl` (appended by
+`tools/artifact_tracker.py` as agents write files; paths are workspace-relative and
+served with an `is_relative_to` containment check) and `report.md`. Because
+`cancel_run()` looks only at the local `_run_tasks`, cancel is **not** cross-replica
+under the Redis backend.
+
+**Startup reconciliation**: the FastAPI `lifespan` in `main.py` calls
+`engine.reconcile_orphaned_runs()`. Any run dir with `meta.json` but no `report.md`
+counts as interrupted by a restart: a `run:error` event is appended to `events.jsonl`
+and a "Run Interrupted" tombstone `report.md` is written. This assumes a single process
+owns `runs_dir`. If several replicas share that directory, one replica starting up would
+tombstone runs still in flight on the others.
+
+The CLI (`cli/`, `agentflow run "<task>"`) is a thin click client over this HTTP API.
+It posts to `/api/runs`, renders the SSE stream with Rich (`cli/display.py`) and stops on
+`run:complete`/`run:error`/`run:cancelled`. It needs a running API server. Note
+that `--port` defaults to **8001** (`AGENTFLOW_PORT`) while `uvicorn` defaults to 8000, so
+pass `--port 8000` (or set the env var) when running against the dev server.
+
 ## Data flow & messaging
 
 Within one run, components talk through three mechanisms:
 
 - **Shared state — `core/context.py`**: `RunContext` is the source of truth for a run.
   `_dispatch_subtask()` writes each subtask's `AgentResult` via `ctx.store_result()`
-  (optionally appended to `runs/<run_id>/results.jsonl`); downstream subtasks read
+  (optionally appended to `<runs_dir>/<run_id>/results.jsonl`); downstream subtasks read
   dependency output via `ctx.build_prior_results()` (combined prose + structured-JSON
   summaries keyed by dep task ID — both `output.text` and `output.structured` are
   included when present so the synthesizer sees the full agent output) and
