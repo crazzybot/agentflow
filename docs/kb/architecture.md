@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-09-30
-last_verified_sha: f3e5a83
+last_verified_sha: c5e3b74
 sources:
   - src/agentflow/main.py
   - src/agentflow/api/routes.py
@@ -13,6 +13,7 @@ sources:
   - src/agentflow/core/models.py
   - src/agentflow/core/registry.py
   - src/agentflow/core/skill_loader.py
+  - src/agentflow/cli/
   - src/agentflow/llm/client.py
   - src/agentflow/tools/
   - manifests/
@@ -512,10 +513,15 @@ variants so multiple API replicas can share a run — see
   open for the whole subtask and closes when it ends. Its tools are wrapped as
   `ToolDefinition`s (names sanitized to `[a-zA-Z0-9_-]{1,128}`) and appended to the
   manifest's local tools. Transports: `sse` (default, `url`) or `stdio` (`command`/`args`).
-  Unlike `bash_exec`, a stdio server's env is `{**os.environ, **config.env}`, so it
-  **inherits the API process's credentials**; it is not passed through `_sandbox_env()`.
-  If the `mcp` package is missing, connectivity is disabled with a warning. No shipped
-  manifest currently declares an MCP server.
+  A stdio server does **not** inherit the API process's env. `_stdio_env()` returns only
+  the vars the manifest opts into: `env_passthrough` names copied from the process env,
+  then literal `env` values on top. The mcp SDK merges these onto its own safe default
+  (`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`), so a credential such as
+  `ANTHROPIC_API_KEY` reaches a server only if its name is listed in `env_passthrough`.
+  Unlike `_sandbox_env()`, the real `HOME` is kept so tools like `uv` find their caches.
+  If the `mcp` package is missing, connectivity is disabled with a warning. The shipped
+  `knowledgebase_agent` launches the `semantic-kb` server over stdio (`uv --directory
+  workspace/semantic-kb run skb-mcp`).
 
 ## API surface & run persistence
 
@@ -551,8 +557,7 @@ tombstone runs still in flight on the others.
 The CLI (`cli/`, `agentflow run "<task>"`) is a thin click client over this HTTP API.
 It posts to `/api/runs`, renders the SSE stream with Rich (`cli/display.py`) and stops on
 `run:complete`/`run:error`/`run:cancelled`. It needs a running API server. Note
-that `--port` defaults to **8001** (`AGENTFLOW_PORT`) while `uvicorn` defaults to 8000, so
-pass `--port 8000` (or set the env var) when running against the dev server.
+that `--port` defaults to 8000 (env `AGENTFLOW_PORT`), matching `uvicorn`'s default.
 
 ## Data flow & messaging
 
