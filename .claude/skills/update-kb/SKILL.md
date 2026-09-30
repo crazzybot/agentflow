@@ -28,8 +28,10 @@ done. It keeps `docs/kb/` current with the code.
    it from `docs/kb/index.md`.
 
 6. **Drift sweep.** For EVERY doc in `docs/kb/`, run the drift query:
-   `git log --oneline <last_verified_sha>..HEAD -- <that doc's sources>`
-   Non-empty output = the doc is behind. Fix it now, or if it genuinely cannot be
+   `git diff --stat <last_verified_sha> HEAD -- <that doc's sources>`
+   Non-empty output = the doc is behind. (Use a tree diff, not `git log sha..HEAD`:
+   PRs are squash-merged, so a SHA recorded on a PR branch is never an ancestor of
+   `main` and `git log` would list every later commit as unseen.) Fix it now, or if it genuinely cannot be
    fixed in this task, set its frontmatter `status: stale` so the next run catches it.
 
 7. **Validate.** For each doc you changed, confirm frontmatter still has all five
@@ -42,7 +44,7 @@ done. It keeps `docs/kb/` current with the code.
 
 ```bash
 SHA=<doc's last_verified_sha>
-git log --oneline ${SHA}..HEAD -- <space-separated sources from that doc>
+git diff --stat ${SHA} HEAD -- <space-separated sources from that doc>
 ```
 Empty output means the doc is current for its declared sources.
 ```

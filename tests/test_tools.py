@@ -376,3 +376,36 @@ def test_readonly_allows_exploration_commands(command, tmp_path, monkeypatch):
 def test_readonly_rejects_escapes(command, tmp_path, monkeypatch):
     monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path))
     assert _check_readonly_command(command) is not None
+
+
+# ---------------------------------------------------------------------------
+# MCP stdio env
+# ---------------------------------------------------------------------------
+
+def test_stdio_env_does_not_inherit_process_credentials(monkeypatch):
+    from agentflow.core.models import MCPServerConfig
+    from agentflow.tools.mcp_tools import _stdio_env
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "gh-token")
+    config = MCPServerConfig(
+        name="gh", transport="stdio", command="gh-mcp",
+        env={"LOG_LEVEL": "debug"}, env_passthrough=["GITHUB_TOKEN", "UNSET_VAR"],
+    )
+
+    env = _stdio_env(config)
+
+    assert env == {"GITHUB_TOKEN": "gh-token", "LOG_LEVEL": "debug"}
+
+
+def test_stdio_env_literal_values_override_passthrough(monkeypatch):
+    from agentflow.core.models import MCPServerConfig
+    from agentflow.tools.mcp_tools import _stdio_env
+
+    monkeypatch.setenv("REGION", "from-process")
+    config = MCPServerConfig(
+        name="x", transport="stdio", command="x",
+        env={"REGION": "from-manifest"}, env_passthrough=["REGION"],
+    )
+
+    assert _stdio_env(config) == {"REGION": "from-manifest"}

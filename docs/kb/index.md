@@ -1,7 +1,7 @@
 ---
 title: AgentFlow Knowledge Base — Index
-last_updated: 2026-09-28
-last_verified_sha: 0cdeee7
+last_updated: 2026-09-30
+last_verified_sha: c5e3b74
 sources:
   - src/agentflow/
   - manifests/
@@ -49,4 +49,6 @@ than being loaded every session:
 
 After any implementation/improvement task, run the `update-kb` skill (see
 `CLAUDE.md`). Each doc's frontmatter carries `last_verified_sha` + `sources`;
-drift is detected by `git log <last_verified_sha>..HEAD -- <sources>`.
+drift is detected by `git diff --stat <last_verified_sha> HEAD -- <sources>` (a tree
+comparison — unlike `git log <sha>..HEAD` it still works when the recorded SHA is a
+PR-branch commit that was squash-merged and so is not an ancestor of `main`).
