@@ -13,7 +13,7 @@ from .display import RunDisplay, console
 
 @click.group()
 @click.option("--host", default="127.0.0.1", envvar="AGENTFLOW_HOST", show_default=True, help="Service host")
-@click.option("--port", default=8001, envvar="AGENTFLOW_PORT", show_default=True, type=int, help="Service port")
+@click.option("--port", default=8000, envvar="AGENTFLOW_PORT", show_default=True, type=int, help="Service port")
 @click.pass_context
 def main(ctx: click.Context, host: str, port: int) -> None:
     """AgentFlow — multi-agent orchestration CLI."""

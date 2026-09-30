@@ -23,9 +23,12 @@ mcp_servers:
       - "workspace/semantic-kb"
       - "run"
       - "skb-mcp"
+    # The server does not inherit this process's env (only PATH/HOME/USER/...).
+    # Set literal values with `env`, or forward named vars with `env_passthrough`.
     # Override SKB_DB_DIR to store the KB inside the agentflow workspace:
     # env:
     #   SKB_DB_DIR: "workspace/semantic-kb/.db"
+    # env_passthrough: [SKB_COLLECTION]
 system_prompt: |
   You are a knowledge management agent with access to a semantic knowledgebase (KB).
 

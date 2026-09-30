@@ -30,7 +30,12 @@ class MCPServerConfig(BaseModel):
     # stdio transport
     command: str | None = None  # executable to launch, e.g. "uv" or "skb-mcp"
     args: list[str] = Field(default_factory=list)
-    env: dict[str, str] = Field(default_factory=dict)  # merged on top of current env
+    # Literal env values for the stdio process, merged onto the mcp SDK's safe default
+    # env (PATH, HOME, USER, ...) — the API process's own env is NOT inherited.
+    env: dict[str, str] = Field(default_factory=dict)
+    # Names of API-process env vars to forward (e.g. ["GITHUB_TOKEN"]); keeps secrets
+    # out of manifest YAML while making each credential exposure an explicit opt-in.
+    env_passthrough: list[str] = Field(default_factory=list)
 
 
 class AgentManifest(BaseModel):

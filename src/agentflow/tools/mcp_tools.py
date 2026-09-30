@@ -103,6 +103,18 @@ async def mcp_session(config: "MCPServerConfig") -> AsyncIterator[list[ToolDefin
             raise
 
 
+def _stdio_env(config: "MCPServerConfig") -> dict[str, str]:
+    """Return the env overrides for a stdio MCP server process.
+
+    Only variables the manifest opts into are forwarded: `env_passthrough` names
+    copied from the API process, then literal `env` values on top. The mcp SDK
+    merges this onto its own safe default (PATH, HOME, USER, ...), so credentials
+    such as ANTHROPIC_API_KEY never reach the server unless explicitly listed.
+    """
+    passthrough = {k: os.environ[k] for k in config.env_passthrough if k in os.environ}
+    return {**passthrough, **config.env}
+
+
 @asynccontextmanager
 async def _stdio_session(config: "MCPServerConfig") -> AsyncIterator[list[ToolDefinition]]:
     """Stdio transport — spawns the MCP server process and communicates via stdin/stdout."""
@@ -118,10 +130,7 @@ async def _stdio_session(config: "MCPServerConfig") -> AsyncIterator[list[ToolDe
         yield []
         return
 
-    # Merge caller-supplied env on top of the current process environment so the
-    # subprocess inherits PATH and other essentials while allowing overrides.
-    merged_env = {**os.environ, **config.env} if config.env else None
-    params = StdioServerParameters(command=config.command, args=config.args, env=merged_env)
+    params = StdioServerParameters(command=config.command, args=config.args, env=_stdio_env(config))
 
     logger.info("Launching stdio MCP server %r: %s %s", config.name, config.command, " ".join(config.args))
     launched = False

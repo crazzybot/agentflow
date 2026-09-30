@@ -1095,7 +1095,7 @@ compile_report(run_id, task, plan, all_results, client, cost_summary) -> str
 
 ### Commands (`cli/__init__.py`)
 
-Global options: `--host` (default `127.0.0.1`, env `AGENTFLOW_HOST`), `--port` (default `8001`, env `AGENTFLOW_PORT`).
+Global options: `--host` (default `127.0.0.1`, env `AGENTFLOW_HOST`), `--port` (default `8000`, env `AGENTFLOW_PORT`).
 
 #### `agentflow run <task>`
 - Options: `--context KEY=VALUE` (repeatable), `--verbose / -v`, `--json`
