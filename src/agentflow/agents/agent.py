@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -21,6 +22,7 @@ import anthropic
 
 from agentflow.config import settings
 from agentflow.core.models import AgentManifest, AgentOutput, AgentResult, AgentStatus, IterationLimitAction, SSEEventType, TaskEnvelope
+from agentflow.core.session import SessionEventType, record
 from agentflow.llm import LLMClient, estimate_thinking_tokens, supports_adaptive_thinking
 from agentflow.tools import tool_registry
 from agentflow.tools.builtin import write_overflow_file
@@ -323,6 +325,15 @@ class Agent:
         ctx: Any | None = None,
     ) -> AgentResult:
         start_ms = int(time.time() * 1000)
+        # One id per Agent.run call: retries, continuations and fallbacks of the same
+        # subtask each get their own transcript in the session log.
+        invocation_id = uuid.uuid4().hex
+        await record(
+            SessionEventType.agent_started,
+            agent_id=self.agent_id,
+            invocation_id=invocation_id,
+            data={"task_id": envelope.task_id, "resumed": resume_messages is not None},
+        )
         emitter.emit(
             SSEEventType.agent_progress,
             agent_id=self.agent_id,
@@ -330,7 +341,9 @@ class Agent:
             turn_index=0,
         )
         try:
-            result = await self._execute(envelope, emitter, resume_messages=resume_messages, ctx=ctx)
+            result = await self._execute(
+                envelope, emitter, resume_messages=resume_messages, ctx=ctx, invocation_id=invocation_id
+            )
         except Exception as exc:
             logger.exception("[%s] Agent %s raised an unhandled error", envelope.parent_run_id, self.agent_id)
             result = AgentResult(
@@ -340,6 +353,19 @@ class Agent:
                 error=str(exc),
             )
         result.duration_ms = int(time.time() * 1000) - start_ms
+        await record(
+            SessionEventType.agent_finished,
+            agent_id=self.agent_id,
+            invocation_id=invocation_id,
+            data={
+                "status": result.status,
+                "cost_usd": result.cost_usd,
+                "input_tokens": result.input_tokens,
+                "output_tokens": result.output_tokens,
+                "duration_ms": result.duration_ms,
+                "error": result.error,
+            },
+        )
         return result
 
     # ------------------------------------------------------------------
@@ -352,6 +378,7 @@ class Agent:
         emitter: "StreamEmitter",
         resume_messages: list | None = None,
         ctx: Any | None = None,
+        invocation_id: str | None = None,
     ) -> AgentResult:
         from agentflow.core.skill_loader import skill_loader
 
@@ -388,7 +415,10 @@ class Agent:
             ]
 
             # 4. Run the agentic loop
-            return await self._agentic_loop(envelope, all_tools, system_blocks, emitter, resume_messages=resume_messages, ctx=ctx)
+            return await self._agentic_loop(
+                envelope, all_tools, system_blocks, emitter,
+                resume_messages=resume_messages, ctx=ctx, invocation_id=invocation_id,
+            )
 
     # ------------------------------------------------------------------
     # Agentic loop with tool execution
@@ -402,7 +432,17 @@ class Agent:
         emitter: "StreamEmitter",
         resume_messages: list | None = None,
         ctx: Any | None = None,
+        invocation_id: str | None = None,
     ) -> AgentResult:
+
+        async def log_message(message: dict[str, Any], **extra: Any) -> None:
+            """Mirror a history append into the run's session log."""
+            await record(
+                SessionEventType.message_appended,
+                agent_id=self.agent_id,
+                invocation_id=invocation_id,
+                data={"message": message, **extra},
+            )
 
         if resume_messages is not None:
             # Resume a partial run — continue from the existing message thread.
@@ -431,6 +471,10 @@ class Agent:
             if upstream_block:
                 user_content += upstream_block
             messages = [{"role": "user", "content": user_content}]
+        # A resumed invocation's transcript repeats the inherited prefix, so every
+        # invocation can be replayed on its own.
+        for m in messages:
+            await log_message(m)
         anthropic_tools = [t.to_anthropic_param() for t in tools]
         total_input_tokens = 0
         total_output_tokens = 0
@@ -494,6 +538,7 @@ class Agent:
                     if action == IterationLimitAction.finalize:
                         finalize_msg = self.manifest.iteration_limit_message or _DEFAULT_FINALIZE_MESSAGE
                         messages.append({"role": "user", "content": finalize_msg})
+                        await log_message(messages[-1])
                         _finalizing = True
                         hit_limit = True
                         logger.warning(
@@ -503,16 +548,29 @@ class Agent:
                     elif action == IterationLimitAction.ask_user and ctx is not None:
                         async with ctx.human_input_lock:
                             ctx.request_human_input()
+                            hitl_message = (
+                                f"Agent '{self.agent_id}' hit its iteration limit ({max_iterations}). "
+                                "Reply with action='continue' and iteration_increase=<N> for more "
+                                "iterations, or action='cancel'."
+                            )
+                            await record(
+                                SessionEventType.human_input_requested,
+                                agent_id=self.agent_id,
+                                invocation_id=invocation_id,
+                                data={"request_type": "iteration_limit", "message": hitl_message},
+                            )
                             emitter.emit(
                                 SSEEventType.run_awaiting_input,
                                 agent_id=self.agent_id,
-                                message=(
-                                    f"Agent '{self.agent_id}' hit its iteration limit ({max_iterations}). "
-                                    "Reply with action='continue' and iteration_increase=<N> for more "
-                                    "iterations, or action='cancel'."
-                                ),
+                                message=hitl_message,
                             )
                             hitl_response = await ctx.await_human_input()
+                            await record(
+                                SessionEventType.human_input_received,
+                                agent_id=self.agent_id,
+                                invocation_id=invocation_id,
+                                data={"response": hitl_response.model_dump(mode="json")},
+                            )
                         if hitl_response.action == "continue":
                             extra = hitl_response.iteration_increase or 5
                             max_iterations += extra
@@ -602,6 +660,17 @@ class Agent:
             # Store the assistant response as plain dicts so the history can be
             # post-processed (e.g. file_write compaction) without SDK coupling.
             messages.append({"role": "assistant", "content": _to_dict_content(response.content)})
+            await log_message(
+                messages[-1],
+                model=resolved_model,
+                stop_reason=response.stop_reason,
+                usage={
+                    "input_tokens": u.input_tokens,
+                    "output_tokens": u.output_tokens,
+                    "cache_creation_input_tokens": call_cache_write,
+                    "cache_read_input_tokens": call_cache_read,
+                },
+            )
             last_response_content = list(response.content)
 
             # Collect any text the model produced this turn (BetaTextBlock or TextBlock)
@@ -649,6 +718,12 @@ class Agent:
                     # replaying a broken call that will fail with a missing-argument error.
                     if messages and messages[-1].get("role") == "assistant":
                         messages.pop()
+                        await record(
+                            SessionEventType.message_discarded,
+                            agent_id=self.agent_id,
+                            invocation_id=invocation_id,
+                            data={"reason": "max_tokens"},
+                        )
                     # Never execute these calls: a truncated bash_exec command or
                     # file_write payload would run/write something the model never
                     # finished specifying. Emit a paired result event per call so
@@ -679,6 +754,7 @@ class Agent:
                               for b in pending_tool_use]
                         )
                         messages.append({"role": "user", "content": list(pending_results)})
+                        await log_message(messages[-1])
                         all_files_written.extend(
                             _collect_written_paths(pending_tool_use, list(pending_results))
                         )
@@ -692,6 +768,7 @@ class Agent:
             )
 
             messages.append({"role": "user", "content": list(tool_results)})
+            await log_message(messages[-1])
             all_files_written.extend(
                 _collect_written_paths(tool_use_blocks, list(tool_results))
             )
@@ -702,6 +779,7 @@ class Agent:
                 pending = await ctx.pop_user_message(self.agent_id)
                 if pending is not None:
                     messages.append({"role": "user", "content": pending})
+                    await log_message(messages[-1], injected=True)
                     emitter.emit(SSEEventType.run_message_received, agent_id=self.agent_id, message=pending[:120], turn_index=iteration)
 
         # With extended thinking the model may end via thinking + tool use without ever

@@ -300,6 +300,7 @@ class RunInfo(BaseModel):
     has_results: bool
     has_report: bool
     has_artifacts: bool = False
+    has_session: bool = False
     is_streaming: bool = False
     is_awaiting_input: bool = False
     task: str | None = None

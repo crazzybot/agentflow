@@ -18,6 +18,8 @@ from agentflow.core.models import (AgentResult, AgentStatus, ExecutionPlan,
                                    RunMeta, SSEEvent, SSEEventType, SSEPayload,
                                    Subtask, TaskConstraints, TaskContext, TaskEnvelope)
 from agentflow.core.registry import AgentRegistry
+from agentflow.core.session import (RunSession, SessionEventType, _current_session,
+                                     record, result_data, session_path)
 from agentflow.core.workspace import (WorkspaceLocks, _current_workspace,
                                        run_workspace_rel, workspace_path)
 from agentflow.llm import LLMClient
@@ -67,6 +69,27 @@ def _compute_subtask_budget(
         return remaining
 
     return remaining * (subtask.budget_fraction / total_pending_fraction)
+
+
+async def _store_result(ctx: RunContext, subtask_id: str, result: AgentResult) -> None:
+    """Store a subtask result in the run context and the session log."""
+    await ctx.store_result(subtask_id, result)
+    await record(
+        SessionEventType.result_stored,
+        agent_id=result.agent_id,
+        subtask_id=subtask_id,
+        data=result_data(result),
+    )
+
+
+async def _add_cost(ctx: RunContext, result: AgentResult) -> None:
+    """Charge a result's cost to the run budget and the session log."""
+    ctx.add_result_cost(result)
+    await record(
+        SessionEventType.cost_added,
+        agent_id=result.agent_id,
+        data={"cost_usd": result.cost_usd, "task_id": result.task_id},
+    )
 
 
 class OrchestratorEngine:
@@ -124,6 +147,12 @@ class OrchestratorEngine:
                 )
                 with events_file.open("a", encoding="utf-8") as f:
                     f.write(event.model_dump_json() + "\n")
+
+            if session_path(run_id).exists():
+                RunSession(run_id).append_sync(
+                    SessionEventType.run_finished,
+                    data={"status": "interrupted", "reason": "service restarted"},
+                )
 
             report_file.write_text(
                 "# Run Interrupted\n\n"
@@ -275,6 +304,19 @@ class OrchestratorEngine:
         )
 
         ws_token = _current_workspace.set(ws_dir)
+        session = RunSession(run_id)
+        session_token = _current_session.set(session)
+        await record(
+            SessionEventType.run_started,
+            data={
+                "task": task,
+                "user_context": user_context,
+                "budget_usd": budget_usd,
+                "workspace": ws_rel,
+            },
+        )
+        # Set by every exit path below; recorded once in `finally`.
+        final_status = "error"
 
         name = await name_task
         self._write_meta(run_id, task, name, created_at, ws_rel)
@@ -325,6 +367,10 @@ class OrchestratorEngine:
             if is_direct_task is not None and await is_direct_task:
                 logger.info("[%s] Auto-classified as single-agent task — skipping planner", run_id)
                 plan = self._make_direct_plan(run_id, task)
+                await record(
+                    SessionEventType.plan_created,
+                    data={"plan": plan.model_dump(mode="json"), "direct": True},
+                )
                 emitter.emit(
                     SSEEventType.plan_created,
                     message="Single-agent mode: planner skipped (auto-classified)",
@@ -332,6 +378,10 @@ class OrchestratorEngine:
                 )
             else:
                 plan = await create_plan(run_id, task, self.registry, self._client, emitter, budget_usd=budget_usd, user_context=user_context)
+                await record(
+                    SessionEventType.plan_created,
+                    data={"plan": plan.model_dump(mode="json"), "direct": False},
+                )
                 emitter.emit(
                     SSEEventType.plan_created,
                     message=f"Plan: {len(plan.subtasks)} subtask(s)",
@@ -359,7 +409,9 @@ class OrchestratorEngine:
             # Compile and save the final report
             report_path = await compile_report(run_id, task, plan, all_results, self._client, cost_summary)
 
+            final_status = "complete"
             if failures and not succeeded and not partials:
+                final_status = "error"
                 emitter.emit(SSEEventType.run_error, message=f"All subtasks failed: {list(failures)}", data=failures)
             elif failures or partials:
                 emitter.emit(
@@ -376,12 +428,20 @@ class OrchestratorEngine:
 
         except asyncio.CancelledError:
             logger.info("[%s] Run cancelled by user", run_id)
+            final_status = "cancelled"
             emitter.emit(SSEEventType.run_cancelled, message="Run cancelled")
         except Exception as exc:
             logger.exception("[%s] Orchestrator error", run_id)
             emitter.emit(SSEEventType.run_error, message=str(exc))
         finally:
             await ws_stack.aclose()
+            try:
+                await session.append(SessionEventType.run_finished, data={"status": final_status})
+            except OSError:
+                # Never let a failed log write skip the cleanup below (open emitter,
+                # leaked state); the log then simply ends without a terminal event.
+                logger.exception("[%s] Could not record run_finished in the session log", run_id)
+            _current_session.reset(session_token)
             _current_workspace.reset(ws_token)
             self._run_tasks.pop(run_id, None)
             if kb_token is not None:
@@ -537,7 +597,7 @@ class OrchestratorEngine:
         all_results = await ctx.all_results()
         sink_result = all_results.get(sink.id)
         if sink_result is not None:
-            await ctx.store_result(parent.id, sink_result)
+            await _store_result(ctx, parent.id, sink_result)
 
         emitter.emit(
             SSEEventType.task_complete,
@@ -587,6 +647,12 @@ class OrchestratorEngine:
                     user_context=agent_user_context,
                 )
                 if len(micro) > 1:
+                    await record(
+                        SessionEventType.subtask_decomposed,
+                        agent_id=subtask.agent_id,
+                        subtask_id=subtask.id,
+                        data={"micro": [m.model_dump(mode="json") for m in micro]},
+                    )
                     logger.info(
                         "[%s] Decomposed %s → %d micro-subtasks: %s",
                         run_id, subtask.id, len(micro), [m.id for m in micro],
@@ -623,6 +689,16 @@ class OrchestratorEngine:
             ),
         )
 
+        await record(
+            SessionEventType.subtask_dispatched,
+            agent_id=subtask.agent_id,
+            subtask_id=subtask.id,
+            data={
+                "subtask": subtask.model_dump(mode="json"),
+                "task_id": envelope.task_id,
+                "budget_usd": task_budget_usd,
+            },
+        )
         emitter.emit(
             SSEEventType.task_dispatched,
             agent_id=subtask.agent_id,
@@ -654,7 +730,7 @@ class OrchestratorEngine:
                     )
                     return False
 
-                ctx.add_result_cost(result)
+                await _add_cost(ctx, result)
 
                 if result.status == AgentStatus.failed:
                     if attempt < settings.task_max_retries:
@@ -665,7 +741,7 @@ class OrchestratorEngine:
                         await asyncio.sleep(2 ** attempt)
                         continue
 
-                    await ctx.store_result(subtask.id, result)
+                    await _store_result(ctx, subtask.id, result)
                     fallback = self.registry.find_fallback(subtask.agent_id)
                     if fallback and fallback.agent_id in self._agent_instances:
                         logger.info("[%s] Using fallback agent %s", run_id, fallback.agent_id)
@@ -678,8 +754,8 @@ class OrchestratorEngine:
                             fallback_result = await self._agent_instances[fallback.agent_id].run(envelope, emitter, ctx=ctx)
                         finally:
                             await ctx.deregister_agent(fallback.agent_id)
-                        ctx.add_result_cost(fallback_result)
-                        await ctx.store_result(subtask.id, fallback_result)
+                        await _add_cost(ctx, fallback_result)
+                        await _store_result(ctx, subtask.id, fallback_result)
                         emitter.emit(
                             SSEEventType.task_complete,
                             agent_id=fallback.agent_id,
@@ -711,7 +787,7 @@ class OrchestratorEngine:
                         else:
                             result = await self._continue_partial(run_id, subtask, envelope, result, ctx, emitter)
 
-                await ctx.store_result(subtask.id, result)
+                await _store_result(ctx, subtask.id, result)
 
                 if result.status == AgentStatus.partial:
                     emitter.emit(
@@ -782,6 +858,12 @@ class OrchestratorEngine:
             data=request.model_dump(),
         )
 
+        await record(
+            SessionEventType.human_input_requested,
+            agent_id=subtask.agent_id,
+            subtask_id=subtask.id,
+            data={"request": request.model_dump(mode="json")},
+        )
         ctx.request_human_input()
         try:
             response = await asyncio.wait_for(
@@ -799,6 +881,12 @@ class OrchestratorEngine:
                 run_id, response.budget_increase_usd, ctx.budget_usd,
             )
 
+        await record(
+            SessionEventType.human_input_received,
+            agent_id=subtask.agent_id,
+            subtask_id=subtask.id,
+            data={"response": response.model_dump(mode="json"), "budget_usd": ctx.budget_usd},
+        )
         return response
 
     async def _handle_task_budget_exhausted(
@@ -884,7 +972,7 @@ class OrchestratorEngine:
                 logger.warning("[%s] Continuation %d timed out for subtask %s", run_id, cont, subtask.id)
                 return result
 
-            ctx.add_result_cost(next_result)
+            await _add_cost(ctx, next_result)
             result = next_result
 
             if result.status != AgentStatus.partial:

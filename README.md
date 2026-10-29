@@ -224,6 +224,19 @@ Returns a stream of Server-Sent Events. Each event's `data` field is a JSON obje
 }
 ```
 
+### Session log
+
+```
+GET /api/runs/{run_id}/session?after_seq=0&type=message_appended&invocation_id=<id>
+```
+
+Every run keeps an always-on, append-only log at `.runs/{run_id}/session.jsonl`. It
+holds the run's inputs, the plan, subtask dispatches and results, cost, human-input
+exchanges, and the full message history of every agent invocation. The SSE stream is
+a live view for clients, while the session log is the record the run can be rebuilt
+from. All query parameters are optional, and `type` can be repeated. The endpoint
+works while the run is still in progress.
+
 ### Health check
 
 ```
