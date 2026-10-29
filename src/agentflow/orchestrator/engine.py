@@ -17,6 +17,7 @@ from agentflow.core.models import (AgentResult, AgentStatus, ExecutionPlan,
                                    HumanInputRequest, HumanInputResponse,
                                    RunMeta, SSEEvent, SSEEventType, SSEPayload,
                                    Subtask, TaskConstraints, TaskContext, TaskEnvelope)
+from agentflow.core.lease import LEASE_LOST, run_leases
 from agentflow.core.registry import AgentRegistry
 from agentflow.core.session import (RunSession, SessionEventType, _current_session,
                                      read_session, record, replay, result_data,
@@ -133,6 +134,19 @@ class OrchestratorEngine:
         self._resume: dict[str, ResumeState] = {}
         self._build_agents()
 
+    async def request_cancel(self, run_id: str) -> str | None:
+        """Cancel a run wherever it executes.
+
+        Returns "cancelled" when it ran here, "cancel_requested" when another
+        replica owns it (it stops within one lease heartbeat), or None when no
+        live run has that id.
+        """
+        if self.cancel_run(run_id):
+            return "cancelled"
+        if await run_leases.request_cancel(run_id):
+            return "cancel_requested"
+        return None
+
     def cancel_run(self, run_id: str) -> bool:
         """Cancel an active run. Returns True if the run was found and cancelled."""
         task = self._run_tasks.get(run_id)
@@ -141,7 +155,7 @@ class OrchestratorEngine:
         task.cancel()
         return True
 
-    def reconcile_orphaned_runs(self) -> list[str]:
+    async def reconcile_orphaned_runs(self) -> list[str]:
         """Mark runs left in flight by a previous process as interrupted (startup).
 
         A run with a session log is orphaned when the log has no terminal event; it
@@ -150,7 +164,9 @@ class OrchestratorEngine:
         has no report.md. Either way a ``run:error`` SSE event and a tombstone
         report are written so the run does not look perpetually in progress — but
         an existing report is never overwritten (a run can die after compiling it).
-        Returns the ids of the runs reconciled.
+        Runs whose lease is live on another replica are skipped; each run is
+        reconciled while holding its lease so two replicas starting together cannot
+        both reconcile it. Returns the ids of the runs reconciled.
         """
         runs_dir = Path(settings.runs_dir)
         if not runs_dir.exists():
@@ -160,55 +176,67 @@ class OrchestratorEngine:
             if not run_dir.is_dir() or not (run_dir / "meta.json").exists():
                 continue
             run_id = run_dir.name
-            report_file = run_dir / "report.md"
-
-            resumable = session_path(run_id).exists()
-            if resumable:
-                snap = replay(run_id, read_session(run_id))
-                # Finished, or already reconciled by an earlier restart.
-                if not snap.resumable or snap.interrupted or snap.status == "interrupted":
-                    continue
-                RunSession(run_id).append_sync(
-                    SessionEventType.run_interrupted, data={"reason": "service restarted"}
-                )
-            elif report_file.exists():
+            if self.is_active(run_id) or not await run_leases.acquire(run_id):
                 continue
-
-            events_file = run_dir / "events.jsonl"
-            if events_file.exists():
-                lines = [line for line in events_file.read_text(encoding="utf-8").splitlines() if line.strip()]
-                event = SSEEvent(
-                    run_id=run_id,
-                    seq=len(lines),
-                    type=SSEEventType.run_error,
-                    payload=SSEPayload(message="Run interrupted: service restarted"),
-                )
-                with events_file.open("a", encoding="utf-8") as f:
-                    f.write(event.model_dump_json() + "\n")
-
-            if not report_file.exists():
-                hint = (
-                    f"\nIt can be resumed with `POST /api/runs/{run_id}/resume`.\n"
-                    if resumable else ""
-                )
-                report_file.write_text(
-                    f"{_INTERRUPTED_REPORT_HEADER}\n\n"
-                    "This run did not complete — the service restarted while it was in progress.\n"
-                    + hint,
-                    encoding="utf-8",
-                )
-            logger.warning("Reconciled orphaned run %s%s", run_id, " (resumable)" if resumable else "")
-            reconciled.append(run_id)
+            try:
+                if self._reconcile_one(run_id, run_dir):
+                    reconciled.append(run_id)
+            finally:
+                await run_leases.release(run_id)
         return reconciled
 
-    def schedule_resume(self, run_id: str) -> asyncio.Task[None]:
+    def _reconcile_one(self, run_id: str, run_dir: Path) -> bool:
+        """Mark one run interrupted if it was left in flight. True if it was."""
+        report_file = run_dir / "report.md"
+        resumable = session_path(run_id).exists()
+        if resumable:
+            snap = replay(run_id, read_session(run_id))
+            # Finished, or already reconciled by an earlier restart.
+            if not snap.resumable or snap.interrupted or snap.status == "interrupted":
+                return False
+            RunSession(run_id).append_sync(
+                SessionEventType.run_interrupted, data={"reason": "service restarted"}
+            )
+        elif report_file.exists():
+            return False
+
+        events_file = run_dir / "events.jsonl"
+        if events_file.exists():
+            lines = [line for line in events_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+            event = SSEEvent(
+                run_id=run_id,
+                seq=len(lines),
+                type=SSEEventType.run_error,
+                payload=SSEPayload(message="Run interrupted: service restarted"),
+            )
+            with events_file.open("a", encoding="utf-8") as f:
+                f.write(event.model_dump_json() + "\n")
+
+        if not report_file.exists():
+            hint = (
+                f"\nIt can be resumed with `POST /api/runs/{run_id}/resume`.\n"
+                if resumable else ""
+            )
+            report_file.write_text(
+                f"{_INTERRUPTED_REPORT_HEADER}\n\n"
+                "This run did not complete — the service restarted while it was in progress.\n"
+                + hint,
+                encoding="utf-8",
+            )
+        logger.warning("Reconciled orphaned run %s%s", run_id, " (resumable)" if resumable else "")
+        return True
+
+    async def schedule_resume(self, run_id: str) -> asyncio.Task[None]:
         """Validate that *run_id* can be resumed here, then start ``wake()`` in the background.
 
         Raises RunNotResumableError (no log, or already finished) or
-        RunAlreadyActiveError (still executing in this process).
+        RunAlreadyActiveError (still executing here, or its lease is live on
+        another replica).
         """
         if self.is_active(run_id):
             raise RunAlreadyActiveError(f"Run {run_id!r} is already running")
+        if await run_leases.held_elsewhere(run_id):
+            raise RunAlreadyActiveError(f"Run {run_id!r} is running on another replica")
         load_resumable(run_id)
         task = asyncio.create_task(self.wake(run_id))
         # Register now, not when the task first runs: a second resume request
@@ -365,10 +393,18 @@ class OrchestratorEngine:
         # instead of leaving an emitter open that nothing will ever close.
         ws_rel = workspace if workspace is not None else run_workspace_rel(run_id, None)
         ws_dir = workspace_path(ws_rel)
+        # Claim the run before touching its log: two replicas resuming the same
+        # run at once must not both write to it.
+        if not await run_leases.acquire(run_id):
+            raise RunAlreadyActiveError(f"Run {run_id!r} is running on another replica")
 
         current_task = asyncio.current_task()
         if current_task is not None:
             self._run_tasks[run_id] = current_task
+        keep_alive = (
+            asyncio.create_task(run_leases.keep_alive(run_id, current_task))
+            if current_task is not None else None
+        )
 
         events_file = (
             f"{settings.runs_dir}/{run_id}/events.jsonl"
@@ -428,8 +464,9 @@ class OrchestratorEngine:
                 },
             )
             _remove_interrupted_tombstone(run_id)
-        # Set by every exit path below; recorded once in `finally`.
-        final_status = "error"
+        # Set by every exit path below; recorded once in `finally`. None = stand down
+        # without a terminal event (ownership moved to another replica).
+        final_status: str | None = "error"
 
         if name_task is not None:
             name = await name_task
@@ -550,17 +587,22 @@ class OrchestratorEngine:
                     data={"results": succeeded, "report": report_path, "cost": cost_summary},
                 )
 
-        except asyncio.CancelledError:
-            logger.info("[%s] Run cancelled by user", run_id)
-            final_status = "cancelled"
-            emitter.emit(SSEEventType.run_cancelled, message="Run cancelled")
+        except asyncio.CancelledError as exc:
+            if LEASE_LOST in exc.args:
+                logger.error("[%s] Standing down: another replica now owns this run", run_id)
+                final_status = None
+            else:
+                logger.info("[%s] Run cancelled by user", run_id)
+                final_status = "cancelled"
+                emitter.emit(SSEEventType.run_cancelled, message="Run cancelled")
         except Exception as exc:
             logger.exception("[%s] Orchestrator error", run_id)
             emitter.emit(SSEEventType.run_error, message=str(exc))
         finally:
             await ws_stack.aclose()
             try:
-                await session.append(SessionEventType.run_finished, data={"status": final_status})
+                if final_status is not None:
+                    await session.append(SessionEventType.run_finished, data={"status": final_status})
             except OSError:
                 # Never let a failed log write skip the cleanup below (open emitter,
                 # leaked state); the log then simply ends without a terminal event.
@@ -568,12 +610,20 @@ class OrchestratorEngine:
             _current_session.reset(session_token)
             _current_workspace.reset(ws_token)
             self._resume.pop(run_id, None)
+            if keep_alive is not None:
+                keep_alive.cancel()
+            await run_leases.release(run_id)
             self._run_tasks.pop(run_id, None)
             if kb_token is not None:
                 _kb_dispatch_fn.reset(kb_token)
             _current_sink.reset(sink_token)
             self._client.stats.log_summary()
-            emitter.close()
+            if final_status is None:
+                # Detach locally only: under Redis, close() would append the end-of-
+                # stream sentinel to the stream the new owner is still writing.
+                emitter.done = True
+            else:
+                emitter.close()
             task_bus.close_run(run_id)
             context_store.remove(run_id)
 

@@ -115,6 +115,10 @@ class Settings(BaseSettings):
     redis_key_ttl: int = 86_400
     # Maximum connections in the shared Redis pool.
     redis_max_connections: int = 50
+    # Per-run ownership lease (Redis backend): the owning replica renews it every
+    # ttl/3 seconds. A crashed owner's runs become reconcilable/resumable once it
+    # lapses; a cross-replica cancel takes effect within ~ttl/3 seconds.
+    run_lease_ttl_s: float = 15.0
 
     def resolve_model_tier(self, tier: str | None) -> str | None:
         """Resolve a named cost tier to a model id, or None if *tier* is unset/unrecognised.

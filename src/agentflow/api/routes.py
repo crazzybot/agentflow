@@ -113,11 +113,17 @@ async def provide_run_input(run_id: str, response: HumanInputResponse):
 
 @router.post("/runs/{run_id}/cancel")
 async def cancel_run(run_id: str):
-    """Cancel an active run. Returns 404 if the run is not found or already finished."""
+    """Cancel an active run on whichever replica executes it.
+
+    Returns {"status": "cancelled"} when it ran here, {"status": "cancel_requested"}
+    when another replica owns it (it stops within one lease heartbeat), and 404 if
+    no live run has this id.
+    """
     engine = _get_engine()
-    if not engine.cancel_run(run_id):
+    status = await engine.request_cancel(run_id)
+    if status is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found or already finished")
-    return {"status": "cancelled"}
+    return {"status": status}
 
 
 @router.post("/runs/{run_id}/resume", response_model=RunResponse)
@@ -130,7 +136,7 @@ async def resume_run(run_id: str):
     _require_run(run_id)
     engine = _get_engine()
     try:
-        engine.schedule_resume(run_id)
+        await engine.schedule_resume(run_id)
     except (RunAlreadyActiveError, RunNotResumableError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

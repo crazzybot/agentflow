@@ -229,7 +229,7 @@ async def test_wake_skips_finished_work_and_continues_the_interrupted_transcript
     await _crash_mid_subtask(eng, b, [_response("tool_use", [tool_use])])
 
     (runs_dir / "r" / "meta.json").write_text("{}")
-    assert eng.reconcile_orphaned_runs() == ["r"]
+    assert await eng.reconcile_orphaned_runs() == ["r"]
     assert (runs_dir / "r" / "report.md").read_text().startswith("# Run Interrupted")
 
     b.client.messages.create = AsyncMock(
@@ -351,7 +351,7 @@ async def test_schedule_resume_refuses_a_run_already_executing(engine):
     eng._run_tasks["r"] = asyncio.create_task(asyncio.Event().wait())
     try:
         with pytest.raises(RunAlreadyActiveError):
-            eng.schedule_resume("r")
+            await eng.schedule_resume("r")
     finally:
         eng._run_tasks["r"].cancel()
 
@@ -379,16 +379,16 @@ async def test_reconcile_skips_finished_runs_and_keeps_real_reports(engine, runs
     await RunSession("late").append(T.run_started, data={"task": "t"})
     (d / "report.md").write_text("# Real report")
 
-    assert eng.reconcile_orphaned_runs() == ["late"]
+    assert await eng.reconcile_orphaned_runs() == ["late"]
     assert (d / "report.md").read_text() == "# Real report"
     # A second restart does not reconcile it again.
-    assert eng.reconcile_orphaned_runs() == []
+    assert await eng.reconcile_orphaned_runs() == []
 
 
 async def test_reconcile_still_tombstones_runs_without_session_logs(engine, runs_dir):
     eng, _ = engine
     d = _run_dir(runs_dir, "legacy")
-    assert eng.reconcile_orphaned_runs() == ["legacy"]
+    assert await eng.reconcile_orphaned_runs() == ["legacy"]
     report = (d / "report.md").read_text()
     assert report.startswith("# Run Interrupted") and "resume" not in report
 
@@ -401,6 +401,7 @@ async def test_reconcile_still_tombstones_runs_without_session_logs(engine, runs
 def routes(runs_dir, monkeypatch):
     from agentflow.api import routes as routes_mod
     fake = MagicMock()
+    fake.schedule_resume = AsyncMock()
     monkeypatch.setattr(routes_mod, "_get_engine", lambda: fake)
     return routes_mod, fake
 
@@ -422,7 +423,7 @@ async def test_resume_route(routes, runs_dir):
          patch("agentflow.api.routes.asyncio.sleep", AsyncMock()):
         resp = await routes_mod.resume_run("r")
     assert resp.status == "resumed"
-    fake.schedule_resume.assert_called_with("r")
+    fake.schedule_resume.assert_awaited_with("r")
 
 
 async def test_back_to_back_resume_requests_start_one_run(engine):
@@ -433,7 +434,7 @@ async def test_back_to_back_resume_requests_start_one_run(engine):
     await s.append(T.plan_created, data={"plan": _plan().model_dump(mode="json")})
 
     with patch("agentflow.orchestrator.engine.compile_report", AsyncMock(return_value="report.md")):
-        task = eng.schedule_resume("r")
+        task = await eng.schedule_resume("r")
         with pytest.raises(RunAlreadyActiveError):
-            eng.schedule_resume("r")
+            await eng.schedule_resume("r")
         await task

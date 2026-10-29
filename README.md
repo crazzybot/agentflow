@@ -168,6 +168,7 @@ All settings are read from environment variables (or a `.env` file).
 | `CAPTURE_EVENTS` | `false` | Write SSE events to `.runs/{id}/events.jsonl` |
 | `CAPTURE_RESULTS` | `false` | Write subtask results to `.runs/{id}/results.jsonl` |
 | `RESUME_INTERRUPTED_RUNS` | `false` | Resume runs interrupted by a restart automatically at startup (spends budget without anyone asking) |
+| `RUN_LEASE_TTL_S` | `15` | Redis backend: TTL of the per-run ownership lease. The owner renews it every TTL/3 seconds. A crashed replica's runs become resumable once the lease lapses, and a cancel sent to another replica takes effect within about TTL/3 seconds. |
 | `MANIFESTS_DIR` | `manifests` | Directory scanned for `*.json` agent manifests |
 | `WORKSPACE_DIR` | `workspace` | Root for per-run workspaces: each run's file and shell tools are confined to `workspace/runs/{id}/` or a named `workspace/{name}/` |
 | `SKILLS_DIR` | `skills` | Directory scanned for skill packs |
@@ -251,9 +252,11 @@ the logged plan is reused, and a subtask that was mid-flight continues from its
 last logged agent turn. Any tool request that was still executing is dropped, and
 the model issues it again if it still needs it.
 
-Returns `409` if the run is still running, has no session log (it predates session
-logs), or already finished. Set `RESUME_INTERRUPTED_RUNS=true` to resume
-automatically at startup.
+Returns `409` if the run is still running (on this replica, or on another replica
+that still holds its lease), has no session log (it predates session logs), or
+already finished. Set `RESUME_INTERRUPTED_RUNS=true` to resume automatically at
+startup. With `STATE_BACKEND=redis`, `POST /api/runs/{id}/cancel` also reaches runs
+that execute on another replica and returns `{"status": "cancel_requested"}`.
 
 ### Health check
 

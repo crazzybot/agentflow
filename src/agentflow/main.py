@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from agentflow.config import settings
 from agentflow.core.registry import AgentRegistry
 from agentflow.logging_config import setup_logging
-from agentflow.orchestrator.engine import OrchestratorEngine
+from agentflow.orchestrator.engine import OrchestratorEngine, RunAlreadyActiveError
 from agentflow.orchestrator.resume import RunNotResumableError
 
 setup_logging(
@@ -38,16 +38,17 @@ engine = OrchestratorEngine(registry)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    reconciled = engine.reconcile_orphaned_runs()
+    reconciled = await engine.reconcile_orphaned_runs()
     if reconciled:
         logger.warning("Reconciled %d orphaned run(s) from previous instance", len(reconciled))
     if settings.resume_interrupted_runs:
         for run_id in reconciled:
             try:
-                engine.schedule_resume(run_id)
+                await engine.schedule_resume(run_id)
                 logger.info("Resuming interrupted run %s", run_id)
-            except RunNotResumableError as exc:
-                # Runs recorded before session logs existed cannot be resumed.
+            except (RunNotResumableError, RunAlreadyActiveError) as exc:
+                # Runs recorded before session logs existed cannot be resumed, and
+                # another replica may have claimed it first.
                 logger.info("Not resuming %s: %s", run_id, exc)
     yield
     if settings.state_backend == "redis":
