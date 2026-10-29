@@ -1,7 +1,7 @@
 ---
 title: Redis-Backed State Backend
 last_updated: 2026-10-29
-last_verified_sha: d03e4c2
+last_verified_sha: 8214412
 sources:
   - src/agentflow/config.py
   - src/agentflow/core/redis_client.py
@@ -63,9 +63,11 @@ method alongside the synchronous `get(run_id)`:
   input. In the in-process backend `connect()` just delegates to `get()`.
 
 `api/routes.py` calls `connect()` on the SSE stream, HITL input, message, and run-info
-paths so all of them work cross-replica. **Cancel is the exception**: `POST …/cancel`
-calls `engine.cancel_run()`, which only sees the local `_run_tasks`, so it returns 404
-on any replica other than the one executing the run; `list_runs` now builds `RunInfo`s
+paths so all of them work cross-replica. Cancel works cross-replica through **run
+leases**: `POST …/cancel` cancels a local run or sets `run:{id}:cancel`, and the owner's
+lease keep-alive cancels the run within about `RUN_LEASE_TTL_S`/3. Leases also keep
+startup reconciliation and resume away from runs still alive on another replica (see
+[resume-and-leases](resume-and-leases.md)). `list_runs` builds `RunInfo`s
 concurrently with `asyncio.gather`. The **workspace lock** is likewise process-local
 (`WorkspaceLocks` on the engine, see
 [architecture § Workspaces](../architecture.md#workspaces)). Two runs on the same named
@@ -89,6 +91,8 @@ All keys are `run:{run_id}:*` and carry `redis_key_ttl`:
 | `…:hitl:queue` | List | `RedisRunContext` | Human response delivery (`RPUSH`/`BLPOP`). |
 | `…:active_agents` | Set | `RedisRunContext` | Agent IDs with active subtasks; managed by `register_agent`/`deregister_agent`. |
 | `…:msg:{agent_id}` | List | `RedisRunContext` | Per-agent user-message queue; `push_user_message` fans out via `SMEMBERS` then pipelines `RPUSH` to each; `pop_user_message(agent_id)` does `LPOP`. |
+| `…:lease` | String | `RedisRunLeases` | Owner process id; `PX` = `RUN_LEASE_TTL_S`, renewed every TTL/3 (Lua compare-and-set). |
+| `…:cancel` | String | `RedisRunLeases` | Cross-replica cancel request, acted on by the owner's keep-alive; cleared on acquire/release. |
 | `…:dispatch` | List | `RedisTaskBus` | Orchestrator → worker (not yet wired). |
 | `…:result` | List | `RedisTaskBus` | Worker → orchestrator (not yet wired). |
 

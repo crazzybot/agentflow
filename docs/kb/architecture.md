@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-10-29
-last_verified_sha: d03e4c2
+last_verified_sha: 8214412
 sources:
   - src/agentflow/main.py
   - src/agentflow/api/routes.py
@@ -15,6 +15,7 @@ sources:
   - src/agentflow/core/skill_loader.py
   - src/agentflow/core/workspace.py
   - src/agentflow/core/session.py
+  - src/agentflow/core/lease.py
   - src/agentflow/cli/
   - src/agentflow/llm/client.py
   - src/agentflow/tools/
@@ -45,7 +46,10 @@ variants so multiple API replicas can share a run — see
 2. **Run setup** — `OrchestratorEngine.run()` (in
    [`orchestrator/engine.py`](../../src/agentflow/orchestrator/engine.py)) first resolves
    the run's workspace (see [Workspaces](#workspaces)) — before any per-run state exists,
-   so an unsafe path raises without leaving an emitter open — then registers the
+   so an unsafe path raises without leaving an emitter open — then claims the run's lease
+   (`run_leases.acquire`, a no-op on the memory backend; see
+   [subsystems/resume-and-leases](subsystems/resume-and-leases.md)) and starts its
+   keep-alive, then registers the
    current asyncio Task in `self._run_tasks[run_id]` (used by `cancel_run()`), creates a
    `StreamEmitter` (`stream_registry.create`), a `RunContext` (`context_store.create`),
    and a bus channel (`task_bus.create_run`), then kicks off `_generate_run_name()` and
@@ -213,7 +217,9 @@ variants so multiple API replicas can share a run — see
   shared `LLMClient`, one `Agent` instance per registered manifest, and `_run_tasks`
   (a `dict[run_id, asyncio.Task]` used by `cancel_run()` to cancel active runs); runs
   the plan → schedule → dispatch → report lifecycle and all retry/budget/fallback/cancel
-  logic.
+  logic. `run()` and `wake()` (resume from the session log) share one body, `_run()`;
+  `_resume[run_id]` holds the `ResumeState` the scheduler and `_dispatch_subtask()`
+  consult while a resumed run executes.
 - **`orchestrator/planner.py` — `create_plan()`**: turns a task string into an
   `ExecutionPlan` by delegating to `Agent.run()` with an in-memory `AgentManifest`
   (read-only tools, `settings.planner_model`, `settings.planner_max_iterations`).
@@ -555,7 +561,8 @@ variants so multiple API replicas can share a run — see
 | `POST /runs` | Start a run (see lifecycle step 1). Optional `workspace` names a workspace (validated by `RunRequest`, 422 on a bad name). |
 | `GET /runs/{id}/stream` | SSE; `stream_registry.connect()` so any replica can serve it. |
 | `POST /runs/{id}/input` | HITL response → `ctx.provide_human_input()`; 409 if nothing pending. |
-| `POST /runs/{id}/cancel` | `engine.cancel_run()` cancels the run's asyncio Task; 404 if not active on **this** process. |
+| `POST /runs/{id}/cancel` | `engine.request_cancel()`: cancels the local Task (`"cancelled"`), or, under Redis, flags a run owned by another replica (`"cancel_requested"`); 404 if no live run. |
+| `POST /runs/{id}/resume` | `engine.schedule_resume()` → `wake()`; same `run_id`/stream. 409 if active (here or on a live lease elsewhere), unlogged, or finished. |
 | `POST /runs/{id}/message` | `ctx.push_user_message()` fan-out (see Data flow); 409 once the emitter is done. |
 | `POST /runs/{id}/followup` | Starts a **new** run whose `context` carries `prior_run_id`, `prior_task`, `prior_report` and `prior_subtask_outputs`, read from the old run's directory. The planner renders them as a "Prior Run" block; `_dispatch_subtask()` strips all four `prior_*` keys before building agent envelopes. Runs in the prior run's workspace unless the request names one; a recorded workspace that escapes the root is a 400. |
 
@@ -569,18 +576,15 @@ and holds `meta.json` (task, generated name, created_at, workspace), `session.js
 `tools/artifact_tracker.py` as agents write files; paths are relative to the run's own
 workspace — the artifact route resolves them against `meta.workspace`, or the workspace
 root for older runs that predate it — and are served with an `is_relative_to`
-containment check) and `report.md`. Because
-`cancel_run()` looks only at the local `_run_tasks`, cancel is **not** cross-replica
-under the Redis backend.
+containment check) and `report.md`.
 
-**Startup reconciliation**: the FastAPI `lifespan` in `main.py` calls
-`engine.reconcile_orphaned_runs()`. Any run dir with `meta.json` but no `report.md`
-counts as interrupted by a restart: a `run:error` event is appended to `events.jsonl`,
-`run_finished` with `status="interrupted"` is appended to `session.jsonl` (if present),
-and a "Run Interrupted" tombstone `report.md` is written. (Resuming such runs from their
-session log, instead of tombstoning them, is the planned next step.) This assumes a single process
-owns `runs_dir`. If several replicas share that directory, one replica starting up would
-tombstone runs still in flight on the others.
+**Startup reconciliation**: the FastAPI `lifespan` in `main.py` awaits
+`engine.reconcile_orphaned_runs()`. Session-backed runs with no terminal event get a
+non-terminal `run_interrupted` and stay resumable (`POST …/resume`, or automatically when
+`RESUME_INTERRUPTED_RUNS=true`). Legacy runs without a session log and without
+`report.md` are tombstoned as before. Runs whose lease is live on another replica are
+skipped, and an existing report is never overwritten. See
+[subsystems/resume-and-leases](subsystems/resume-and-leases.md).
 
 The CLI (`cli/`, `agentflow run [--workspace NAME] "<task>"`) is a thin click client over this HTTP API.
 It posts to `/api/runs`, renders the SSE stream with Rich (`cli/display.py`) and stops on

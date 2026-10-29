@@ -1,7 +1,7 @@
 ---
 title: Conventions & Patterns
 last_updated: 2026-10-29
-last_verified_sha: d03e4c2
+last_verified_sha: 8214412
 sources:
   - pyproject.toml
   - src/agentflow/config.py
@@ -25,8 +25,9 @@ status: current
 - Run tests: `uv run pytest` (or `uv run pytest tests/ -v`). `pyproject.toml` sets
   `testpaths = ["tests"]` so projects that agents generate under `workspace/` (which ship
   their own test suites) are never collected.
-- Dev-only deps (`pytest`, `pytest-asyncio`) live in `[dependency-groups].dev`, separate
-  from runtime `dependencies`.
+- Dev-only deps (`pytest`, `pytest-asyncio`, `fakeredis[lua]`) live in
+  `[dependency-groups].dev`, separate from runtime `dependencies`. `fakeredis[lua]`
+  backs the lease tests, which need real Lua `EVAL` semantics.
 - Runtime `dependencies` include `redis>=5.0.0`, used only when the optional Redis state
   backend is enabled (`STATE_BACKEND=redis`); the in-memory default needs no Redis server.
   New settings follow the existing `Settings` pattern — added as typed fields with
@@ -96,7 +97,9 @@ contradict the source):
   `test_reporter.py`, `test_engine.py` (run routing with `create_plan` patched and the
   engine's own LLM helpers replaced by `AsyncMock`), `test_workspace.py` (workspace
   resolution, tool isolation, locking, followup inheritance), `test_session.py` (session
-  log append/read/replay, agent transcripts, engine replay parity), and `test_context.py`
+  log append/read/replay, agent transcripts, engine replay parity), `test_resume.py`
+  (crash → reconcile → `wake()`), `test_lease.py` (Redis leases on `fakeredis`,
+  two engines as two replicas), and `test_context.py`
   (behaviour that must match across the memory and Redis backends, parametrized over both).
 - Engine tests must point `settings.runs_dir` **and** `settings.workspace_dir` at
   `tmp_path`, so runs never create directories in the real `workspace/`. The global
@@ -105,6 +108,14 @@ contradict the source):
   `Redis*` classes without the in-memory internals. A test that inspects emitted events
   should monkeypatch `agentflow.orchestrator.engine.{stream_registry,context_store,task_bus}`
   with in-memory instances (see the `engine` fixture in `tests/test_workspace.py`).
+- `tests/conftest.py` has one autouse fixture, which forces the engine's `run_leases`
+  to the in-process `RunLeases`. Lease calls are awaited, not fire-and-forget, so a
+  Redis `.env` without a server would fail every engine test. Lease tests opt back in
+  by monkeypatching `agentflow.orchestrator.engine.run_leases` with a `RedisRunLeases`
+  on `fakeredis`.
+- To simulate a crash, run the engine, block a subtask, cancel, then strip the trailing
+  `run_finished` line from `session.jsonl` (`_simulate_crash` in `tests/test_resume.py`).
+  A killed process never reaches the `finally` that writes it.
 - Naming: files are `test_*.py`; test functions are `test_<behavior>` (e.g.
   `test_agent_run_end_turn`, `test_dependency_blocks_downstream`).
 - Structure seen in `tests/test_agent.py` and `tests/test_scheduler.py`: small `_make_*`/`_plan`

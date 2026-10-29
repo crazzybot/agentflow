@@ -1,7 +1,7 @@
 ---
 title: Session Log (Durable Run Record)
 last_updated: 2026-10-29
-last_verified_sha: d03e4c2
+last_verified_sha: 8214412
 sources:
   - src/agentflow/core/session.py
   - src/agentflow/orchestrator/engine.py
@@ -37,7 +37,8 @@ How it differs from the other per-run files:
 | `run_started` | `engine.run()` | `task`, `user_context`, `budget_usd`, `workspace` |
 | `plan_created` | `engine.run()` (planner and direct branches) | `plan`, `direct` |
 | `subtask_dispatched` | `_dispatch_subtask()` | `subtask`, `task_id` (the envelope's), `budget_usd` |
-| `subtask_decomposed` | `_dispatch_subtask()` when the decomposer splits | `micro` |
+| `subtask_decomposed` | `_dispatch_subtask()` when the decomposer splits | `micro`, as dispatched (decomposer context included) |
+| `subtask_finished` | `_execute_plan()` / `_run_micro_subtasks()` | `ok`, optional `reason` (`upstream_failed`). The scheduler's own completed/failed decision. |
 | `result_stored` | `_store_result()` | `result` (AgentResult **without** `messages`) |
 | `cost_added` | `_add_cost()` | `cost_usd`, `task_id` |
 | `human_input_requested` / `_received` | `_request_budget_increase()`, agent `ask_user` | request / response, new `budget_usd` |
@@ -45,7 +46,9 @@ How it differs from the other per-run files:
 | `message_appended` | `_agentic_loop()` | `message`; assistant turns add `model`, `stop_reason`, `usage`; injected user messages add `injected` |
 | `message_discarded` | `_agentic_loop()` on `max_tokens` | `reason`. Drops the invocation's last message. |
 | `agent_finished` | `Agent.run()` (also on exceptions) | `status`, `cost_usd`, tokens, `duration_ms`, `error` |
-| `run_finished` | `engine.run()` `finally`; `reconcile_orphaned_runs()` | `status`: `complete`/`error`/`cancelled`/`interrupted` |
+| `run_interrupted` | `reconcile_orphaned_runs()` | `reason`. Not terminal: the run stays resumable. |
+| `run_resumed` | `wake()` | `after_seq`, `finished`, `resuming`. Clears interrupted/status in `replay()`. |
+| `run_finished` | `_run()` `finally` | `status`: `complete`/`error`/`cancelled`. Not written when the run stands down after losing its lease. Older logs may carry `interrupted` from step 2's reconciliation, which `replay()` still treats as resumable. |
 
 **Invocations.** Each `Agent.run()` call gets a fresh `invocation_id`. This covers
 subtasks, retries, continuations, fallbacks, the planner and the decomposer. The
@@ -101,9 +104,10 @@ is still visible on their own `agent_finished` events.
   an offset index if logs get large.
 - The log holds full tool results and prompts. Treat `runs_dir` as being as sensitive
   as the workspace.
-- Not yet built: rebuilding `RunContext` from the log and resuming interrupted runs
-  (`wake(run_id)`). `replay()` and `unfinished_invocations` are the intended
-  foundation for both.
+- `RunSnapshot` also carries `finished`, `micro_plans`, `interrupted` and `resumable`.
+  [resume-and-leases](resume-and-leases.md) builds `wake(run_id)` on them, restoring
+  `RunContext` from the snapshot when a run is resumed. A live run still keeps
+  `RunContext` in memory rather than deriving it from the log.
 
 ## Related
 
