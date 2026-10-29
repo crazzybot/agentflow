@@ -1,7 +1,7 @@
 ---
 title: Conventions & Patterns
 last_updated: 2026-10-29
-last_verified_sha: 4aedd12
+last_verified_sha: d03e4c2
 sources:
   - pyproject.toml
   - src/agentflow/config.py
@@ -95,7 +95,8 @@ contradict the source):
   `test_arxiv_search.py`, `test_stream.py`, `test_planner.py`, `test_config.py`,
   `test_reporter.py`, `test_engine.py` (run routing with `create_plan` patched and the
   engine's own LLM helpers replaced by `AsyncMock`), `test_workspace.py` (workspace
-  resolution, tool isolation, locking, followup inheritance), and `test_context.py`
+  resolution, tool isolation, locking, followup inheritance), `test_session.py` (session
+  log append/read/replay, agent transcripts, engine replay parity), and `test_context.py`
   (behaviour that must match across the memory and Redis backends, parametrized over both).
 - Engine tests must point `settings.runs_dir` **and** `settings.workspace_dir` at
   `tmp_path`, so runs never create directories in the real `workspace/`. The global

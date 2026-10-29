@@ -1,7 +1,7 @@
 ---
 title: Redis-Backed State Backend
 last_updated: 2026-10-29
-last_verified_sha: 4aedd12
+last_verified_sha: d03e4c2
 sources:
   - src/agentflow/config.py
   - src/agentflow/core/redis_client.py
@@ -71,6 +71,10 @@ concurrently with `asyncio.gather`. The **workspace lock** is likewise process-l
 [architecture § Workspaces](../architecture.md#workspaces)). Two runs on the same named
 workspace are serialised only when one replica serves both. A Redis-backed lock would
 be the fix.
+
+The durable **session log** (`GET /runs/{id}/session`) is deliberately *not* in Redis.
+It is a file in `runs_dir` under both backends, because Redis keys expire after
+`redis_key_ttl`. See [session-log](session-log.md).
 
 ## Key layout
 

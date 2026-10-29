@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-10-29
-last_verified_sha: 4aedd12
+last_verified_sha: d03e4c2
 sources:
   - src/agentflow/main.py
   - src/agentflow/api/routes.py
@@ -14,6 +14,7 @@ sources:
   - src/agentflow/core/registry.py
   - src/agentflow/core/skill_loader.py
   - src/agentflow/core/workspace.py
+  - src/agentflow/core/session.py
   - src/agentflow/cli/
   - src/agentflow/llm/client.py
   - src/agentflow/tools/
@@ -54,9 +55,11 @@ variants so multiple API replicas can share a run — see
    before real work starts. `_generate_run_name()`'s result is awaited immediately to
    write `<runs_dir>/<run_id>/meta.json` (including the resolved `workspace`, which
    `run:started` also carries in `data`); `_is_single_agent_task()`'s result is awaited later,
-   right before it gates plan-vs-direct routing (step 3). Three `ContextVar` tokens are armed for the
+   right before it gates plan-vs-direct routing (step 3). Four `ContextVar` tokens are armed for the
    lifetime of the run: `_current_workspace` (the run's workspace dir, from
-   `core/workspace.py`), `_current_sink` (artifact tracking, from
+   `core/workspace.py`), `_current_session` (the run's durable session log, from
+   `core/session.py`, which immediately records `run_started`, see
+   [subsystems/session-log](subsystems/session-log.md)), `_current_sink` (artifact tracking, from
    `tools/artifact_tracker.py`) and `_kb_dispatch_fn` (from `tools/kb_dispatcher.py`),
    which is set to an async closure that dispatches an ad-hoc `KnowledgebaseAgent` subtask
    via `_dispatch_subtask()` — enabling built-in tools (e.g. `download_document`) to
@@ -129,7 +132,10 @@ variants so multiple API replicas can share a run — see
    subtask finishes. If the run is cancelled (`asyncio.CancelledError` propagates from
    `asyncio.wait`), `_execute_plan` cancels all in-flight subtask tasks and re-raises;
    `engine.run()` catches it, emits `run:cancelled`, and proceeds to normal cleanup.
-6. **Per-subtask agent execution** — `Agent._agentic_loop()` in
+6. **Per-subtask agent execution** — every `Agent.run()` call (subtask, retry,
+   continuation, fallback, planner, decomposer) gets an `invocation_id`, records
+   `agent_started`/`agent_finished`, and mirrors each append to (or `max_tokens` pop from)
+   its message history into the session log. `Agent._agentic_loop()` in
    [`agents/agent.py`](../../src/agentflow/agents/agent.py) drives Claude turn-by-turn
    (via the shared `LLMClient`) with the manifest's tools/MCP servers until `end_turn`,
    an iteration limit, or a budget limit is hit, executing any `tool_use` blocks
@@ -196,7 +202,9 @@ variants so multiple API replicas can share a run — see
    loudly-logged safety ceiling, not a routine trim).
 8. **Completion** — the engine emits `run:complete` (or `run:error`, or `run:cancelled`
    if the run was cancelled mid-flight) via the `StreamEmitter`, releases the workspace
-   lock, resets the `ContextVar`s, logs LLM usage stats, removes the task from
+   lock, records `run_finished` (`complete`/`error`/`cancelled`, from a `final_status`
+   that every exit path sets; a failed write is logged, never allowed to skip cleanup),
+   resets the `ContextVar`s, logs LLM usage stats, removes the task from
    `_run_tasks`, and tears down the run's bus/context entries.
 
 ## Components
@@ -552,10 +560,12 @@ variants so multiple API replicas can share a run — see
 | `POST /runs/{id}/followup` | Starts a **new** run whose `context` carries `prior_run_id`, `prior_task`, `prior_report` and `prior_subtask_outputs`, read from the old run's directory. The planner renders them as a "Prior Run" block; `_dispatch_subtask()` strips all four `prior_*` keys before building agent envelopes. Runs in the prior run's workspace unless the request names one; a recorded workspace that escapes the root is a 400. |
 
 Past-run endpoints (`GET /runs`, `/runs/{id}`, `/events`, `/results`, `/report`,
-`/artifacts`, `/artifacts/{artifact_id}`) read the filesystem, not in-memory state.
+`/session`, `/artifacts`, `/artifacts/{artifact_id}`) read the filesystem, not in-memory state.
+`/session` (`after_seq`, repeatable `type`, `invocation_id`) also works on live runs.
 Each run's directory is `<runs_dir>/<run_id>/` (`settings.runs_dir`, default `.runs`)
-and holds `meta.json` (task, generated name, created_at), `events.jsonl` (when
-`capture_events` is set), `results.jsonl`, `artifacts.jsonl` (appended by
+and holds `meta.json` (task, generated name, created_at, workspace), `session.jsonl`
+(always — the durable session log), `events.jsonl` (when `capture_events` is set),
+`results.jsonl`, `artifacts.jsonl` (appended by
 `tools/artifact_tracker.py` as agents write files; paths are relative to the run's own
 workspace — the artifact route resolves them against `meta.workspace`, or the workspace
 root for older runs that predate it — and are served with an `is_relative_to`
@@ -565,8 +575,10 @@ under the Redis backend.
 
 **Startup reconciliation**: the FastAPI `lifespan` in `main.py` calls
 `engine.reconcile_orphaned_runs()`. Any run dir with `meta.json` but no `report.md`
-counts as interrupted by a restart: a `run:error` event is appended to `events.jsonl`
-and a "Run Interrupted" tombstone `report.md` is written. This assumes a single process
+counts as interrupted by a restart: a `run:error` event is appended to `events.jsonl`,
+`run_finished` with `status="interrupted"` is appended to `session.jsonl` (if present),
+and a "Run Interrupted" tombstone `report.md` is written. (Resuming such runs from their
+session log, instead of tombstoning them, is the planned next step.) This assumes a single process
 owns `runs_dir`. If several replicas share that directory, one replica starting up would
 tombstone runs still in flight on the others.
 
@@ -607,7 +619,11 @@ otherwise nest `app-gateway/app-gateway/` inside a named workspace.
 
 Within one run, components talk through three mechanisms:
 
-- **Shared state — `core/context.py`**: `RunContext` is the source of truth for a run.
+- **Shared state — `core/context.py`**: `RunContext` is the live, in-memory state of a run.
+  Every write the engine makes to it (results via `_store_result()`, cost via
+  `_add_cost()`, budget changes via HITL) is mirrored into the session log, so
+  `core.session.replay()` reproduces it from disk; `RunContext` itself is not yet
+  rebuilt from the log.
   `_dispatch_subtask()` writes each subtask's `AgentResult` via `ctx.store_result()`
   (optionally appended to `<runs_dir>/<run_id>/results.jsonl`); downstream subtasks read
   dependency output via `ctx.build_prior_results()` (combined prose + structured-JSON

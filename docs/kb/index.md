@@ -1,7 +1,7 @@
 ---
 title: AgentFlow Knowledge Base — Index
 last_updated: 2026-10-29
-last_verified_sha: 4aedd12
+last_verified_sha: d03e4c2
 sources:
   - src/agentflow/
   - manifests/
@@ -30,6 +30,9 @@ the doc(s) relevant to your change, before exploring source.
 - [subsystems/redis-backend](subsystems/redis-backend.md) — the optional Redis state
   backend: bus, context store, and SSE registry variants selected by
   `STATE_BACKEND=redis`, plus cross-replica HITL and streaming.
+- [subsystems/session-log](subsystems/session-log.md) — the always-on, append-only
+  `session.jsonl` per run (inputs, plan, results, cost, HITL, full agent transcripts),
+  its slice API and `replay()` into a `RunSnapshot`.
 
 ## On-demand skills (invoke instead of reading)
 
