@@ -1,7 +1,7 @@
 ---
 title: Redis-Backed State Backend
-last_updated: 2026-09-30
-last_verified_sha: f3e5a83
+last_updated: 2026-10-29
+last_verified_sha: 4aedd12
 sources:
   - src/agentflow/config.py
   - src/agentflow/core/redis_client.py
@@ -66,7 +66,11 @@ method alongside the synchronous `get(run_id)`:
 paths so all of them work cross-replica. **Cancel is the exception**: `POST …/cancel`
 calls `engine.cancel_run()`, which only sees the local `_run_tasks`, so it returns 404
 on any replica other than the one executing the run; `list_runs` now builds `RunInfo`s
-concurrently with `asyncio.gather`.
+concurrently with `asyncio.gather`. The **workspace lock** is likewise process-local
+(`WorkspaceLocks` on the engine, see
+[architecture § Workspaces](../architecture.md#workspaces)). Two runs on the same named
+workspace are serialised only when one replica serves both. A Redis-backed lock would
+be the fix.
 
 ## Key layout
 

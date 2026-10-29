@@ -1,7 +1,7 @@
 ---
 title: AgentFlow Knowledge Base — Index
-last_updated: 2026-09-30
-last_verified_sha: c5e3b74
+last_updated: 2026-10-29
+last_verified_sha: 4aedd12
 sources:
   - src/agentflow/
   - manifests/
@@ -36,7 +36,7 @@ the doc(s) relevant to your change, before exploring source.
 These are available as `/skill-name` — they inject live context when needed rather
 than being loaded every session:
 
-- `/how-to` — step-by-step recipes: add an agent, add a tool, attach a skill, cancel/followup/message API
+- `/how-to` — step-by-step recipes: add an agent, add a tool, attach a skill, cancel/followup/message API, named workspaces
 - `/update-kb` — reconcile `docs/kb/` after an implementation task
 - `/session-wrap` — end-of-session KB review and session log entry
 

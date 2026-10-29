@@ -2,7 +2,8 @@
 name: how-to
 description: Step-by-step recipes for common AgentFlow extension tasks: adding a new
              agent, adding a new tool, attaching a skill to an agent, and using the
-             cancel/followup/message API endpoints. Invoke when the user asks how to
+             cancel/followup/message API endpoints, and running in a named workspace.
+             Invoke when the user asks how to
              add or wire up any of these things.
 invocation: manual
 ---
@@ -102,8 +103,26 @@ curl -X POST http://localhost:8000/api/runs/<run_id>/followup \
 ```
 
 The route reads the prior run's `report.md` and `results.jsonl` from disk and injects
-them as `prior_run_id`, `prior_task`, `prior_report`, and `prior_results` into
+them as `prior_run_id`, `prior_task`, `prior_report`, and `prior_subtask_outputs` into
 `user_context`. The new planner sees the full prior report and can build on it.
+The follow-up runs in the prior run's workspace, so it sees the files that run wrote.
+Pass `"workspace": "<name>"` to run it in a different named workspace instead.
+
+## Run in a named (long-lived project) workspace
+
+```bash
+curl -X POST http://localhost:8000/api/runs \
+  -H "Content-Type: application/json" \
+  -d '{"task": "Add rate limiting to the gateway", "workspace": "app-gateway"}'
+# CLI equivalent:
+uv run agentflow run --workspace app-gateway "Add rate limiting to the gateway"
+```
+
+Tools are confined to `workspace/app-gateway/`. Without `workspace`, a run gets a fresh
+`workspace/runs/<run_id>/`. Names: `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, and `runs` is
+reserved; a bad name returns 422. Runs on the same workspace queue behind each other
+(an `agent:progress` event with `data.waiting=true` signals the wait). The queue is
+per process, so with several replicas it only holds when one replica serves both runs.
 
 ## Inject a message into a running agent
 

@@ -1,7 +1,7 @@
 ---
 title: Conventions & Patterns
-last_updated: 2026-09-30
-last_verified_sha: c5e3b74
+last_updated: 2026-10-29
+last_verified_sha: 4aedd12
 sources:
   - pyproject.toml
   - src/agentflow/config.py
@@ -94,8 +94,16 @@ contradict the source):
   `test_models.py`, `test_registry.py`, `test_skill_loader.py`, `test_tools.py`,
   `test_arxiv_search.py`, `test_stream.py`, `test_planner.py`, `test_config.py`,
   `test_reporter.py`, `test_engine.py` (run routing with `create_plan` patched and the
-  engine's own LLM helpers replaced by `AsyncMock`), and `test_context.py` (behaviour
-  that must match across the memory and Redis backends, parametrized over both).
+  engine's own LLM helpers replaced by `AsyncMock`), `test_workspace.py` (workspace
+  resolution, tool isolation, locking, followup inheritance), and `test_context.py`
+  (behaviour that must match across the memory and Redis backends, parametrized over both).
+- Engine tests must point `settings.runs_dir` **and** `settings.workspace_dir` at
+  `tmp_path`, so runs never create directories in the real `workspace/`. The global
+  `stream_registry`/`context_store`/`task_bus` follow the developer's `.env`. With
+  `STATE_BACKEND=redis` and no Redis server they log connection errors, and they are
+  `Redis*` classes without the in-memory internals. A test that inspects emitted events
+  should monkeypatch `agentflow.orchestrator.engine.{stream_registry,context_store,task_bus}`
+  with in-memory instances (see the `engine` fixture in `tests/test_workspace.py`).
 - Naming: files are `test_*.py`; test functions are `test_<behavior>` (e.g.
   `test_agent_run_end_turn`, `test_dependency_blocks_downstream`).
 - Structure seen in `tests/test_agent.py` and `tests/test_scheduler.py`: small `_make_*`/`_plan`
