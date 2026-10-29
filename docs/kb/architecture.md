@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
-last_updated: 2026-09-30
-last_verified_sha: c5e3b74
+last_updated: 2026-10-29
+last_verified_sha: 4aedd12
 sources:
   - src/agentflow/main.py
   - src/agentflow/api/routes.py
@@ -13,6 +13,7 @@ sources:
   - src/agentflow/core/models.py
   - src/agentflow/core/registry.py
   - src/agentflow/core/skill_loader.py
+  - src/agentflow/core/workspace.py
   - src/agentflow/cli/
   - src/agentflow/llm/client.py
   - src/agentflow/tools/
@@ -36,12 +37,14 @@ variants so multiple API replicas can share a run — see
 1. **Entry** — `POST /api/runs` in `src/agentflow/api/routes.py` generates a `run_id`,
    grabs the module-level `engine` singleton (an `OrchestratorEngine`, built once at
    import time in [`main.py`](../../src/agentflow/main.py)), and schedules
-   `engine.run(run_id, task, user_context, budget_usd)` with `asyncio.create_task` (so it
+   `engine.run(run_id, task, user_context, budget_usd, workspace)` with `asyncio.create_task` (so it
    starts during the brief emitter-creation poll, unlike a FastAPI `BackgroundTask` which
    would only run after the response is sent). The endpoint returns the `run_id`
    immediately; clients poll/stream progress via `GET /api/runs/{run_id}/stream` (SSE).
 2. **Run setup** — `OrchestratorEngine.run()` (in
-   [`orchestrator/engine.py`](../../src/agentflow/orchestrator/engine.py)) registers the
+   [`orchestrator/engine.py`](../../src/agentflow/orchestrator/engine.py)) first resolves
+   the run's workspace (see [Workspaces](#workspaces)) — before any per-run state exists,
+   so an unsafe path raises without leaving an emitter open — then registers the
    current asyncio Task in `self._run_tasks[run_id]` (used by `cancel_run()`), creates a
    `StreamEmitter` (`stream_registry.create`), a `RunContext` (`context_store.create`),
    and a bus channel (`task_bus.create_run`), then kicks off `_generate_run_name()` and
@@ -49,14 +52,19 @@ variants so multiple API replicas can share a run — see
    cheap `settings.reporter_model` calls that only need the task string, so running them
    together (and alongside the setup below) avoids stacking their latency sequentially
    before real work starts. `_generate_run_name()`'s result is awaited immediately to
-   write `<runs_dir>/<run_id>/meta.json`; `_is_single_agent_task()`'s result is awaited later,
-   right before it gates plan-vs-direct routing (step 3). Two `ContextVar` tokens are then armed for the
-   lifetime of the run: `_current_sink` (artifact tracking, from
+   write `<runs_dir>/<run_id>/meta.json` (including the resolved `workspace`, which
+   `run:started` also carries in `data`); `_is_single_agent_task()`'s result is awaited later,
+   right before it gates plan-vs-direct routing (step 3). Three `ContextVar` tokens are armed for the
+   lifetime of the run: `_current_workspace` (the run's workspace dir, from
+   `core/workspace.py`), `_current_sink` (artifact tracking, from
    `tools/artifact_tracker.py`) and `_kb_dispatch_fn` (from `tools/kb_dispatcher.py`),
    which is set to an async closure that dispatches an ad-hoc `KnowledgebaseAgent` subtask
    via `_dispatch_subtask()` — enabling built-in tools (e.g. `download_document`) to
    trigger KB ingest without a direct reference to the engine. `_kb_dispatch_fn` is only
-   armed when `KnowledgebaseAgent` is registered in `_agent_instances`.
+   armed when `KnowledgebaseAgent` is registered in `_agent_instances`. Inside the main
+   `try`, the run then takes its workspace lock (`WorkspaceLocks.hold(ws_rel)`); if another
+   run holds it, an `agent:progress` event with `data.waiting=true` is emitted first. The
+   lock is released in `finally`, so a run cancelled while waiting ends as `run:cancelled`.
 3. **Plan** — when `settings.direct_agent_id` (`DIRECT_AGENT_ID`) is set, the run is
    auto-classified first: the `is_direct_task` result awaited from step 2
    (`_is_single_agent_task()`) decides whether the planner runs at all. When it is
@@ -187,8 +195,9 @@ variants so multiple API replicas can share a run — see
    appended to the report. Per-result input is capped at `_MAX_RESULT_CHARS` (100k — a
    loudly-logged safety ceiling, not a routine trim).
 8. **Completion** — the engine emits `run:complete` (or `run:error`, or `run:cancelled`
-   if the run was cancelled mid-flight) via the `StreamEmitter`, logs LLM usage stats,
-   removes the task from `_run_tasks`, and tears down the run's bus/context entries.
+   if the run was cancelled mid-flight) via the `StreamEmitter`, releases the workspace
+   lock, resets the `ContextVar`s, logs LLM usage stats, removes the task from
+   `_run_tasks`, and tears down the run's bus/context entries.
 
 ## Components
 
@@ -399,8 +408,11 @@ variants so multiple API replicas can share a run — see
   the final report. `file_read` sets `max_result_chars=None` (exempt) because it
   already manages its own budget — see below.
 - **`tools/builtin.py` + `tools/arxiv_search.py` — built-in tool layer**: registers all
-  built-in `ToolDefinition`s into the global `tool_registry`. Sandbox boundaries:
-  - `_safe_path()` (used by `file_read`/`file_write`) resolves inside the workspace and
+  built-in `ToolDefinition`s into the global `tool_registry`. Every tool's notion of "the
+  workspace" is `_workspace()` → `core.workspace.current_workspace()`: the active run's
+  workspace, or the workspace root when no run is active (unit tests, ad-hoc calls).
+  Sandbox boundaries:
+  - `_safe_path()` (used by `file_read`/`file_write`) resolves inside the run's workspace and
     checks containment with `Path.is_relative_to` — not a string prefix, which a sibling
     `workspace-other/` directory would pass. The artifact-content route uses the same check.
   - `bash_exec`/`python_exec` run with `_sandbox_env()`: an allowlist (`PATH`, `LANG`,
@@ -429,8 +441,10 @@ variants so multiple API replicas can share a run — see
     abstract is returned directly — agents should NOT call `fetch_url` on arxiv links.
   - `download_document` — fetches a PDF/text/markdown URL and saves it to `.downloads/`
     in the workspace; triggers KB ingest automatically via the `_kb_dispatch_fn` ContextVar
-    if `KnowledgebaseAgent` is active in the run. Returns the workspace-relative path and
-    the KB ingest outcome.
+    if `KnowledgebaseAgent` is active in the run. The ingest instruction carries both the
+    workspace-relative and the absolute path: the semantic-kb MCP server runs in its own
+    directory (`uv --directory workspace/semantic-kb`), so `skb_add` needs the absolute one.
+    Returns the workspace-relative path and the KB ingest outcome.
   - `fetch_url` — transparently redirects `arxiv.org/abs/` URLs to the Atom API so
     agents that accidentally call it on an arXiv link still get structured text. HTML
     responses (by `content-type` or a leading `<!doctype html`/`<html`) are converted to
@@ -530,20 +544,22 @@ variants so multiple API replicas can share a run — see
 
 | Endpoint | Behaviour |
 | --- | --- |
-| `POST /runs` | Start a run (see lifecycle step 1). |
+| `POST /runs` | Start a run (see lifecycle step 1). Optional `workspace` names a workspace (validated by `RunRequest`, 422 on a bad name). |
 | `GET /runs/{id}/stream` | SSE; `stream_registry.connect()` so any replica can serve it. |
 | `POST /runs/{id}/input` | HITL response → `ctx.provide_human_input()`; 409 if nothing pending. |
 | `POST /runs/{id}/cancel` | `engine.cancel_run()` cancels the run's asyncio Task; 404 if not active on **this** process. |
 | `POST /runs/{id}/message` | `ctx.push_user_message()` fan-out (see Data flow); 409 once the emitter is done. |
-| `POST /runs/{id}/followup` | Starts a **new** run whose `context` carries `prior_run_id`, `prior_task`, `prior_report` and `prior_subtask_outputs`, read from the old run's directory. The planner renders them as a "Prior Run" block; `_dispatch_subtask()` strips all four `prior_*` keys before building agent envelopes. |
+| `POST /runs/{id}/followup` | Starts a **new** run whose `context` carries `prior_run_id`, `prior_task`, `prior_report` and `prior_subtask_outputs`, read from the old run's directory. The planner renders them as a "Prior Run" block; `_dispatch_subtask()` strips all four `prior_*` keys before building agent envelopes. Runs in the prior run's workspace unless the request names one; a recorded workspace that escapes the root is a 400. |
 
 Past-run endpoints (`GET /runs`, `/runs/{id}`, `/events`, `/results`, `/report`,
 `/artifacts`, `/artifacts/{artifact_id}`) read the filesystem, not in-memory state.
 Each run's directory is `<runs_dir>/<run_id>/` (`settings.runs_dir`, default `.runs`)
 and holds `meta.json` (task, generated name, created_at), `events.jsonl` (when
 `capture_events` is set), `results.jsonl`, `artifacts.jsonl` (appended by
-`tools/artifact_tracker.py` as agents write files; paths are workspace-relative and
-served with an `is_relative_to` containment check) and `report.md`. Because
+`tools/artifact_tracker.py` as agents write files; paths are relative to the run's own
+workspace — the artifact route resolves them against `meta.workspace`, or the workspace
+root for older runs that predate it — and are served with an `is_relative_to`
+containment check) and `report.md`. Because
 `cancel_run()` looks only at the local `_run_tasks`, cancel is **not** cross-replica
 under the Redis backend.
 
@@ -554,10 +570,38 @@ and a "Run Interrupted" tombstone `report.md` is written. This assumes a single 
 owns `runs_dir`. If several replicas share that directory, one replica starting up would
 tombstone runs still in flight on the others.
 
-The CLI (`cli/`, `agentflow run "<task>"`) is a thin click client over this HTTP API.
+The CLI (`cli/`, `agentflow run [--workspace NAME] "<task>"`) is a thin click client over this HTTP API.
 It posts to `/api/runs`, renders the SSE stream with Rich (`cli/display.py`) and stops on
 `run:complete`/`run:error`/`run:cancelled`. It needs a running API server. Note
 that `--port` defaults to 8000 (env `AGENTFLOW_PORT`), matching `uvicorn`'s default.
+
+## Workspaces
+
+`core/workspace.py` gives each run its own directory under `settings.workspace_dir`
+(default `workspace/`), so concurrent runs cannot overwrite each other's files:
+
+- **Fresh per-run** (default): `workspace/runs/<run_id>/`. `runs` is a reserved name.
+- **Named**: `workspace/<name>/` when the request sets `workspace`. This is for long-lived
+  projects that successive runs iterate on (e.g. `app-gateway`). Names must match
+  `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, so there are no separators and no leading dot.
+- **Inherited**: a followup reuses the prior run's recorded path (`runs/<id>` or a name).
+  Runs recorded before this feature have no `meta.workspace` and map to `LEGACY_ROOT`
+  (`.`, the root itself). The API cannot otherwise target the root.
+
+`engine.run()` receives the path relative to the root (`None` → fresh per-run), resolves it
+with `workspace_path()` (containment-checked), and arms `_current_workspace`. Because
+asyncio tasks copy the context at creation, the planner, every subtask, the decomposer
+and KB dispatch all inherit it with no explicit plumbing. The directory is created lazily
+on the first tool call.
+
+`WorkspaceLocks` serialises runs that share a workspace (two runs on one named project,
+or two followups of one run). Entries are dropped once nothing holds or waits on them.
+The lock is **process-local**: under `STATE_BACKEND=redis`, runs on different replicas
+can still enter the same named workspace concurrently.
+
+`CodeAgent`'s prompt treats the workspace as the project root. It writes `src/`,
+`README.md` and so on directly and never creates a wrapper project folder, which would
+otherwise nest `app-gateway/app-gateway/` inside a named workspace.
 
 ## Data flow & messaging
 
