@@ -23,12 +23,17 @@ async def check_health(base_url: str) -> dict[str, Any]:
         raise AgentFlowError(f"HTTP {e.response.status_code}: {e.response.text}")
 
 
-async def start_run(base_url: str, task: str, context: dict[str, Any]) -> dict[str, Any]:
+async def start_run(
+    base_url: str, task: str, context: dict[str, Any], workspace: str | None = None
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"task": task, "context": context}
+    if workspace is not None:
+        payload["workspace"] = workspace
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{base_url}/api/runs",
-                json={"task": task, "context": context},
+                json=payload,
                 timeout=15.0,
             )
             resp.raise_for_status()

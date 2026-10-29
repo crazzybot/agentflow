@@ -10,6 +10,7 @@ from agentflow.orchestrator.engine import OrchestratorEngine
 @pytest.fixture
 def engine(tmp_path, monkeypatch):
     monkeypatch.setattr("agentflow.config.settings.runs_dir", str(tmp_path / "runs"))
+    monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path / "workspace"))
     monkeypatch.setattr("agentflow.config.settings.capture_events", False)
     monkeypatch.setattr("agentflow.config.settings.capture_results", False)
     eng = OrchestratorEngine(AgentRegistry())

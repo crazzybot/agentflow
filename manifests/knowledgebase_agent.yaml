@@ -56,8 +56,10 @@ system_prompt: |
     2. Use file_read to verify the file exists and is readable.
     3. Call skb_add(file) to ingest it; use force=True only when explicitly asked to
        re-index.
-    4. When asked to ingest a downloaded file (e.g. from .downloads/), use the workspace
-       path directly as the file argument to skb_add.
+    4. When asked to ingest a downloaded file (e.g. from .downloads/), verify it with
+       file_read using its workspace path, but pass the absolute path from the
+       instruction as the file argument to skb_add — the KB server runs in its own
+       directory and cannot resolve workspace-relative paths.
 
   ## Important constraints
   - skb_add is ONLY for ingesting original source documents (papers, manuals, reference

@@ -165,10 +165,10 @@ All settings are read from environment variables (or a `.env` file).
 | `AGENT_THINKING_EFFORT` | `high` | Global adaptive-thinking effort (`low`/`medium`/`high`/`xhigh`/`max`); `""` disables. Manifest `thinking_effort` overrides per agent. |
 | `PLANNER_MAX_ITERATIONS` | `15` | Maximum tool-use iterations for the planning pass |
 | `ENABLE_PROMPT_CACHING` | `true` | Inject Anthropic cache headers on every call |
-| `CAPTURE_EVENTS` | `false` | Write SSE events to `workspace/runs/{id}/events.jsonl` |
-| `CAPTURE_RESULTS` | `false` | Write subtask results to `workspace/runs/{id}/results.jsonl` |
+| `CAPTURE_EVENTS` | `false` | Write SSE events to `.runs/{id}/events.jsonl` |
+| `CAPTURE_RESULTS` | `false` | Write subtask results to `.runs/{id}/results.jsonl` |
 | `MANIFESTS_DIR` | `manifests` | Directory scanned for `*.json` agent manifests |
-| `WORKSPACE_DIR` | `workspace` | Sandbox root for file and shell tools |
+| `WORKSPACE_DIR` | `workspace` | Root for per-run workspaces: each run's file and shell tools are confined to `workspace/runs/{id}/` or a named `workspace/{name}/` |
 | `SKILLS_DIR` | `skills` | Directory scanned for skill packs |
 
 ---
@@ -183,9 +183,17 @@ Content-Type: application/json
 
 {
   "task": "Produce a market analysis report on electric vehicles",
-  "context": {}
+  "context": {},
+  "workspace": null
 }
 ```
+
+`workspace` (optional) names a long-lived project workspace, `workspace/{name}/`
+(letters, digits, `.`, `_`, `-`; `runs` is reserved), for runs that keep iterating
+on one project. Runs that share a named workspace execute one at a time. When it
+is omitted, the run gets a fresh, isolated `workspace/runs/{run_id}/`. A followup
+(`POST /api/runs/{id}/followup`) continues in the prior run's workspace unless it
+names another one. CLI: `agentflow run --workspace NAME "<task>"`.
 
 **Response**
 

@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import uuid
+from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,8 @@ from agentflow.core.models import (AgentResult, AgentStatus, ExecutionPlan,
                                    RunMeta, SSEEvent, SSEEventType, SSEPayload,
                                    Subtask, TaskConstraints, TaskContext, TaskEnvelope)
 from agentflow.core.registry import AgentRegistry
+from agentflow.core.workspace import (WorkspaceLocks, _current_workspace,
+                                       run_workspace_rel, workspace_path)
 from agentflow.llm import LLMClient
 from agentflow.orchestrator.decomposer import decompose_subtask
 from agentflow.orchestrator.planner import create_plan
@@ -77,6 +80,7 @@ class OrchestratorEngine:
         )
         self._agent_instances: dict[str, Any] = {}
         self._run_tasks: dict[str, asyncio.Task] = {}
+        self._workspace_locks = WorkspaceLocks()
         self._build_agents()
 
     def cancel_run(self, run_id: str) -> bool:
@@ -159,8 +163,8 @@ class OrchestratorEngine:
             logger.warning("Failed to generate run name", exc_info=True)
         return " ".join(task.split()[:5])
 
-    def _write_meta(self, run_id: str, task: str, name: str, created_at: str) -> None:
-        meta = RunMeta(run_id=run_id, task=task, name=name, created_at=created_at)
+    def _write_meta(self, run_id: str, task: str, name: str, created_at: str, workspace: str) -> None:
+        meta = RunMeta(run_id=run_id, task=task, name=name, created_at=created_at, workspace=workspace)
         meta_path = Path(settings.runs_dir) / run_id / "meta.json"
         meta_path.parent.mkdir(parents=True, exist_ok=True)
         meta_path.write_text(meta.model_dump_json(indent=2))
@@ -226,7 +230,19 @@ class OrchestratorEngine:
         task: str,
         user_context: dict[str, Any],
         budget_usd: float | None = None,
+        workspace: str | None = None,
     ) -> None:
+        """Execute one run end to end.
+
+        *workspace* is the run's workspace path relative to ``settings.workspace_dir``:
+        a named workspace, or a prior run's recorded path when following up. ``None``
+        gives the run a fresh ``runs/<run_id>`` workspace of its own.
+        """
+        # Resolve before any per-run state exists: an unsafe path fails loudly here
+        # instead of leaving an emitter open that nothing will ever close.
+        ws_rel = workspace if workspace is not None else run_workspace_rel(run_id, None)
+        ws_dir = workspace_path(ws_rel)
+
         current_task = asyncio.current_task()
         if current_task is not None:
             self._run_tasks[run_id] = current_task
@@ -258,10 +274,16 @@ class OrchestratorEngine:
             else None
         )
 
-        name = await name_task
-        self._write_meta(run_id, task, name, created_at)
+        ws_token = _current_workspace.set(ws_dir)
 
-        emitter.emit(SSEEventType.run_started, message=f"Run {run_id} started")
+        name = await name_task
+        self._write_meta(run_id, task, name, created_at, ws_rel)
+
+        emitter.emit(
+            SSEEventType.run_started,
+            message=f"Run {run_id} started",
+            data={"workspace": ws_rel},
+        )
 
         artifacts_file = Path(settings.runs_dir) / run_id / "artifacts.jsonl"
         sink = ArtifactSink(artifacts_file)
@@ -284,7 +306,18 @@ class OrchestratorEngine:
 
             kb_token = _kb_dispatch_fn.set(_dispatch_to_kb)
 
+        ws_stack = AsyncExitStack()
         try:
+            # Runs sharing a workspace (same named project, or followups of one
+            # run) are serialised so they never write the same files concurrently.
+            if self._workspace_locks.is_busy(ws_rel):
+                emitter.emit(
+                    SSEEventType.agent_progress,
+                    message=f"Waiting for workspace {ws_rel!r} — another run is using it",
+                    data={"workspace": ws_rel, "waiting": True},
+                )
+            await ws_stack.enter_async_context(self._workspace_locks.hold(ws_rel))
+
             # Step 02: classify then plan.  When direct mode is configured, a cheap
             # Haiku call decides whether the task warrants multi-agent planning or
             # can be routed directly to a single agent.  Falls back to the full
@@ -348,6 +381,8 @@ class OrchestratorEngine:
             logger.exception("[%s] Orchestrator error", run_id)
             emitter.emit(SSEEventType.run_error, message=str(exc))
         finally:
+            await ws_stack.aclose()
+            _current_workspace.reset(ws_token)
             self._run_tasks.pop(run_id, None)
             if kb_token is not None:
                 _kb_dispatch_fn.reset(kb_token)

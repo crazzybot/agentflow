@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 from agentflow.config import settings
+from agentflow.core.workspace import current_workspace
 from agentflow.tools.registry import ToolDefinition, ToolImpact, tool_registry
 
 logger = logging.getLogger(__name__)
@@ -45,9 +46,7 @@ async def _record_artifact(path: str) -> None:
 
 
 def _workspace() -> Path:
-    p = Path(settings.workspace_dir)
-    p.mkdir(parents=True, exist_ok=True)
-    return p.resolve()
+    return current_workspace()
 
 
 def _safe_path(relative: str) -> Path | None:
@@ -1119,7 +1118,8 @@ async def _download_document(url: str, filename: str | None = None) -> str:
     if dispatch is not None:
         try:
             kb_result = await dispatch(
-                f"Ingest the downloaded document at workspace path '{rel_path}' into the knowledgebase."
+                f"Ingest the downloaded document at workspace path '{rel_path}' "
+                f"(absolute path '{saved.resolve()}') into the knowledgebase."
             )
             msg += f"\nKB ingest: {kb_result}"
         except Exception as exc:

@@ -20,7 +20,7 @@ system_prompt: |
 
   Workspace access rules:
   - All files live inside the workspace. The workspace is your current directory — you are already inside it.
-  - Use a single top-level project folder named after the project (e.g. "my-app/"). All project files go directly inside that folder. Never create wrapper folders such as "Projects/" or any additional nesting above the project folder.
+  - The workspace is dedicated to this project: put project files directly in the workspace root (e.g. "src/", "README.md"). Never create a wrapper folder named after the project or any other extra nesting above it.
   - Only read and write files explicitly described in the task instruction or listed in prior_results.
   - Never use '~', $HOME, or any absolute path in bash_exec commands. All paths must be relative to the workspace root.
 

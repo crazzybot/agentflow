@@ -6,7 +6,9 @@ import uuid
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from agentflow.core.workspace import validate_workspace_name
 
 
 # ---------------------------------------------------------------------------
@@ -243,13 +245,25 @@ class HumanInputResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class RunRequest(BaseModel):
+class _WorkspaceRequest(BaseModel):
+    # Named workspace (workspace/<name>/) shared with other runs of the same
+    # project; omitted → a fresh per-run workspace (or, for a followup, the
+    # prior run's workspace).
+    workspace: str | None = None
+
+    @field_validator("workspace")
+    @classmethod
+    def _check_workspace(cls, v: str | None) -> str | None:
+        return None if v is None else validate_workspace_name(v)
+
+
+class RunRequest(_WorkspaceRequest):
     task: str
     context: dict[str, Any] = Field(default_factory=dict)
     budget_usd: float | None = None
 
 
-class FollowUpRequest(BaseModel):
+class FollowUpRequest(_WorkspaceRequest):
     task: str
     context: dict[str, Any] = Field(default_factory=dict)
     budget_usd: float | None = None
@@ -274,6 +288,10 @@ class RunMeta(BaseModel):
     task: str
     name: str
     created_at: str
+    # Workspace path relative to settings.workspace_dir ("runs/<run_id>" or a
+    # named workspace). None for runs recorded before per-run workspaces, which
+    # all used the workspace root.
+    workspace: str | None = None
 
 
 class RunInfo(BaseModel):
@@ -287,6 +305,7 @@ class RunInfo(BaseModel):
     task: str | None = None
     name: str | None = None
     created_at: str | None = None
+    workspace: str | None = None
 
 
 class RunListResponse(BaseModel):

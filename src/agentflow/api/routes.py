@@ -29,6 +29,7 @@ from agentflow.core.models import (
     SubtaskResult,
     UserMessage,
 )
+from agentflow.core.workspace import LEGACY_ROOT, InvalidWorkspaceError, workspace_path
 from agentflow.orchestrator.stream import stream_registry
 
 
@@ -66,7 +67,7 @@ async def start_run(request: RunRequest):
     # BackgroundTasks would only start after the response is sent, making the
     # poll a no-op and leaving a window where the SSE stream key doesn't exist.
     asyncio.create_task(
-        engine.run(run_id, request.task, request.context, request.budget_usd)
+        engine.run(run_id, request.task, request.context, request.budget_usd, request.workspace)
     )
 
     # Wait for the engine to create the emitter (happens in the first few ms).
@@ -124,6 +125,9 @@ async def followup_run(run_id: str, request: FollowUpRequest):
     if meta:
         prior_context["prior_task"] = meta.task
 
+    # Continue in the prior run's workspace unless the caller names another.
+    workspace = request.workspace or _recorded_workspace(meta)
+
     report_file = run_dir / "report.md"
     if report_file.exists():
         prior_context["prior_report"] = report_file.read_text(encoding="utf-8")
@@ -143,7 +147,7 @@ async def followup_run(run_id: str, request: FollowUpRequest):
     new_run_id = str(uuid.uuid4())
     engine = _get_engine()
     asyncio.create_task(
-        engine.run(new_run_id, request.task, prior_context, request.budget_usd)
+        engine.run(new_run_id, request.task, prior_context, request.budget_usd, workspace)
     )
 
     for _ in range(20):
@@ -195,6 +199,17 @@ def _load_meta(d: Path) -> RunMeta | None:
         return None
 
 
+def _recorded_workspace(meta: RunMeta | None) -> str:
+    """Workspace path recorded for a past run; validated so a tampered meta.json
+    cannot point a run or an artifact read outside the workspace root."""
+    rel = meta.workspace if meta and meta.workspace else LEGACY_ROOT
+    try:
+        workspace_path(rel)
+    except InvalidWorkspaceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return rel
+
+
 async def _run_info(d: Path) -> RunInfo:
     meta = _load_meta(d)
     run_id = d.name
@@ -213,6 +228,7 @@ async def _run_info(d: Path) -> RunInfo:
         task=meta.task if meta else None,
         name=meta.name if meta else None,
         created_at=meta.created_at if meta else None,
+        workspace=meta.workspace if meta else None,
     )
 
 
@@ -299,8 +315,8 @@ async def get_run_artifact_content(run_id: str, artifact_id: str):
     if artifact is None:
         raise HTTPException(status_code=404, detail=f"Artifact {artifact_id!r} not found")
 
-    from agentflow.config import settings
-    workspace = Path(settings.workspace_dir).resolve()
+    # Artifact paths are relative to the workspace the run wrote them in.
+    workspace = workspace_path(_recorded_workspace(_load_meta(d)))
     target = (workspace / artifact.path).resolve()
     if not target.is_relative_to(workspace):
         raise HTTPException(status_code=400, detail="Invalid artifact path")

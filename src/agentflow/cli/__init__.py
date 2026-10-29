@@ -26,10 +26,18 @@ def main(ctx: click.Context, host: str, port: int) -> None:
 @main.command()
 @click.argument("task")
 @click.option("--context", "-c", multiple=True, metavar="KEY=VALUE", help="Context key=value pairs (repeatable)")
+@click.option("--workspace", "-w", default=None, metavar="NAME", help="Named workspace to run in (default: a fresh per-run workspace)")
 @click.option("--verbose", "-v", is_flag=True, help="Show agent progress events")
 @click.option("--json", "output_json", is_flag=True, help="Output raw JSON events")
 @click.pass_context
-def run(ctx: click.Context, task: str, context: tuple[str, ...], verbose: bool, output_json: bool) -> None:
+def run(
+    ctx: click.Context,
+    task: str,
+    context: tuple[str, ...],
+    workspace: str | None,
+    verbose: bool,
+    output_json: bool,
+) -> None:
     """Submit TASK to the orchestrator and stream results."""
     base_url = ctx.obj["base_url"]
 
@@ -40,20 +48,21 @@ def run(ctx: click.Context, task: str, context: tuple[str, ...], verbose: bool, 
         k, _, v = item.partition("=")
         ctx_dict[k] = v
 
-    asyncio.run(_run_task(base_url, task, ctx_dict, verbose, output_json))
+    asyncio.run(_run_task(base_url, task, ctx_dict, workspace, verbose, output_json))
 
 
 async def _run_task(
     base_url: str,
     task: str,
     context: dict[str, Any],
+    workspace: str | None,
     verbose: bool,
     output_json: bool,
 ) -> None:
     display = RunDisplay(output_json=output_json, verbose=verbose)
 
     try:
-        result = await start_run(base_url, task, context)
+        result = await start_run(base_url, task, context, workspace)
     except AgentFlowError as e:
         display.error(str(e))
         sys.exit(1)
