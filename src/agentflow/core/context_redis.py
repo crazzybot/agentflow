@@ -210,6 +210,23 @@ class RedisRunContext:
     # Result storage  (async, write-through to Redis + local cache)
     # ------------------------------------------------------------------
 
+    async def restore(self, results: dict[str, AgentResult], total_cost_usd: float) -> None:
+        """Seed a resumed run with state replayed from its session log.
+
+        Overwrites the cost key (SET, not INCRBYFLOAT): keys that survived the crash
+        must not be counted twice.
+        """
+        async with self._lock:
+            self._local_results.update(results)
+            self._total_cost_usd_local = total_cost_usd
+            async with self._redis.pipeline(transaction=False) as pipe:
+                for subtask_id, result in results.items():
+                    pipe.hset(self._results_key, subtask_id, result.model_dump_json())
+                pipe.set(self._cost_key, total_cost_usd)
+                pipe.expire(self._results_key, self._ttl)
+                pipe.expire(self._cost_key, self._ttl)
+                await pipe.execute()
+
     async def store_result(self, subtask_id: str, result: AgentResult) -> None:
         async with self._lock:
             self._local_results[subtask_id] = result

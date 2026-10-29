@@ -37,6 +37,8 @@ from agentflow.core.session import (
     read_session,
 )
 from agentflow.core.workspace import LEGACY_ROOT, InvalidWorkspaceError, workspace_path
+from agentflow.orchestrator.engine import RunAlreadyActiveError
+from agentflow.orchestrator.resume import RunNotResumableError
 from agentflow.orchestrator.stream import stream_registry
 
 
@@ -116,6 +118,29 @@ async def cancel_run(run_id: str):
     if not engine.cancel_run(run_id):
         raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found or already finished")
     return {"status": "cancelled"}
+
+
+@router.post("/runs/{run_id}/resume", response_model=RunResponse)
+async def resume_run(run_id: str):
+    """Resume an interrupted run from its session log (same run_id, same stream URL).
+
+    404 if the run does not exist; 409 if it is still running or cannot be resumed
+    (no session log, or it already finished).
+    """
+    _require_run(run_id)
+    engine = _get_engine()
+    try:
+        engine.schedule_resume(run_id)
+    except (RunAlreadyActiveError, RunNotResumableError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    for _ in range(20):
+        emitter = stream_registry.get(run_id)
+        if emitter is not None and not emitter.done:
+            break
+        await asyncio.sleep(0.05)
+
+    return RunResponse(run_id=run_id, status="resumed")
 
 
 @router.post("/runs/{run_id}/followup", response_model=RunResponse)

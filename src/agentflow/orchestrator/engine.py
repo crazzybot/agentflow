@@ -19,13 +19,15 @@ from agentflow.core.models import (AgentResult, AgentStatus, ExecutionPlan,
                                    Subtask, TaskConstraints, TaskContext, TaskEnvelope)
 from agentflow.core.registry import AgentRegistry
 from agentflow.core.session import (RunSession, SessionEventType, _current_session,
-                                     record, result_data, session_path)
+                                     read_session, record, replay, result_data,
+                                     session_path)
 from agentflow.core.workspace import (WorkspaceLocks, _current_workspace,
                                        run_workspace_rel, workspace_path)
 from agentflow.llm import LLMClient
 from agentflow.orchestrator.decomposer import decompose_subtask
 from agentflow.orchestrator.planner import create_plan
 from agentflow.orchestrator.reporter import compile_report
+from agentflow.orchestrator.resume import ResumeState, load_resumable
 from agentflow.orchestrator.scheduler import DependencyGraph
 from agentflow.orchestrator.stream import StreamEmitter, stream_registry
 from agentflow.tools.artifact_tracker import ArtifactSink, _current_sink
@@ -71,6 +73,29 @@ def _compute_subtask_budget(
     return remaining * (subtask.budget_fraction / total_pending_fraction)
 
 
+_INTERRUPTED_REPORT_HEADER = "# Run Interrupted"
+
+
+class RunAlreadyActiveError(Exception):
+    """Raised when resuming a run that is still executing in this process."""
+
+
+def _remove_interrupted_tombstone(run_id: str) -> None:
+    """Drop the placeholder report reconciliation wrote, so a resumed run reads as
+    in progress again. A real report (the run died after compiling it) is kept."""
+    report_file = Path(settings.runs_dir) / run_id / "report.md"
+    if report_file.exists() and report_file.read_text(encoding="utf-8").startswith(_INTERRUPTED_REPORT_HEADER):
+        report_file.unlink()
+
+
+async def _record_finished(subtask_id: str, *, ok: bool, reason: str | None = None) -> None:
+    """Log the scheduler's completed/failed decision for a subtask."""
+    data: dict[str, Any] = {"ok": ok}
+    if reason is not None:
+        data["reason"] = reason
+    await record(SessionEventType.subtask_finished, subtask_id=subtask_id, data=data)
+
+
 async def _store_result(ctx: RunContext, subtask_id: str, result: AgentResult) -> None:
     """Store a subtask result in the run context and the session log."""
     await ctx.store_result(subtask_id, result)
@@ -104,6 +129,8 @@ class OrchestratorEngine:
         self._agent_instances: dict[str, Any] = {}
         self._run_tasks: dict[str, asyncio.Task] = {}
         self._workspace_locks = WorkspaceLocks()
+        # Runs being resumed by wake(): consulted by the scheduler and dispatch.
+        self._resume: dict[str, ResumeState] = {}
         self._build_agents()
 
     def cancel_run(self, run_id: str) -> bool:
@@ -114,27 +141,38 @@ class OrchestratorEngine:
         task.cancel()
         return True
 
-    def reconcile_orphaned_runs(self) -> int:
-        """Mark runs that have no report.md as interrupted (called once at startup).
+    def reconcile_orphaned_runs(self) -> list[str]:
+        """Mark runs left in flight by a previous process as interrupted (startup).
 
-        Any run directory with a meta.json but no report.md was in-flight when
-        the previous process exited.  Write a tombstone report so the run shows
-        as complete (failed) rather than perpetually in-progress.
+        A run with a session log is orphaned when the log has no terminal event; it
+        gets a non-terminal ``run_interrupted`` event and stays resumable via
+        ``wake()``. A run recorded before session logs existed is orphaned when it
+        has no report.md. Either way a ``run:error`` SSE event and a tombstone
+        report are written so the run does not look perpetually in progress — but
+        an existing report is never overwritten (a run can die after compiling it).
+        Returns the ids of the runs reconciled.
         """
         runs_dir = Path(settings.runs_dir)
         if not runs_dir.exists():
-            return 0
-        count = 0
+            return []
+        reconciled: list[str] = []
         for run_dir in runs_dir.iterdir():
-            if not run_dir.is_dir():
+            if not run_dir.is_dir() or not (run_dir / "meta.json").exists():
                 continue
-            if not (run_dir / "meta.json").exists():
-                continue
-            report_file = run_dir / "report.md"
-            if report_file.exists():
-                continue
-
             run_id = run_dir.name
+            report_file = run_dir / "report.md"
+
+            resumable = session_path(run_id).exists()
+            if resumable:
+                snap = replay(run_id, read_session(run_id))
+                # Finished, or already reconciled by an earlier restart.
+                if not snap.resumable or snap.interrupted or snap.status == "interrupted":
+                    continue
+                RunSession(run_id).append_sync(
+                    SessionEventType.run_interrupted, data={"reason": "service restarted"}
+                )
+            elif report_file.exists():
+                continue
 
             events_file = run_dir / "events.jsonl"
             if events_file.exists():
@@ -148,20 +186,44 @@ class OrchestratorEngine:
                 with events_file.open("a", encoding="utf-8") as f:
                     f.write(event.model_dump_json() + "\n")
 
-            if session_path(run_id).exists():
-                RunSession(run_id).append_sync(
-                    SessionEventType.run_finished,
-                    data={"status": "interrupted", "reason": "service restarted"},
+            if not report_file.exists():
+                hint = (
+                    f"\nIt can be resumed with `POST /api/runs/{run_id}/resume`.\n"
+                    if resumable else ""
                 )
+                report_file.write_text(
+                    f"{_INTERRUPTED_REPORT_HEADER}\n\n"
+                    "This run did not complete — the service restarted while it was in progress.\n"
+                    + hint,
+                    encoding="utf-8",
+                )
+            logger.warning("Reconciled orphaned run %s%s", run_id, " (resumable)" if resumable else "")
+            reconciled.append(run_id)
+        return reconciled
 
-            report_file.write_text(
-                "# Run Interrupted\n\n"
-                "This run did not complete — the service restarted while it was in progress.\n",
-                encoding="utf-8",
-            )
-            logger.warning("Reconciled orphaned run %s", run_id)
-            count += 1
-        return count
+    def schedule_resume(self, run_id: str) -> asyncio.Task[None]:
+        """Validate that *run_id* can be resumed here, then start ``wake()`` in the background.
+
+        Raises RunNotResumableError (no log, or already finished) or
+        RunAlreadyActiveError (still executing in this process).
+        """
+        if self.is_active(run_id):
+            raise RunAlreadyActiveError(f"Run {run_id!r} is already running")
+        load_resumable(run_id)
+        task = asyncio.create_task(self.wake(run_id))
+        # Register now, not when the task first runs: a second resume request
+        # arriving before then must already see the run as active.
+        self._run_tasks[run_id] = task
+        return task
+
+    def _resumed_outcomes(self, run_id: str, ids: list[str]) -> tuple[set[str], set[str]]:
+        """Completed/failed sets to seed a scheduler with when resuming a run."""
+        resume = self._resume.get(run_id)
+        if resume is None:
+            return set(), set()
+        completed = {i for i in ids if resume.finished.get(i) is True}
+        failed = {i for i in ids if resume.finished.get(i) is False}
+        return completed, failed
 
     def _build_agents(self) -> None:
         """Instantiate one generic Agent per registered manifest."""
@@ -267,6 +329,38 @@ class OrchestratorEngine:
         a named workspace, or a prior run's recorded path when following up. ``None``
         gives the run a fresh ``runs/<run_id>`` workspace of its own.
         """
+        await self._run(run_id, task, user_context, budget_usd, workspace, resume=None)
+
+    def is_active(self, run_id: str) -> bool:
+        task = self._run_tasks.get(run_id)
+        return task is not None and not task.done()
+
+    async def wake(self, run_id: str) -> None:
+        """Resume an interrupted run from its session log.
+
+        Finished subtasks are not re-run, the logged plan is reused, and subtasks
+        that were mid-flight continue from their last logged agent turn. Raises
+        RunNotResumableError when the log is missing or the run already finished.
+        """
+        snap = load_resumable(run_id)
+        resume = ResumeState.from_snapshot(snap)
+        logger.info(
+            "[%s] Resuming run: %d subtask(s) finished, %d with a transcript to continue",
+            run_id, len(resume.finished), len(resume.transcripts),
+        )
+        await self._run(
+            run_id, snap.task, snap.user_context, snap.budget_usd, snap.workspace, resume=resume
+        )
+
+    async def _run(
+        self,
+        run_id: str,
+        task: str,
+        user_context: dict[str, Any],
+        budget_usd: float | None,
+        workspace: str | None,
+        resume: ResumeState | None,
+    ) -> None:
         # Resolve before any per-run state exists: an unsafe path fails loudly here
         # instead of leaving an emitter open that nothing will ever close.
         ws_rel = workspace if workspace is not None else run_workspace_rel(run_id, None)
@@ -289,42 +383,62 @@ class OrchestratorEngine:
         emitter = stream_registry.create(run_id, events_file=events_file)
         ctx = context_store.create(run_id, results_file=results_file, budget_usd=budget_usd, user_context=user_context, task=task)
         task_bus.create_run(run_id)
+        if resume is not None:
+            await ctx.restore(resume.results, resume.total_cost_usd)
+            self._resume[run_id] = resume
 
         created_at = datetime.now(timezone.utc).isoformat()
         # Both are independent cheap Haiku calls that only need `task` — run them
         # concurrently (and alongside the run setup below) instead of stacking
-        # their latency sequentially before any real work starts.
-        name_task = asyncio.create_task(self._generate_run_name(task))
+        # their latency sequentially before any real work starts. A resumed run
+        # already has its name in meta.json.
+        name_task = (
+            asyncio.create_task(self._generate_run_name(task)) if resume is None else None
+        )
         # Direct mode is opt-in: without DIRECT_AGENT_ID there is no agent to route a
-        # "direct" verdict to, so skip the classifier call and always plan.
+        # "direct" verdict to, so skip the classifier call and always plan. A resumed
+        # run with a logged plan needs no routing decision at all.
+        needs_plan = resume is None or resume.plan is None
         is_direct_task = (
             asyncio.create_task(self._is_single_agent_task(task))
-            if settings.direct_agent_id
+            if settings.direct_agent_id and needs_plan
             else None
         )
 
         ws_token = _current_workspace.set(ws_dir)
-        session = RunSession(run_id)
+        session = RunSession(run_id)  # reopens (and keeps numbering) when resuming
         session_token = _current_session.set(session)
-        await record(
-            SessionEventType.run_started,
-            data={
-                "task": task,
-                "user_context": user_context,
-                "budget_usd": budget_usd,
-                "workspace": ws_rel,
-            },
-        )
+        if resume is None:
+            await record(
+                SessionEventType.run_started,
+                data={
+                    "task": task,
+                    "user_context": user_context,
+                    "budget_usd": budget_usd,
+                    "workspace": ws_rel,
+                },
+            )
+        else:
+            await record(
+                SessionEventType.run_resumed,
+                data={
+                    "after_seq": resume.after_seq,
+                    "finished": resume.finished,
+                    "resuming": sorted(resume.transcripts),
+                },
+            )
+            _remove_interrupted_tombstone(run_id)
         # Set by every exit path below; recorded once in `finally`.
         final_status = "error"
 
-        name = await name_task
-        self._write_meta(run_id, task, name, created_at, ws_rel)
+        if name_task is not None:
+            name = await name_task
+            self._write_meta(run_id, task, name, created_at, ws_rel)
 
         emitter.emit(
             SSEEventType.run_started,
-            message=f"Run {run_id} started",
-            data={"workspace": ws_rel},
+            message=f"Run {run_id} {'resumed' if resume is not None else 'started'}",
+            data={"workspace": ws_rel, "resumed": resume is not None},
         )
 
         artifacts_file = Path(settings.runs_dir) / run_id / "artifacts.jsonl"
@@ -364,7 +478,17 @@ class OrchestratorEngine:
             # Haiku call decides whether the task warrants multi-agent planning or
             # can be routed directly to a single agent.  Falls back to the full
             # planner on any error.
-            if is_direct_task is not None and await is_direct_task:
+            if resume is not None and resume.plan is not None:
+                plan = resume.plan
+                emitter.emit(
+                    SSEEventType.plan_created,
+                    message=(
+                        f"Resumed plan: {len(plan.subtasks)} subtask(s), "
+                        f"{sum(1 for st in plan.subtasks if st.id in resume.finished)} already finished"
+                    ),
+                    data=plan.model_dump(mode="json"),
+                )
+            elif is_direct_task is not None and await is_direct_task:
                 logger.info("[%s] Auto-classified as single-agent task — skipping planner", run_id)
                 plan = self._make_direct_plan(run_id, task)
                 await record(
@@ -443,6 +567,7 @@ class OrchestratorEngine:
                 logger.exception("[%s] Could not record run_finished in the session log", run_id)
             _current_session.reset(session_token)
             _current_workspace.reset(ws_token)
+            self._resume.pop(run_id, None)
             self._run_tasks.pop(run_id, None)
             if kb_token is not None:
                 _kb_dispatch_fn.reset(kb_token)
@@ -464,8 +589,7 @@ class OrchestratorEngine:
         emitter: StreamEmitter,
     ) -> None:
         graph = DependencyGraph(plan)
-        completed: set[str] = set()
-        failed: set[str] = set()
+        completed, failed = self._resumed_outcomes(run_id, [st.id for st in plan.subtasks])
         in_flight: dict[str, asyncio.Task[bool]] = {}
 
         try:
@@ -487,6 +611,7 @@ class OrchestratorEngine:
                     for st in plan.subtasks:
                         if st.id not in completed and st.id not in failed:
                             failed.add(st.id)
+                            await _record_finished(st.id, ok=False, reason="upstream_failed")
                             emitter.emit(
                                 SSEEventType.task_failed,
                                 agent_id=st.agent_id,
@@ -510,6 +635,7 @@ class OrchestratorEngine:
                         completed.add(subtask_id)
                     else:
                         failed.add(subtask_id)
+                    await _record_finished(subtask_id, ok=succeeded)
 
         except asyncio.CancelledError:
             for task in in_flight.values():
@@ -541,8 +667,7 @@ class OrchestratorEngine:
 
         micro_plan = ExecutionPlan(run_id=run_id, subtasks=micro)
         graph = DependencyGraph(micro_plan)
-        completed: set[str] = set()
-        failed: set[str] = set()
+        completed, failed = self._resumed_outcomes(run_id, [ms.id for ms in micro])
         in_flight: dict[str, asyncio.Task[bool]] = {}
 
         try:
@@ -560,6 +685,7 @@ class OrchestratorEngine:
                     for ms in micro:
                         if ms.id not in completed and ms.id not in failed:
                             failed.add(ms.id)
+                            await _record_finished(ms.id, ok=False, reason="upstream_failed")
                     break
 
                 done, _ = await asyncio.wait(in_flight.values(), return_when=asyncio.FIRST_COMPLETED)
@@ -574,6 +700,7 @@ class OrchestratorEngine:
                         completed.add(micro_id)
                     else:
                         failed.add(micro_id)
+                    await _record_finished(micro_id, ok=succeeded)
         except asyncio.CancelledError:
             for task in in_flight.values():
                 task.cancel()
@@ -638,7 +765,18 @@ class OrchestratorEngine:
         # workspace after all upstream dependencies have completed.
         # _skip_decompose is set when we are already running a micro-subtask to
         # prevent infinite recursion.
-        if not _skip_decompose and settings.enable_decomposer:
+        # Resuming an interrupted run: a subtask decomposed before the crash re-runs
+        # its logged micro-plan, and one that was mid-flight continues its last
+        # logged transcript (which already carries any decomposer context).
+        resume = self._resume.get(run_id)
+        resume_messages = resume.take_transcript(subtask.id, subtask.agent_id) if resume else None
+        logged_micro = resume.micro_plans.get(subtask.id) if resume and not _skip_decompose else None
+        if logged_micro:
+            return await self._run_micro_subtasks(
+                run_id, subtask, logged_micro, ctx, emitter, task_budget_usd
+            )
+
+        if not _skip_decompose and settings.enable_decomposer and resume_messages is None:
             manifest = self.registry.get(subtask.agent_id)
             if manifest and manifest.decomposition_prompt:
                 micro, decomp_ctx = await decompose_subtask(
@@ -647,12 +785,6 @@ class OrchestratorEngine:
                     user_context=agent_user_context,
                 )
                 if len(micro) > 1:
-                    await record(
-                        SessionEventType.subtask_decomposed,
-                        agent_id=subtask.agent_id,
-                        subtask_id=subtask.id,
-                        data={"micro": [m.model_dump(mode="json") for m in micro]},
-                    )
                     logger.info(
                         "[%s] Decomposed %s → %d micro-subtasks: %s",
                         run_id, subtask.id, len(micro), [m.id for m in micro],
@@ -666,6 +798,13 @@ class OrchestratorEngine:
                             ms.model_copy(update={"instruction": ctx_block + ms.instruction})
                             for ms in micro
                         ]
+                    # Logged as dispatched (context included) so a resume replays it exactly.
+                    await record(
+                        SessionEventType.subtask_decomposed,
+                        agent_id=subtask.agent_id,
+                        subtask_id=subtask.id,
+                        data={"micro": [m.model_dump(mode="json") for m in micro]},
+                    )
                     return await self._run_micro_subtasks(
                         run_id, subtask, micro, ctx, emitter, task_budget_usd
                     )
@@ -713,9 +852,18 @@ class OrchestratorEngine:
         await ctx.register_agent(subtask.agent_id)
         try:
             for attempt in range(1, settings.task_max_retries + 1):
+                # Only the first attempt continues the transcript; retries start over.
+                attempt_resume, resume_messages = resume_messages, None
+                if attempt_resume is not None:
+                    emitter.emit(
+                        SSEEventType.task_continuing,
+                        agent_id=subtask.agent_id,
+                        message=f"Subtask {subtask.id} resuming from {len(attempt_resume)} logged message(s)",
+                        data={"subtask_id": subtask.id, "resumed": True},
+                    )
                 try:
                     result = await asyncio.wait_for(
-                        agent.run(envelope, emitter, ctx=ctx),
+                        agent.run(envelope, emitter, resume_messages=attempt_resume, ctx=ctx),
                         timeout=settings.task_timeout_ms / 1000,
                     )
                 except asyncio.TimeoutError:

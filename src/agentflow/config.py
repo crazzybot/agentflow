@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     enable_prompt_caching: bool = True
     capture_events: bool = False
     capture_results: bool = False
+    # Resume runs interrupted by a restart automatically at startup (from their
+    # session logs). Off by default: resuming spends API budget unprompted.
+    # Interrupted runs can always be resumed explicitly via POST /api/runs/{id}/resume.
+    resume_interrupted_runs: bool = False
 
     # Pricing (USD per 1M tokens) — defaults match claude-sonnet-5's standard rate
     # ($2/$10; the launch "introductory" rate became permanent on 2026-09-01).

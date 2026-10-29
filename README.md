@@ -167,6 +167,7 @@ All settings are read from environment variables (or a `.env` file).
 | `ENABLE_PROMPT_CACHING` | `true` | Inject Anthropic cache headers on every call |
 | `CAPTURE_EVENTS` | `false` | Write SSE events to `.runs/{id}/events.jsonl` |
 | `CAPTURE_RESULTS` | `false` | Write subtask results to `.runs/{id}/results.jsonl` |
+| `RESUME_INTERRUPTED_RUNS` | `false` | Resume runs interrupted by a restart automatically at startup (spends budget without anyone asking) |
 | `MANIFESTS_DIR` | `manifests` | Directory scanned for `*.json` agent manifests |
 | `WORKSPACE_DIR` | `workspace` | Root for per-run workspaces: each run's file and shell tools are confined to `workspace/runs/{id}/` or a named `workspace/{name}/` |
 | `SKILLS_DIR` | `skills` | Directory scanned for skill packs |
@@ -236,6 +237,23 @@ exchanges, and the full message history of every agent invocation. The SSE strea
 a live view for clients, while the session log is the record the run can be rebuilt
 from. All query parameters are optional, and `type` can be repeated. The endpoint
 works while the run is still in progress.
+
+### Resume an interrupted run
+
+```
+POST /api/runs/{run_id}/resume
+```
+
+If the service stops while a run is in progress, the next startup marks the run
+interrupted instead of ending it. Resuming continues the same `run_id`, and you can
+reattach to the same `/stream` URL. Subtasks that had finished are not run again,
+the logged plan is reused, and a subtask that was mid-flight continues from its
+last logged agent turn. Any tool request that was still executing is dropped, and
+the model issues it again if it still needs it.
+
+Returns `409` if the run is still running, has no session log (it predates session
+logs), or already finished. Set `RESUME_INTERRUPTED_RUNS=true` to resume
+automatically at startup.
 
 ### Health check
 

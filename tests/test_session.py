@@ -290,8 +290,10 @@ async def test_reconcile_marks_session_interrupted(engine, runs_dir):
     (run_dir / "meta.json").write_text("{}")
     RunSession("orphan").append_sync(T.run_started, data={"task": "t"})
 
-    assert eng.reconcile_orphaned_runs() == 1
-    assert replay("orphan", read_session("orphan")).status == "interrupted"
+    assert eng.reconcile_orphaned_runs() == ["orphan"]
+    snap = replay("orphan", read_session("orphan"))
+    # Interrupted is not terminal: the run stays resumable.
+    assert snap.interrupted and snap.status is None and snap.resumable
 
 
 # ---------------------------------------------------------------------------

@@ -29,7 +29,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from agentflow.config import settings
-from agentflow.core.models import AgentResult, ExecutionPlan
+from agentflow.core.models import AgentResult, ExecutionPlan, Subtask
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ class SessionEventType(StrEnum):
     plan_created = "plan_created"            # plan, direct
     subtask_dispatched = "subtask_dispatched"  # subtask, task_id, budget_usd
     subtask_decomposed = "subtask_decomposed"  # micro (list of subtasks)
+    subtask_finished = "subtask_finished"    # ok — the scheduler's completed/failed decision
     result_stored = "result_stored"          # result (AgentResult without messages)
     cost_added = "cost_added"                # cost_usd
     human_input_requested = "human_input_requested"  # request
@@ -49,7 +50,9 @@ class SessionEventType(StrEnum):
     message_appended = "message_appended"    # message (+ usage/stop_reason on assistant turns)
     message_discarded = "message_discarded"  # reason — drops the invocation's last message
     agent_finished = "agent_finished"        # status, cost_usd, tokens, error
-    run_finished = "run_finished"            # status: complete | error | cancelled | interrupted
+    run_interrupted = "run_interrupted"      # reason — process died mid-run; resumable
+    run_resumed = "run_resumed"              # after_seq, finished, resuming
+    run_finished = "run_finished"            # status: complete | error | cancelled
 
 
 class SessionEvent(BaseModel):
@@ -223,15 +226,24 @@ class RunSnapshot:
     workspace: str | None = None
     plan: ExecutionPlan | None = None
     dispatched: dict[str, str] = field(default_factory=dict)  # subtask_id → task_id
+    finished: dict[str, bool] = field(default_factory=dict)    # subtask_id → ok
+    micro_plans: dict[str, list[Subtask]] = field(default_factory=dict)  # parent → micro
     results: dict[str, AgentResult] = field(default_factory=dict)
     total_cost_usd: float = 0.0
     invocations: dict[str, Invocation] = field(default_factory=dict)
     status: str | None = None  # run_finished status; None while in flight
+    interrupted: bool = False  # run_interrupted seen and not yet resumed
     last_seq: int = 0
 
     @property
     def unfinished_invocations(self) -> list[Invocation]:
         return [inv for inv in self.invocations.values() if not inv.finished]
+
+    @property
+    def resumable(self) -> bool:
+        # "interrupted" as a terminal status was written by reconciliation before
+        # run_interrupted existed; such runs are resumable too.
+        return self.status is None or self.status == "interrupted"
 
 
 def replay(run_id: str, events: list[SessionEvent]) -> RunSnapshot:
@@ -248,6 +260,12 @@ def replay(run_id: str, events: list[SessionEvent]) -> RunSnapshot:
                 snap.workspace = d.get("workspace")
             case SessionEventType.plan_created:
                 snap.plan = ExecutionPlan.model_validate(d["plan"])
+            case SessionEventType.subtask_decomposed:
+                if e.subtask_id is not None:
+                    snap.micro_plans[e.subtask_id] = [Subtask.model_validate(m) for m in d["micro"]]
+            case SessionEventType.subtask_finished:
+                if e.subtask_id is not None:
+                    snap.finished[e.subtask_id] = bool(d.get("ok"))
             case SessionEventType.subtask_dispatched:
                 if e.subtask_id is not None:
                     snap.dispatched[e.subtask_id] = d.get("task_id", "")
@@ -277,6 +295,11 @@ def replay(run_id: str, events: list[SessionEvent]) -> RunSnapshot:
                 if inv is not None:
                     inv.finished = True
                     inv.status = d.get("status")
+            case SessionEventType.run_interrupted:
+                snap.interrupted = True
+            case SessionEventType.run_resumed:
+                snap.interrupted = False
+                snap.status = None
             case SessionEventType.run_finished:
                 snap.status = d.get("status")
     return snap
