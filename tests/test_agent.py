@@ -1081,3 +1081,16 @@ async def test_truncated_tool_calls_are_not_executed_on_max_tokens():
     assert len(skipped) == 1
     assert skipped[0].kwargs["tool_call_id"] == "toolu_cut"
     assert skipped[0].kwargs["data"]["skipped"] is True
+
+
+@pytest.mark.asyncio
+async def test_manifest_max_output_tokens_overrides_fallback_without_budget():
+    """With no task budget, a manifest's max_output_tokens replaces agent_max_tokens_fallback."""
+    manifest = _make_manifest()
+    manifest.max_output_tokens = 20_000
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+
+    await Agent(manifest, mock_client).run(_make_envelope(), MagicMock())
+
+    assert mock_client.messages.create.call_args.kwargs["max_tokens"] == 20_000

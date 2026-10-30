@@ -1,7 +1,7 @@
 ---
 title: What's new
-last_updated: 2026-10-29
-last_verified_sha: b513b90
+last_updated: 2026-10-30
+last_verified_sha: 4ce4f41
 sources:
   - docs/adr/
 status: current
@@ -14,6 +14,19 @@ Changes to AgentFlow's architecture, newest first, in plain words. Each entry li
 fixes and internal refactors are not listed here; see the git history for those.
 
 ---
+
+## 30 October 2026: campaigns can be unstuck
+
+- **A feature's sessions are tracked on the feature itself,** including the one in
+  progress. A campaign view can show each feature with its full session history and a
+  live "in progress" marker.
+- **A campaign stopped at a limit can continue.** Change `max_sessions` or the budgets
+  (`PATCH /api/campaigns/{id}`), then resume. If something still blocks it, resume says
+  exactly what, and how to fix each part.
+- **A blocked feature can be retried** (`POST /api/campaigns/{id}/features/{fid}/retry`),
+  optionally with written guidance for its next session. Its checks stay fixed, and only
+  the verifier can still mark it passing.
+  [ADR-008](../adr/008-campaign-ledger-in-code.md) (amended) · [KB](../kb/subsystems/campaigns.md)
 
 ## October 2026: the Managed Agents redesign
 

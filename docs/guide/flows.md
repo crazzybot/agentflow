@@ -1,7 +1,7 @@
 ---
 title: Flows
-last_updated: 2026-10-29
-last_verified_sha: b513b90
+last_updated: 2026-10-30
+last_verified_sha: ccf4a77
 sources:
   - src/agentflow/orchestrator/engine.py
   - src/agentflow/orchestrator/planner.py
@@ -131,6 +131,7 @@ flowchart TD
     create([POST /api/campaigns]) --> define[Read-only planner writes the feature ledger<br/>ids and checks are fixed from now on]
     define --> loop{Stop?<br/>all passing / max sessions /<br/>budget / only blocked left}
     loop -- yes --> done([completed or stopped])
+    done -. "stopped: operator raises limits<br/>or retries a blocked feature,<br/>then resumes" .-> loop
     loop -- no --> regress[Re-verify a passing feature<br/>regression? → fix it next]
     regress --> pick[Pick the next failing or pending feature]
     pick --> session[Run a session: an ordinary run<br/>fresh context · one feature ·<br/>its checks as acceptance criteria]
@@ -146,6 +147,11 @@ flowchart TD
   notes, and the feature's checks.
 - **Pausing** takes effect after the current session. A restart pauses the campaign;
   resuming it finishes the interrupted session first.
+- **Getting unstuck.** A campaign stops when it hits `max_sessions`, its budget, or has
+  only `blocked` features left. You can raise or remove the limits, and **retry** a
+  blocked feature. A retry gives it fresh attempts plus optional written guidance that its
+  next session receives, while its checks stay fixed. Then resume. Resume lists everything
+  still in the way, so it never silently does nothing.
 
 ## 5. An agent call on a worker
 

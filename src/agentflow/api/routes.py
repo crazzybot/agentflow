@@ -17,8 +17,10 @@ from agentflow.core.models import (
     RunArtifact,
     RunArtifactContentResponse,
     RunArtifactsResponse,
+    CampaignLimitsUpdate,
     CampaignListResponse,
     CampaignRequest,
+    FeatureRetryRequest,
     CampaignView,
     RunCheckpoint,
     RunCheckpointsResponse,
@@ -476,3 +478,32 @@ async def resume_campaign(campaign_id: str):
     except (CampaignActiveError, CampaignStateError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return manager.store.view(campaign_id)
+
+
+@router.patch("/campaigns/{campaign_id}", response_model=CampaignView)
+async def update_campaign_limits(campaign_id: str, update: CampaignLimitsUpdate):
+    """Change max_sessions / budget_usd / session_budget_usd (omit to keep, null to
+    remove a budget). Typically followed by resume after a limit stopped the campaign."""
+    manager = _get_campaigns()
+    try:
+        manager.update_limits(campaign_id, update)
+    except CampaignNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CampaignStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return manager.store.view(campaign_id)
+
+
+@router.post("/campaigns/{campaign_id}/features/{feature_id}/retry", response_model=CampaignView)
+async def retry_campaign_feature(campaign_id: str, feature_id: str, request: FeatureRetryRequest):
+    """Give a blocked or failing feature fresh attempts, with optional guidance that
+    its next session will receive. Resume the campaign afterwards if it is stopped."""
+    manager = _get_campaigns()
+    try:
+        manager.retry_feature(campaign_id, feature_id, request.guidance)
+    except CampaignNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CampaignStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return manager.store.view(campaign_id)
+

@@ -76,6 +76,9 @@ class AgentManifest(BaseModel):
     model_tier: str | None = None
     max_concurrency: int = 3
     max_iterations: int | None = None  # None → fall back to settings.agent_max_iterations
+    # Per-call max_tokens when the task has no budget. None → settings.agent_max_tokens_fallback.
+    # Raise it for agents whose final answer is one large block (e.g. a JSON ledger).
+    max_output_tokens: int | None = Field(default=None, gt=0)
     tool_limits: dict[str, int] | None = None  # per-task call budgets e.g. {"fetch_url": 5}
     # Pre-tool-use policies checked before every call, e.g. a command allowlist for
     # bash_exec. See tools/policy.py.
@@ -416,6 +419,12 @@ class Feature(BaseModel):
     last_checked_session: int = 0  # session count when last verified (regression order)
     notes: str = ""                # the last session's own summary for this feature
     evidence: list[CriterionCheck] = Field(default_factory=list)
+    # Run ids of every session that worked on this feature, oldest first. The
+    # in-progress session is appended when it starts.
+    sessions: list[str] = Field(default_factory=list)
+    # Operator guidance for the next session(s) on this feature, set by a retry.
+    # Cleared once the feature passes.
+    guidance: str = ""
 
 
 class CampaignStatus(str, Enum):
@@ -453,6 +462,20 @@ class CampaignRequest(_WorkspaceRequest):
     max_sessions: int = Field(default=10, ge=1, le=500)
     budget_usd: float | None = Field(default=None, gt=0)
     session_budget_usd: float | None = Field(default=None, gt=0)
+
+
+class CampaignLimitsUpdate(BaseModel):
+    """PATCH body for a campaign's limits. Omitted fields stay unchanged; an explicit
+    null removes a budget limit."""
+    max_sessions: int | None = Field(default=None, ge=1, le=500)
+    budget_usd: float | None = Field(default=None, gt=0)
+    session_budget_usd: float | None = Field(default=None, gt=0)
+
+
+class FeatureRetryRequest(BaseModel):
+    """Give a failing or blocked feature fresh attempts, optionally with guidance
+    that the next session's instruction will carry."""
+    guidance: str = Field(default="", max_length=4000)
 
 
 class CampaignView(BaseModel):

@@ -1,9 +1,14 @@
 ---
 title: AgentFlow Architecture Guide
-last_updated: 2026-10-29
-last_verified_sha: b513b90
+last_updated: 2026-10-30
+last_verified_sha: 4ce4f41
 sources:
-  - docs/guide/
+  - docs/guide/overview.md
+  - docs/guide/concepts.md
+  - docs/guide/architecture.md
+  - docs/guide/flows.md
+  - docs/guide/data-and-storage.md
+  - docs/guide/deployment-modes.md
 status: current
 ---
 

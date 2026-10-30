@@ -1,7 +1,7 @@
 ---
 title: Data & storage
-last_updated: 2026-10-29
-last_verified_sha: b513b90
+last_updated: 2026-10-30
+last_verified_sha: ccf4a77
 sources:
   - src/agentflow/config.py
   - src/agentflow/core/session.py
@@ -36,7 +36,7 @@ which expires.
 │   └── results.jsonl      subtask results                   (only with CAPTURE_RESULTS)
 └── campaigns/<campaign_id>/
     ├── campaign.json      status, budget/spend, sessions (run ids), pending session
-    ├── features.json      ★ the feature ledger (definitions fixed after creation)
+    ├── features.json      ★ the feature ledger (definitions fixed; status, attempts, sessions, guidance move)
     └── session.jsonl      transcripts of the feature planner and regression checks
 
 workspace/

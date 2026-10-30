@@ -1,6 +1,6 @@
 # ADR-008: Campaigns with a code-enforced feature ledger
 
-**Status:** Accepted
+**Status:** Accepted (amended 2026-10-30: see "Later developments")
 **Date:** 2026-10-29
 
 ## Context
@@ -41,3 +41,22 @@ features", and lets the agent mark its own features passing.
   work. Rejected in favour of verifier-decided status.
 
 KB: [subsystems/campaigns](../kb/subsystems/campaigns.md)
+
+## Later developments (2026-10-30)
+
+*Appended, not rewritten: the decision stands, since agents still can't touch the
+ledger and only the verifier marks a feature passing.*
+
+Testing showed that `blocked` and the session/budget limits were dead ends: nothing
+could move a campaign past them. Two **operator** (not agent) controls were added:
+
+- **Retry a feature.** A `blocked` or `failing` feature gets fresh attempts, with optional
+  written guidance that its next session's instruction carries until it passes. Its
+  definition and checks remain immutable.
+- **Change limits.** `max_sessions` and the budgets can be changed, and resume reports
+  every remaining obstacle at once instead of silently stopping again.
+
+**Considered and not done: letting the operator edit a feature's checks.** That would
+make the ledger mutable after definition, which this ADR rules out. If unverifiable
+checks turn out to be a real problem, it needs its own ADR that supersedes this one.
+

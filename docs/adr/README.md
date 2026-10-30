@@ -72,6 +72,6 @@ KB: [link to the doc describing the current implementation]
 | [005](005-read-time-context-view.md) | Bound context with a read-time view, not history mutation; defer auto-compact | Accepted |
 | [006](006-independent-verification.md) | Independent read-only verification of acceptance criteria | Accepted |
 | [007](007-shadow-repo-checkpoints.md) | Workspace checkpoints in a shadow git repository | Accepted |
-| [008](008-campaign-ledger-in-code.md) | Campaigns with a code-enforced feature ledger | Accepted |
+| [008](008-campaign-ledger-in-code.md) | Campaigns with a code-enforced feature ledger | Accepted (amended 2026-10-30) |
 | [009](009-sandbox-and-tool-policies.md) | Sandbox interface for exec tools (Docker fails closed); pre-tool-use policy chain | Accepted |
 | [010](010-remote-agent-workers.md) | Remote agent execution through a dedicated work queue | Accepted |
