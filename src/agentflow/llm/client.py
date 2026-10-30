@@ -40,7 +40,8 @@ def estimate_thinking_tokens(content: list) -> int:
 
 
 # Model-id prefixes that accept adaptive thinking (`thinking={"type": "adaptive"}`)
-# and `output_config.effort`. Haiku 4.5 and older models reject both with a 400, so
+# and `output_config.effort` ("claude-sonnet-5" also covers Sonnet 5.5). Haiku 4.5
+# and older models reject both with a 400, so
 # callers must not send them there — e.g. when the "economy" tier resolves to Haiku.
 _ADAPTIVE_THINKING_PREFIXES = (
     "claude-fable-",
@@ -51,6 +52,7 @@ _ADAPTIVE_THINKING_PREFIXES = (
     "claude-opus-4-8",
     "claude-sonnet-5",
     "claude-sonnet-4-6",
+    "claude-haiku-5",
 )
 
 
