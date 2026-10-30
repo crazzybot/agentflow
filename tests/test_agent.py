@@ -96,6 +96,8 @@ async def test_agent_executes_tool_and_loops():
     tool_use_response.content = [tool_use_block]
     tool_use_response.usage.input_tokens = 100
     tool_use_response.usage.output_tokens = 20
+    tool_use_response.usage.cache_creation_input_tokens = 0
+    tool_use_response.usage.cache_read_input_tokens = 0
 
     end_turn_response = _mock_response()
 
@@ -143,6 +145,8 @@ async def test_agent_tool_not_available_returns_error_message():
     tool_use_response.content = [tool_use_block]
     tool_use_response.usage.input_tokens = 10
     tool_use_response.usage.output_tokens = 5
+    tool_use_response.usage.cache_creation_input_tokens = 0
+    tool_use_response.usage.cache_read_input_tokens = 0
 
     end_turn_response = _mock_response()
 

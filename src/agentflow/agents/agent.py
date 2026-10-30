@@ -22,6 +22,7 @@ import anthropic
 
 from agentflow.config import settings
 from agentflow.core.models import AgentManifest, AgentOutput, AgentResult, AgentStatus, IterationLimitAction, SSEEventType, TaskEnvelope
+from agentflow.agents.context_view import RECALL_TOOL_NAME, RECALL_TOOL_PARAM, ContextSnipper, recall
 from agentflow.core.session import SessionEventType, record
 from agentflow.llm import LLMClient, estimate_thinking_tokens, supports_adaptive_thinking
 from agentflow.tools import tool_registry
@@ -362,6 +363,7 @@ class Agent:
                 "cost_usd": result.cost_usd,
                 "input_tokens": result.input_tokens,
                 "output_tokens": result.output_tokens,
+                "peak_prompt_tokens": result.peak_prompt_tokens,
                 "duration_ms": result.duration_ms,
                 "error": result.error,
             },
@@ -475,7 +477,21 @@ class Agent:
         # invocation can be replayed on its own.
         for m in messages:
             await log_message(m)
+        snipper = ContextSnipper(
+            trigger_tokens=settings.context_snip_trigger_tokens,
+            keep_recent=settings.context_snip_keep_recent,
+            min_chars=settings.context_snip_min_chars,
+        )
         anthropic_tools = [t.to_anthropic_param() for t in tools]
+        if snipper.enabled:
+            anthropic_tools.append(RECALL_TOOL_PARAM)
+        last_prompt_tokens: int | None = None  # full prompt size of the latest call
+        peak_prompt_tokens = 0
+
+        async def call_tool(block: Any, turn: int) -> dict[str, Any]:
+            if block.name == RECALL_TOOL_NAME and snipper.enabled:
+                return self._recall_tool_result(block, messages, emitter, turn)
+            return await self._checked_call_tool(block, tools, emitter, tool_call_counts, tool_limits, turn)
         total_input_tokens = 0
         total_output_tokens = 0
         total_thinking_tokens = 0
@@ -594,11 +610,36 @@ class Agent:
                         break
                 max_tokens = settings.agent_max_tokens_fallback
 
+            # The model sees a view of the history: older bulky tool results are
+            # stubbed once the prompt grows past the snip trigger (see context_view).
+            snip = snipper.maybe_snip(messages, last_prompt_tokens, iteration)
+            if snip is not None:
+                await record(
+                    SessionEventType.context_snipped,
+                    agent_id=self.agent_id,
+                    invocation_id=invocation_id,
+                    data={
+                        "boundary": snip.boundary,
+                        "snipped": snip.snipped,
+                        "freed_chars": snip.freed_chars,
+                        "prompt_tokens": snip.prompt_tokens,
+                    },
+                )
+                emitter.emit(
+                    SSEEventType.agent_progress,
+                    agent_id=self.agent_id,
+                    message=(
+                        f"Context at ~{snip.prompt_tokens:,} tokens: omitted {snip.snipped} earlier "
+                        f"tool result(s) ({snip.freed_chars:,} chars) from view"
+                    ),
+                    data={"context_snipped": True, "snipped": snip.snipped, "freed_chars": snip.freed_chars},
+                    turn_index=iteration,
+                )
             create_kwargs: dict[str, Any] = {
                 "model": resolved_model,
                 "max_tokens": max_tokens,
                 "system": system_prompt,
-                "messages": _with_message_cache_breakpoint(messages),
+                "messages": _with_message_cache_breakpoint(snipper.project(messages)),
             }
             if anthropic_tools:
                 create_kwargs["tools"] = anthropic_tools
@@ -643,6 +684,8 @@ class Agent:
             call_thinking = estimate_thinking_tokens(response.content)
             call_regular_output = u.output_tokens - call_thinking
             last_input_tokens = u.input_tokens
+            last_prompt_tokens = u.input_tokens + call_cache_write + call_cache_read
+            peak_prompt_tokens = max(peak_prompt_tokens, last_prompt_tokens)
             total_input_tokens += u.input_tokens
             total_output_tokens += u.output_tokens
             total_thinking_tokens += call_thinking
@@ -750,8 +793,7 @@ class Agent:
                     pending_tool_use = [b for b in response.content if b.type == "tool_use"]
                     if pending_tool_use:
                         pending_results = await asyncio.gather(
-                            *[self._checked_call_tool(b, tools, emitter, tool_call_counts, tool_limits, iteration)
-                              for b in pending_tool_use]
+                            *[call_tool(b, iteration) for b in pending_tool_use]
                         )
                         messages.append({"role": "user", "content": list(pending_results)})
                         await log_message(messages[-1])
@@ -763,8 +805,7 @@ class Agent:
             # Execute all tool calls concurrently, then feed results back
             tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
             tool_results = await asyncio.gather(
-                *[self._checked_call_tool(b, tools, emitter, tool_call_counts, tool_limits, iteration)
-                  for b in tool_use_blocks]
+                *[call_tool(b, iteration) for b in tool_use_blocks]
             )
 
             messages.append({"role": "user", "content": list(tool_results)})
@@ -812,6 +853,7 @@ class Agent:
             tokens_used=total_input_tokens + total_output_tokens + total_cache_creation_tokens + total_cache_read_tokens,
             cost_usd=total_cost_usd,
             hit_max_tokens=hit_max_tokens,
+            peak_prompt_tokens=peak_prompt_tokens,
             files_written=all_files_written,
             messages=messages,
         )
@@ -870,6 +912,34 @@ class Agent:
             "tool_use_id": block.id,
             "content": result_text,
         }
+
+    def _recall_tool_result(
+        self,
+        block: Any,
+        history: list[dict[str, Any]],
+        emitter: "StreamEmitter",
+        turn_index: int,
+    ) -> dict[str, Any]:
+        """Serve recall_tool_result from this loop's full (unsnipped) history."""
+        tool_use_id = str((block.input or {}).get("tool_use_id", ""))
+        emitter.emit(
+            SSEEventType.agent_progress,
+            agent_id=self.agent_id,
+            message=f"Calling tool: {block.name}",
+            data={"tool": block.name, "input": block.input},
+            turn_index=turn_index,
+            tool_call_id=block.id,
+        )
+        text = recall(history, tool_use_id)
+        emitter.emit(
+            SSEEventType.agent_tool_result,
+            agent_id=self.agent_id,
+            message=text[:200],
+            data={"tool": block.name, "result": text},
+            turn_index=turn_index,
+            tool_call_id=block.id,
+        )
+        return {"type": "tool_result", "tool_use_id": block.id, "content": text}
 
     async def _checked_call_tool(
         self,

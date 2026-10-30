@@ -93,6 +93,10 @@ fallback.
   research).
 
 ### Fix 4 — Snip-equivalent: in-loop history trimming (MEDIUM impact, MEDIUM effort)
+> **Status (2026-10-29): implemented** as a read-time projection rather than a history mutation:
+> `agents/context_view.py` (`ContextSnipper`, `recall_tool_result`), configured by
+> `CONTEXT_SNIP_*`. Snip events go to the session log. See `docs/kb/architecture.md`.
+
 **Problem:** Even with Fix 1 capping individual results, a long-running agent's cumulative history
 still grows unbounded across many iterations.
 
@@ -107,6 +111,11 @@ still grows unbounded across many iterations.
   against).
 
 ### Fix 5 — Real auto-compact for long-running agents (LOWER priority, HIGHEST effort)
+> **Status (2026-10-29): not built, by design.** Measure first. Every `agent_finished`
+> session event now carries `peak_prompt_tokens`, and a snip that cannot get under the
+> trigger logs a warning. Build this only if those show agents staying over the trigger.
+> The session log now provides the persisted boundary this section anticipated.
+
 **Problem:** For agent types with many iterations (code/research agents using
 `decomposition_prompt`), Fixes 1–4 may still not be enough to keep a single loop's context bounded
 over very long runs.

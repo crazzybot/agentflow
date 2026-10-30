@@ -167,6 +167,9 @@ All settings are read from environment variables (or a `.env` file).
 | `ENABLE_PROMPT_CACHING` | `true` | Inject Anthropic cache headers on every call |
 | `CAPTURE_EVENTS` | `false` | Write SSE events to `.runs/{id}/events.jsonl` |
 | `CAPTURE_RESULTS` | `false` | Write subtask results to `.runs/{id}/results.jsonl` |
+| `CONTEXT_SNIP_TRIGGER_TOKENS` | `100000` | Once an agent's prompt passes this size, older tool results are replaced in what the model sees by stubs it can expand with `recall_tool_result`. The full history is kept. `0` disables this. |
+| `CONTEXT_SNIP_KEEP_RECENT` | `3` | Most recent tool-result turns always shown in full |
+| `CONTEXT_SNIP_MIN_CHARS` | `1000` | Tool results shorter than this are never replaced by a stub |
 | `RESUME_INTERRUPTED_RUNS` | `false` | Resume runs interrupted by a restart automatically at startup (spends budget without anyone asking) |
 | `RUN_LEASE_TTL_S` | `15` | Redis backend: TTL of the per-run ownership lease. The owner renews it every TTL/3 seconds. A crashed replica's runs become resumable once the lease lapses, and a cancel sent to another replica takes effect within about TTL/3 seconds. |
 | `MANIFESTS_DIR` | `manifests` | Directory scanned for `*.json` agent manifests |

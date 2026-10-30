@@ -49,6 +49,7 @@ class SessionEventType(StrEnum):
     agent_started = "agent_started"          # task_id, model, resumed
     message_appended = "message_appended"    # message (+ usage/stop_reason on assistant turns)
     message_discarded = "message_discarded"  # reason — drops the invocation's last message
+    context_snipped = "context_snipped"      # boundary, snipped, freed_chars, prompt_tokens (view only)
     agent_finished = "agent_finished"        # status, cost_usd, tokens, error
     run_interrupted = "run_interrupted"      # reason — process died mid-run; resumable
     run_resumed = "run_resumed"              # after_seq, finished, resuming
