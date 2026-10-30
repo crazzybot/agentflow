@@ -1,7 +1,7 @@
 ---
 title: Session Log (Durable Run Record)
 last_updated: 2026-10-29
-last_verified_sha: d09693f
+last_verified_sha: 8eee61b
 sources:
   - src/agentflow/core/session.py
   - src/agentflow/orchestrator/engine.py
@@ -39,6 +39,9 @@ How it differs from the other per-run files:
 | `subtask_dispatched` | `_dispatch_subtask()` | `subtask`, `task_id` (the envelope's), `budget_usd` |
 | `subtask_decomposed` | `_dispatch_subtask()` when the decomposer splits | `micro`, as dispatched (decomposer context included) |
 | `subtask_finished` | `_execute_plan()` / `_run_micro_subtasks()` | `ok`, optional `reason` (`upstream_failed`). The scheduler's own completed/failed decision. |
+| `subtask_verified` | `_verify_with_repairs()` | `verification` (`passed` True/False/None, per-criterion `checks`, `repairs`) |
+| `checkpoint_created` | `_checkpoint()` | `sha`, `label`, `changed` — workspace git snapshot (run start/resume, or after a subtask) |
+| `workspace_restored` | `_roll_back_attempt()` | `sha`, `paths` — a failed attempt's files restored before the retry |
 | `result_stored` | `_store_result()` | `result` (AgentResult **without** `messages`) |
 | `cost_added` | `_add_cost()` | `cost_usd`, `task_id` |
 | `human_input_requested` / `_received` | `_request_budget_increase()`, agent `ask_user` | request / response, new `budget_usd` |

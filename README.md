@@ -167,6 +167,10 @@ All settings are read from environment variables (or a `.env` file).
 | `ENABLE_PROMPT_CACHING` | `true` | Inject Anthropic cache headers on every call |
 | `CAPTURE_EVENTS` | `false` | Write SSE events to `.runs/{id}/events.jsonl` |
 | `CAPTURE_RESULTS` | `false` | Write subtask results to `.runs/{id}/results.jsonl` |
+| `ENABLE_VERIFIER` | `true` | Subtasks the planner gave `acceptanceCriteria` are checked by an independent read-only verifier before counting as done. Unmet criteria go back to the agent to fix. |
+| `VERIFICATION_MAX_REPAIRS` | `1` | Fix-and-recheck rounds before a still-failing subtask is downgraded to partial |
+| `VERIFIER_MODEL_TIER` / `VERIFIER_MAX_ITERATIONS` | `economy` / `8` | Verifier cost controls |
+| `ENABLE_CHECKPOINTS` | `true` | Saves git checkpoints of each run's workspace in a separate repository at `.runs/{id}/checkpoints.git`: a baseline, then one per finished subtask. Before a retry, files written by the failed attempt are rolled back. A workspace's own `.git` is never touched. Needs `git`. |
 | `CONTEXT_SNIP_TRIGGER_TOKENS` | `100000` | Once an agent's prompt passes this size, older tool results are replaced in what the model sees by stubs it can expand with `recall_tool_result`. The full history is kept. `0` disables this. |
 | `CONTEXT_SNIP_KEEP_RECENT` | `3` | Most recent tool-result turns always shown in full |
 | `CONTEXT_SNIP_MIN_CHARS` | `1000` | Tool results shorter than this are never replaced by a stub |
@@ -261,6 +265,19 @@ already finished. Set `RESUME_INTERRUPTED_RUNS=true` to resume automatically at
 startup. With `STATE_BACKEND=redis`, `POST /api/runs/{id}/cancel` also reaches runs
 that execute on another replica and returns `{"status": "cancel_requested"}`.
 
+### Workspace checkpoints
+
+```
+GET /api/runs/{run_id}/checkpoints
+```
+
+Lists the run's workspace snapshots, oldest first: `sha`, `label`, `subtask_id`, and
+the files `changed` in each one. To restore the workspace to one by hand:
+
+```bash
+git --git-dir .runs/<run_id>/checkpoints.git --work-tree <workspace> checkout <sha> -- .
+```
+
 ### Health check
 
 ```
@@ -281,6 +298,7 @@ GET /health
 | `agent:progress` | Mid-task status or tool call notification |
 | `agent:query` | Agent needs information from another agent (back-channel) |
 | `task:complete` | A subtask finished successfully |
+| `task:verified` | An independent verifier checked a subtask's acceptance criteria (`data.verification`: passed / failed / inconclusive per criterion) |
 | `task:failed` | A subtask failed after all retries |
 | `run:complete` | All subtasks done; assembled result attached |
 | `run:error` | Unrecoverable orchestrator-level error |

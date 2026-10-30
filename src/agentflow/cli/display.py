@@ -21,6 +21,7 @@ _ICONS: dict[str, str] = {
     "task:partial": "~",
     "task:failed": "✗",
     "task:continuing": "↻",
+    "task:verified": "☑",
     "run:awaiting_input": "⏸",
     "run:budget_exceeded": "!",
     "run:complete": "◆",
@@ -37,6 +38,7 @@ _STYLES: dict[str, str] = {
     "agent:query": "yellow",
     "task:complete": "green",
     "task:partial": "yellow",
+    "task:verified": "cyan",
     "task:failed": "bold red",
     "task:continuing": "yellow",
     "run:awaiting_input": "bold yellow",
@@ -83,6 +85,9 @@ class RunDisplay:
             subtask_id = (data or {}).get("subtask_id", "")
             label = f"{subtask_id} complete" if event_type == "task:complete" else f"{subtask_id} failed"
             self._print(event_type, agent_id, label)
+
+        elif event_type == "task:verified":
+            self._print(event_type, agent_id, message)
 
         elif event_type == "agent:progress":
             if self.verbose and message:

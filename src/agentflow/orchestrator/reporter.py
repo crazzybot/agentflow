@@ -112,11 +112,12 @@ async def compile_report(
     if partials:
         parts.append("## Incomplete Work")
         parts.append(
-            "The following subtasks hit their iteration limit and may have produced "
-            "only partial output. What was completed is shown below.\n"
+            "The following subtasks hit a limit or failed independent verification, so "
+            "their output may be incomplete. The reason and what was completed are shown below.\n"
         )
         for result in partials.values():
-            parts.append(f"### {result.agent_id} (incomplete)\n\n{_result_text(result)}\n")
+            reason = f"Reason: {result.error}\n\n" if result.error else ""
+            parts.append(f"### {result.agent_id} (incomplete)\n\n{reason}{_result_text(result)}\n")
 
     if failed:
         parts.append("## Failed Tasks")

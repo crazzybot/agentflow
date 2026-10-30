@@ -42,6 +42,9 @@ class SessionEventType(StrEnum):
     subtask_dispatched = "subtask_dispatched"  # subtask, task_id, budget_usd
     subtask_decomposed = "subtask_decomposed"  # micro (list of subtasks)
     subtask_finished = "subtask_finished"    # ok — the scheduler's completed/failed decision
+    subtask_verified = "subtask_verified"    # verification (Verification), repairs
+    checkpoint_created = "checkpoint_created"  # sha, label, changed — workspace git snapshot
+    workspace_restored = "workspace_restored"  # sha, paths — failed attempt's files rolled back
     result_stored = "result_stored"          # result (AgentResult without messages)
     cost_added = "cost_added"                # cost_usd
     human_input_requested = "human_input_requested"  # request

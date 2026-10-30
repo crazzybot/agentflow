@@ -1,7 +1,7 @@
 ---
 title: Conventions & Patterns
 last_updated: 2026-10-29
-last_verified_sha: d09693f
+last_verified_sha: 8eee61b
 sources:
   - pyproject.toml
   - src/agentflow/config.py
@@ -97,7 +97,9 @@ contradict the source):
   `test_reporter.py`, `test_engine.py` (run routing with `create_plan` patched and the
   engine's own LLM helpers replaced by `AsyncMock`), `test_workspace.py` (workspace
   resolution, tool isolation, locking, followup inheritance), `test_session.py` (session
-  log append/read/replay, agent transcripts, engine replay parity), `test_context_view.py`
+  log append/read/replay, agent transcripts, engine replay parity), `test_verifier.py`
+  (verdicts and the engine's verify/repair gate), `test_checkpoints.py` (real git in temp
+  dirs, skipped without git), `test_context_view.py`
   (read-time snipping and recall), `test_resume.py`
   (crash → reconcile → `wake()`), `test_lease.py` (Redis leases on `fakeredis`,
   two engines as two replicas), and `test_context.py`
@@ -114,6 +116,9 @@ contradict the source):
   Redis `.env` without a server would fail every engine test. Lease tests opt back in
   by monkeypatching `agentflow.orchestrator.engine.run_leases` with a `RedisRunLeases`
   on `fakeredis`.
+- Never order concurrent engine work with `asyncio.sleep(<small>)`: run setup now
+  includes git subprocesses (checkpoints), so timing guesses break. Wait on an
+  `asyncio.Event` set by the mocked step, or poll for an emitted event.
 - To simulate a crash, run the engine, block a subtask, cancel, then strip the trailing
   `run_finished` line from `session.jsonl` (`_simulate_crash` in `tests/test_resume.py`).
   A killed process never reaches the `finally` that writes it.

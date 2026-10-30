@@ -93,6 +93,20 @@ class Settings(BaseSettings):
     # Max iterations for the per-subtask decomposer ReAct loop
     decomposer_max_iterations: int = 10
 
+    # Independent verification of subtasks that carry acceptance criteria
+    # (orchestrator/verifier.py). The verifier is read-only and cheap by default.
+    enable_verifier: bool = True
+    verifier_max_iterations: int = 8
+    verifier_model_tier: str = "economy"
+    # Repair rounds (agent continues with the verifier's findings) before a still-
+    # failing subtask is downgraded to partial.
+    verification_max_repairs: int = 1
+
+    # Git checkpoints of each run's workspace in a shadow repo under the run dir
+    # (orchestrator/checkpoints.py): baseline + one per finished subtask, and
+    # rollback of a failed attempt's files before a retry. Needs `git` on PATH.
+    enable_checkpoints: bool = True
+
     # Set ENABLE_DECOMPOSER=false to skip per-subtask decomposition entirely.
     # Subtasks then execute as the planner produced them, with no extra ReAct loop.
     enable_decomposer: bool = True
