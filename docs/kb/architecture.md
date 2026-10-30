@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-10-29
-last_verified_sha: 38d6fc8
+last_verified_sha: 69d4830
 sources:
   - src/agentflow/main.py
   - src/agentflow/api/routes.py
@@ -59,9 +59,10 @@ variants so multiple API replicas can share a run — see
    before real work starts. `_generate_run_name()`'s result is awaited immediately to
    write `<runs_dir>/<run_id>/meta.json` (including the resolved `workspace`, which
    `run:started` also carries in `data`); `_is_single_agent_task()`'s result is awaited later,
-   right before it gates plan-vs-direct routing (step 3). Four `ContextVar` tokens are armed for the
+   right before it gates plan-vs-direct routing (step 3). Five `ContextVar` tokens are armed for the
    lifetime of the run: `_current_workspace` (the run's workspace dir, from
-   `core/workspace.py`), `_current_session` (the run's durable session log, from
+   `core/workspace.py`), `_current_sandbox` (the run's lazily created exec sandbox, from
+   `tools/sandbox.py`), `_current_session` (the run's durable session log, from
    `core/session.py`, which immediately records `run_started`, see
    [subsystems/session-log](subsystems/session-log.md)), `_current_sink` (artifact tracking, from
    `tools/artifact_tracker.py`) and `_kb_dispatch_fn` (from `tools/kb_dispatcher.py`),
@@ -155,9 +156,10 @@ variants so multiple API replicas can share a run — see
    [context view](subsystems/context-view.md) of the history, not the history itself),
    executing any `tool_use` blocks
    concurrently via `_checked_call_tool()` and feeding results back as `tool_result`
-   messages. Before each tool dispatch, `_checked_call_tool()` consults the per-loop
-   `tool_call_counts` dict against `AgentManifest.tool_limits` and short-circuits with
-   an error result if a per-tool call budget is exceeded. If the resolved
+   messages. Before each tool dispatch, `_checked_call_tool()` runs the invocation's
+   pre-tool-use policy chain (`build_policies()`: manifest `tool_policies` command
+   allowlists, then `tool_limits` budgets) and short-circuits with the blocking reason
+   as the tool result (see [subsystems/sandbox-and-policies](subsystems/sandbox-and-policies.md)). If the resolved
    `thinking_effort` (see the `Agent` component's cost-tiering precedence below —
    `envelope.constraints.thinking_effort` if the planner set one for this subtask, else
    `AgentManifest.thinking_effort`, else `settings.agent_thinking_effort`, which defaults
@@ -357,9 +359,9 @@ variants so multiple API replicas can share a run — see
   launch "introductory" rate became the permanent price. `_budget_to_max_tokens()` takes
   this same resolved input/output pricing as parameters instead of reading
   `settings.cost_per_1m_*` directly. The loop dispatches
-  tool calls through `_checked_call_tool()`, which enforces per-tool call budgets declared
-  in `AgentManifest.tool_limits` by incrementing an in-loop counter and returning a hard
-  error result (without invoking the tool) when the limit is exceeded. When the resolved
+  tool calls through `_checked_call_tool()`, which runs the pre-tool-use policy chain
+  (command allowlists, then per-tool call budgets from `AgentManifest.tool_limits`) and
+  returns a hard error result (without invoking the tool) when a policy objects. When the resolved
   `thinking_effort` is non-empty (manifest default or planner-assigned override — see the
   cost-tiering precedence above), adaptive extended thinking is enabled on every LLM call
   at that effort level; thinking blocks are emitted as `agent:thought` SSE events
@@ -450,12 +452,15 @@ variants so multiple API replicas can share a run — see
   - `_safe_path()` (used by `file_read`/`file_write`) resolves inside the run's workspace and
     checks containment with `Path.is_relative_to` — not a string prefix, which a sibling
     `workspace-other/` directory would pass. The artifact-content route uses the same check.
-  - `bash_exec`/`python_exec` run with `_sandbox_env()`: an allowlist (`PATH`, `LANG`,
-    `LC_*`, `TERM`, `TZ`, `TMPDIR`, `USER`, `LOGNAME`, `SHELL`) plus
-    `settings.sandbox_env_passthrough`, with `HOME` pinned to the workspace. Credentials
-    (`ANTHROPIC_API_KEY`, `TAVILY_API_KEY`, `REDIS_URL`) are never visible to agent
-    subprocesses. This is env scrubbing only — there is no OS-level sandbox, so full
-    `bash_exec`/`python_exec` can still read files outside the workspace.
+  - `bash_exec`/`bash_exec_readonly`/`python_exec` run in the run's **sandbox**
+    (`current_sandbox()`, `tools/sandbox.py`). The default `local` backend is a host
+    subprocess with `local_env()`: an allowlist (`PATH`, `LANG`, `LC_*`, `TERM`, `TZ`,
+    `TMPDIR`, `USER`, `LOGNAME`, `SHELL`) plus `settings.sandbox_env_passthrough`, with
+    `HOME` pinned to the workspace, so credentials (`ANTHROPIC_API_KEY`,
+    `TAVILY_API_KEY`, `REDIS_URL`) are never visible. It is env scrubbing only: commands
+    can still read files outside the workspace. `SANDBOX_BACKEND=docker` runs them in a
+    locked-down per-run container instead, and fails closed (see
+    [subsystems/sandbox-and-policies](subsystems/sandbox-and-policies.md)).
   - `bash_exec_readonly` (planner, decomposer, WriterAgent — all of which can also see
     untrusted web or workspace content) is validated by `_check_readonly_command()`
     before it reaches the shell: harmless stderr redirects (`2>&1`, `2>/dev/null`) are
