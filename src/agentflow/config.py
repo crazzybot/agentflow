@@ -40,6 +40,17 @@ class Settings(BaseSettings):
     # beyond the built-in allowlist (PATH, LANG, …). Credentials are withheld by
     # default; add only what a toolchain needs, e.g. SANDBOX_ENV_PASSTHROUGH='["NODE_OPTIONS"]'.
     sandbox_env_passthrough: list[str] = []
+    # Where bash_exec / bash_exec_readonly / python_exec run (tools/sandbox.py):
+    # "local" (host subprocess, scrubbed env) or "docker" (per-run container with the
+    # workspace bind-mounted at /workspace; fails closed if Docker is unavailable).
+    sandbox_backend: str = "local"
+    sandbox_docker_image: str = "python:3.13-slim"
+    sandbox_docker_python: str = "python3"
+    # "bridge" keeps package installs working; "none" cuts the sandbox off the network.
+    sandbox_docker_network: str = "bridge"
+    sandbox_docker_memory: str = "2g"
+    sandbox_docker_cpus: float = 2.0
+    sandbox_docker_pids_limit: int = 512
     agent_max_iterations: int = 10  # fallback when no budget is set
     agent_max_tokens_fallback: int = 8_192  # max_tokens per call when no budget is set
     agent_max_tokens_cap: int = 32_768  # upper bound on max_tokens derived from budget
@@ -148,6 +159,15 @@ class Settings(BaseSettings):
     # ttl/3 seconds. A crashed owner's runs become reconcilable/resumable once it
     # lapses; a cross-replica cancel takes effect within ~ttl/3 seconds.
     run_lease_ttl_s: float = 15.0
+
+    # Where subtask agents execute (orchestrator/workers.py): "local" (in this
+    # process) or "workers" (queued to `agentflow worker` processes; requires
+    # STATE_BACKEND=redis and a runs_dir/workspace shared with the workers).
+    dispatch_mode: str = "local"
+    # Fail a queued invocation no worker has claimed after this long.
+    worker_claim_timeout_s: float = 60.0
+    # Workers refresh their claim this often; 3 missed beats = worker presumed dead.
+    worker_heartbeat_s: float = 5.0
 
     def resolve_model_tier(self, tier: str | None) -> str | None:
         """Resolve a named cost tier to a model id, or None if *tier* is unset/unrecognised.

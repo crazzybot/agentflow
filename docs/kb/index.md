@@ -1,7 +1,7 @@
 ---
 title: AgentFlow Knowledge Base — Index
 last_updated: 2026-10-29
-last_verified_sha: 38d6fc8
+last_verified_sha: e260885
 sources:
   - src/agentflow/
   - manifests/
@@ -40,6 +40,12 @@ the doc(s) relevant to your change, before exploring source.
   acceptance criteria checked by an independent read-only verifier (with repair rounds),
   and per-subtask git snapshots of the workspace in a shadow repo with rollback of
   failed attempts.
+- [subsystems/sandbox-and-policies](subsystems/sandbox-and-policies.md) — where exec
+  tools run (local or a locked-down per-run Docker container, fail-closed) and the
+  pre-tool-use policy chain (command allowlists, call limits).
+- [subsystems/workers](subsystems/workers.md) — `DISPATCH_MODE=workers`: subtask agents
+  run in `agentflow worker` processes over Redis (claim/heartbeat, failures as failed
+  attempts, cancel), with the server as the session log's only writer.
 - [subsystems/campaigns](subsystems/campaigns.md) — long-horizon work as fresh-context
   sessions over a code-enforced feature ledger; a feature passes only on independent
   verification, with regression checks, bounds, and pause/resume across restarts.

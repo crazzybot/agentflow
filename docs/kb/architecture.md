@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-10-29
-last_verified_sha: 38d6fc8
+last_verified_sha: e260885
 sources:
   - src/agentflow/main.py
   - src/agentflow/api/routes.py
@@ -59,9 +59,10 @@ variants so multiple API replicas can share a run — see
    before real work starts. `_generate_run_name()`'s result is awaited immediately to
    write `<runs_dir>/<run_id>/meta.json` (including the resolved `workspace`, which
    `run:started` also carries in `data`); `_is_single_agent_task()`'s result is awaited later,
-   right before it gates plan-vs-direct routing (step 3). Four `ContextVar` tokens are armed for the
+   right before it gates plan-vs-direct routing (step 3). Five `ContextVar` tokens are armed for the
    lifetime of the run: `_current_workspace` (the run's workspace dir, from
-   `core/workspace.py`), `_current_session` (the run's durable session log, from
+   `core/workspace.py`), `_current_sandbox` (the run's lazily created exec sandbox, from
+   `tools/sandbox.py`), `_current_session` (the run's durable session log, from
    `core/session.py`, which immediately records `run_started`, see
    [subsystems/session-log](subsystems/session-log.md)), `_current_sink` (artifact tracking, from
    `tools/artifact_tracker.py`) and `_kb_dispatch_fn` (from `tools/kb_dispatcher.py`),
@@ -126,8 +127,9 @@ variants so multiple API replicas can share a run — see
    builds a `TaskEnvelope` (instruction + prior results/messages + budget/timeout
    constraints; the planner-only follow-up keys `prior_run_id`, `prior_task`,
    `prior_report` and `prior_subtask_outputs` are stripped before the envelope is built so agents only
-   receive user-supplied extra context), and calls `Agent.run(envelope, emitter,
-   ctx=ctx)`. It handles retries with exponential backoff, fallback-agent routing on
+   receive user-supplied extra context), and invokes the agent through `_invoke()`, which
+   is `Agent.run(envelope, emitter, ctx=ctx)` in this process, or a worker process when
+   `DISPATCH_MODE=workers` (see [subsystems/workers](subsystems/workers.md)). It handles retries with exponential backoff, fallback-agent routing on
    final failure (deregistering the primary agent and registering the fallback before
    its `run()` call), and partial-result continuation (`_continue_partial`,
    `_request_budget_increase`). HITL is triggered when the remaining USD budget is at or
@@ -155,9 +157,10 @@ variants so multiple API replicas can share a run — see
    [context view](subsystems/context-view.md) of the history, not the history itself),
    executing any `tool_use` blocks
    concurrently via `_checked_call_tool()` and feeding results back as `tool_result`
-   messages. Before each tool dispatch, `_checked_call_tool()` consults the per-loop
-   `tool_call_counts` dict against `AgentManifest.tool_limits` and short-circuits with
-   an error result if a per-tool call budget is exceeded. If the resolved
+   messages. Before each tool dispatch, `_checked_call_tool()` runs the invocation's
+   pre-tool-use policy chain (`build_policies()`: manifest `tool_policies` command
+   allowlists, then `tool_limits` budgets) and short-circuits with the blocking reason
+   as the tool result (see [subsystems/sandbox-and-policies](subsystems/sandbox-and-policies.md)). If the resolved
    `thinking_effort` (see the `Agent` component's cost-tiering precedence below —
    `envelope.constraints.thinking_effort` if the planner set one for this subtask, else
    `AgentManifest.thinking_effort`, else `settings.agent_thinking_effort`, which defaults
@@ -357,9 +360,9 @@ variants so multiple API replicas can share a run — see
   launch "introductory" rate became the permanent price. `_budget_to_max_tokens()` takes
   this same resolved input/output pricing as parameters instead of reading
   `settings.cost_per_1m_*` directly. The loop dispatches
-  tool calls through `_checked_call_tool()`, which enforces per-tool call budgets declared
-  in `AgentManifest.tool_limits` by incrementing an in-loop counter and returning a hard
-  error result (without invoking the tool) when the limit is exceeded. When the resolved
+  tool calls through `_checked_call_tool()`, which runs the pre-tool-use policy chain
+  (command allowlists, then per-tool call budgets from `AgentManifest.tool_limits`) and
+  returns a hard error result (without invoking the tool) when a policy objects. When the resolved
   `thinking_effort` is non-empty (manifest default or planner-assigned override — see the
   cost-tiering precedence above), adaptive extended thinking is enabled on every LLM call
   at that effort level; thinking blocks are emitted as `agent:thought` SSE events
@@ -450,12 +453,15 @@ variants so multiple API replicas can share a run — see
   - `_safe_path()` (used by `file_read`/`file_write`) resolves inside the run's workspace and
     checks containment with `Path.is_relative_to` — not a string prefix, which a sibling
     `workspace-other/` directory would pass. The artifact-content route uses the same check.
-  - `bash_exec`/`python_exec` run with `_sandbox_env()`: an allowlist (`PATH`, `LANG`,
-    `LC_*`, `TERM`, `TZ`, `TMPDIR`, `USER`, `LOGNAME`, `SHELL`) plus
-    `settings.sandbox_env_passthrough`, with `HOME` pinned to the workspace. Credentials
-    (`ANTHROPIC_API_KEY`, `TAVILY_API_KEY`, `REDIS_URL`) are never visible to agent
-    subprocesses. This is env scrubbing only — there is no OS-level sandbox, so full
-    `bash_exec`/`python_exec` can still read files outside the workspace.
+  - `bash_exec`/`bash_exec_readonly`/`python_exec` run in the run's **sandbox**
+    (`current_sandbox()`, `tools/sandbox.py`). The default `local` backend is a host
+    subprocess with `local_env()`: an allowlist (`PATH`, `LANG`, `LC_*`, `TERM`, `TZ`,
+    `TMPDIR`, `USER`, `LOGNAME`, `SHELL`) plus `settings.sandbox_env_passthrough`, with
+    `HOME` pinned to the workspace, so credentials (`ANTHROPIC_API_KEY`,
+    `TAVILY_API_KEY`, `REDIS_URL`) are never visible. It is env scrubbing only: commands
+    can still read files outside the workspace. `SANDBOX_BACKEND=docker` runs them in a
+    locked-down per-run container instead, and fails closed (see
+    [subsystems/sandbox-and-policies](subsystems/sandbox-and-policies.md)).
   - `bash_exec_readonly` (planner, decomposer, WriterAgent — all of which can also see
     untrusted web or workspace content) is validated by `_check_readonly_command()`
     before it reaches the shell: harmless stderr redirects (`2>&1`, `2>/dev/null`) are
@@ -509,10 +515,11 @@ variants so multiple API replicas can share a run — see
   - `_kb_dispatch_fn` (`tools/kb_dispatcher.py`) — a `ContextVar` holding the per-run
     KB dispatch callable; set to `None` when `KnowledgebaseAgent` is not configured.
 - **`core/bus.py` — `TaskBus`**: in-process asyncio-queue pair (dispatch/result) keyed
-  by `run_id`. Not currently on the request's critical path (dispatch is direct-call via
-  `_dispatch_subtask`), but the per-run channels are created/closed alongside the run. A
-  `_make_task_bus()` factory returns the Redis-backed `RedisTaskBus` (`bus_redis.py`)
-  when `STATE_BACKEND=redis`; both remain the future seam for a worker-pool split.
+  by `run_id`, with a Redis variant (`bus_redis.py`). Its per-run channels are still
+  created and closed alongside each run, but nothing sends work through it. The worker
+  split was built on `orchestrator/workers.py` instead, because that needs per-agent
+  queues, item correlation, liveness and cancellation (see
+  [subsystems/workers](subsystems/workers.md)).
 - **`core/context.py` — `RunContext` / `ContextStore`**: per-run shared state — stores
   each subtask's `AgentResult`, running cost totals and budget, the human-input
   request/response handshake (`request_human_input`/`await_human_input`/async
@@ -674,10 +681,8 @@ Within one run, components talk through three mechanisms:
   registered agent's queue; `pop_user_message(agent_id)` drains one message from that
   agent's own queue; `deregister_agent(agent_id)` removes the queue when the subtask
   finishes. This guarantees all parallel agents receive the same injected message.
-- **Events — `core/bus.py` / `orchestrator/stream.py`**: `TaskBus` gives each run an
-  asyncio dispatch/result queue pair (`create_run`/`close_run`), intended as the seam
-  for a future distributed worker model. Live progress that the HTTP layer actually
-  streams to clients flows through `StreamEmitter.emit()` instead — every planning
+- **Events — `orchestrator/stream.py`**: live progress that the HTTP layer streams to
+  clients flows through `StreamEmitter.emit()` — every planning
   step, dispatch, tool call, retry, and completion emits an `SSEEvent` that is both
   queued for `/api/runs/{run_id}/stream` and persisted to `events.jsonl` when
   `settings.capture_events` is set.

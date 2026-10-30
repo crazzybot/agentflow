@@ -117,3 +117,33 @@ def serve(ctx: click.Context, reload: bool) -> None:
     host = ctx.obj["host"]
     port = ctx.obj["port"]
     uvicorn.run("agentflow.main:app", host=host, port=port, reload=reload, log_level="info")
+
+
+@main.command()
+@click.option("--agents", default="", metavar="ID,ID", help="Only serve these agent ids (default: every manifest)")
+@click.option("--concurrency", default=1, show_default=True, type=int, help="Agent invocations run at once")
+def worker(agents: str, concurrency: int) -> None:
+    """Run a worker that executes subtask agents queued by servers in DISPATCH_MODE=workers."""
+    from agentflow.config import settings
+
+    if settings.state_backend != "redis":
+        raise click.UsageError("workers need STATE_BACKEND=redis (and a runs_dir/workspace shared with the server)")
+    asyncio.run(_run_worker([a for a in agents.split(",") if a.strip()], concurrency))
+
+
+async def _run_worker(agent_ids: list[str], concurrency: int) -> None:
+    from agentflow.config import settings
+    from agentflow.core.redis_client import get_redis
+    from agentflow.core.registry import AgentRegistry
+    from agentflow.llm import LLMClient
+    from agentflow.logging_config import setup_logging
+    from agentflow.orchestrator.workers import Worker
+
+    setup_logging()
+    registry = AgentRegistry()
+    registry.load_from_directory(settings.manifests_dir)
+    client = LLMClient(api_key=settings.anthropic_api_key, enable_prompt_caching=settings.enable_prompt_caching)
+    try:
+        await Worker(registry, client, get_redis(), agent_ids or None, concurrency).run_forever()
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc

@@ -1,7 +1,7 @@
 ---
 title: Conventions & Patterns
 last_updated: 2026-10-29
-last_verified_sha: 38d6fc8
+last_verified_sha: e260885
 sources:
   - pyproject.toml
   - src/agentflow/config.py
@@ -99,7 +99,9 @@ contradict the source):
   resolution, tool isolation, locking, followup inheritance), `test_session.py` (session
   log append/read/replay, agent transcripts, engine replay parity), `test_verifier.py`
   (verdicts and the engine's verify/repair gate), `test_checkpoints.py` (real git in temp
-  dirs, skipped without git), `test_campaign.py` (ledger, definition, and the session loop
+  dirs, skipped without git), `test_sandbox.py` (local and fake-docker sandboxes, per-run
+  lifetime), `test_policy.py` (shell parsing, allowlists, limits), `test_workers.py`
+  (remote execution on fakeredis with a real worker and engine), `test_campaign.py` (ledger, definition, and the session loop
   through the real engine), `test_context_view.py`
   (read-time snipping and recall), `test_resume.py`
   (crash → reconcile → `wake()`), `test_lease.py` (Redis leases on `fakeredis`,

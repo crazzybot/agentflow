@@ -31,9 +31,11 @@ from agentflow.orchestrator.planner import create_plan
 from agentflow.orchestrator.reporter import compile_report
 from agentflow.orchestrator.resume import ResumeState, load_resumable
 from agentflow.orchestrator.verifier import repair_message, verify_subtask
+from agentflow.orchestrator.workers import RemoteInvoker
 from agentflow.orchestrator.scheduler import DependencyGraph
 from agentflow.orchestrator.stream import StreamEmitter, stream_registry
 from agentflow.tools.artifact_tracker import ArtifactSink, _current_sink
+from agentflow.tools.sandbox import SandboxProvider, _current_sandbox
 from agentflow.tools.kb_dispatcher import _kb_dispatch_fn
 
 logger = logging.getLogger(__name__)
@@ -132,6 +134,7 @@ class OrchestratorEngine:
         self._agent_instances: dict[str, Any] = {}
         self._run_tasks: dict[str, asyncio.Task] = {}
         self._workspace_locks = WorkspaceLocks()
+        self._remote = self._make_remote_invoker()
         # Runs being resumed by wake(): consulted by the scheduler and dispatch.
         self._resume: dict[str, ResumeState] = {}
         # Open workspace checkpoint repos of running runs (None entries never stored).
@@ -373,6 +376,33 @@ class OrchestratorEngine:
         if task is not None and not task.done():
             await asyncio.wait({task})
 
+    @staticmethod
+    def _make_remote_invoker() -> RemoteInvoker | None:
+        if settings.dispatch_mode == "local":
+            return None
+        if settings.dispatch_mode != "workers":
+            raise ValueError(f"Unknown DISPATCH_MODE {settings.dispatch_mode!r} (expected 'local' or 'workers')")
+        if settings.state_backend != "redis":
+            raise ValueError("DISPATCH_MODE=workers requires STATE_BACKEND=redis")
+        from agentflow.core.redis_client import get_redis
+        return RemoteInvoker(get_redis())
+
+    async def _invoke(
+        self,
+        run_id: str,
+        agent_id: str,
+        envelope: TaskEnvelope,
+        emitter: StreamEmitter,
+        ctx: RunContext,
+        resume_messages: list[dict[str, Any]] | None = None,
+    ) -> AgentResult:
+        """Run one subtask agent invocation — here, or on a worker (DISPATCH_MODE)."""
+        if self._remote is not None:
+            return await self._remote.invoke(run_id, agent_id, envelope, resume_messages)
+        return await self._agent_instances[agent_id].run(
+            envelope, emitter, resume_messages=resume_messages, ctx=ctx,
+        )
+
     @property
     def client(self) -> LLMClient:
         """The shared LLM client (also used by campaign planning/verification)."""
@@ -462,6 +492,9 @@ class OrchestratorEngine:
         )
 
         ws_token = _current_workspace.set(ws_dir)
+        # The run's sandbox ("hands"): created on the first exec tool call, closed below.
+        sandbox_provider = SandboxProvider(ws_dir, run_id)
+        sandbox_token = _current_sandbox.set(sandbox_provider)
         session = RunSession(run_id)  # reopens (and keeps numbering) when resuming
         session_token = _current_session.set(session)
         if resume is None:
@@ -645,6 +678,11 @@ class OrchestratorEngine:
                 # leaked state); the log then simply ends without a terminal event.
                 logger.exception("[%s] Could not record run_finished in the session log", run_id)
             _current_session.reset(session_token)
+            try:
+                await sandbox_provider.close()
+            except OSError:
+                logger.exception("[%s] Could not close the run's sandbox", run_id)
+            _current_sandbox.reset(sandbox_token)
             _current_workspace.reset(ws_token)
             self._resume.pop(run_id, None)
             self._checkpoints.pop(run_id, None)
@@ -982,7 +1020,7 @@ class OrchestratorEngine:
                     )
                 try:
                     result = await asyncio.wait_for(
-                        agent.run(envelope, emitter, resume_messages=attempt_resume, ctx=ctx),
+                        self._invoke(run_id, subtask.agent_id, envelope, emitter, ctx, attempt_resume),
                         timeout=settings.task_timeout_ms / 1000,
                     )
                 except asyncio.TimeoutError:
@@ -1019,7 +1057,7 @@ class OrchestratorEngine:
                         registered = None
                         await ctx.register_agent(fallback.agent_id)
                         try:
-                            fallback_result = await self._agent_instances[fallback.agent_id].run(envelope, emitter, ctx=ctx)
+                            fallback_result = await self._invoke(run_id, fallback.agent_id, envelope, emitter, ctx)
                         finally:
                             await ctx.deregister_agent(fallback.agent_id)
                         await _add_cost(ctx, fallback_result)
@@ -1175,7 +1213,6 @@ class OrchestratorEngine:
         error, so downstream agents and the report see the gap. An inconclusive
         verdict (verifier malfunction) passes.
         """
-        agent = self._agent_instances[subtask.agent_id]
         repairs = 0
         while True:
             verdict, verifier_result = await verify_subtask(run_id, subtask, result, self._client, emitter)
@@ -1219,9 +1256,9 @@ class OrchestratorEngine:
             )
             try:
                 repaired = await asyncio.wait_for(
-                    agent.run(
-                        envelope, emitter, ctx=ctx,
-                        resume_messages=[*result.messages, {"role": "user", "content": repair_message(verdict)}],
+                    self._invoke(
+                        run_id, subtask.agent_id, envelope, emitter, ctx,
+                        [*result.messages, {"role": "user", "content": repair_message(verdict)}],
                     ),
                     timeout=settings.task_timeout_ms / 1000,
                 )
@@ -1354,7 +1391,6 @@ class OrchestratorEngine:
         emitter: StreamEmitter,
     ) -> AgentResult:
         """Attempt up to max_continuations follow-up calls when a subtask hits its iteration limit."""
-        agent = self._agent_instances[subtask.agent_id]
 
         for cont in range(1, settings.max_continuations + 1):
             if not ctx.within_budget():
@@ -1397,7 +1433,7 @@ class OrchestratorEngine:
                 next_result = await asyncio.wait_for(
                     # Resume the existing message thread rather than rebuilding from a
                     # text summary — no re-reading, no lost tool context.
-                    agent.run(envelope, emitter, resume_messages=result.messages, ctx=ctx),
+                    self._invoke(run_id, subtask.agent_id, envelope, emitter, ctx, result.messages),
                     timeout=settings.task_timeout_ms / 1000,
                 )
             except asyncio.TimeoutError:

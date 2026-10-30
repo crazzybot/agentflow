@@ -18,6 +18,7 @@ import httpx
 
 from agentflow.config import settings
 from agentflow.core.workspace import current_workspace
+from agentflow.tools.sandbox import ExecResult, SandboxUnavailableError, current_sandbox, python_interpreter
 from agentflow.tools.registry import ToolDefinition, ToolImpact, tool_registry
 
 logger = logging.getLogger(__name__)
@@ -58,24 +59,6 @@ def _safe_path(relative: str) -> Path | None:
     if not target.is_relative_to(ws):
         return None
     return target
-
-
-# Environment variables passed through to agent subprocesses (bash_exec,
-# python_exec). Everything else — notably ANTHROPIC_API_KEY, TAVILY_API_KEY and
-# REDIS_URL — is withheld, so a prompt-injected command cannot read credentials
-# and exfiltrate them. Extend via SANDBOX_ENV_PASSTHROUGH when a toolchain needs more.
-_SANDBOX_ENV_ALLOWLIST = frozenset({
-    "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ", "TMPDIR", "USER", "LOGNAME", "SHELL",
-})
-
-
-def _sandbox_env() -> dict[str, str]:
-    """Return the scrubbed environment for agent subprocesses; HOME is the workspace."""
-    allowed = _SANDBOX_ENV_ALLOWLIST | set(settings.sandbox_env_passthrough)
-    env = {k: v for k, v in os.environ.items() if k in allowed}
-    # Keep any residual ~ expansion (and tool caches such as npm/uv) inside the workspace
-    env["HOME"] = str(_workspace())
-    return env
 
 
 def write_overflow_file(tool_name: str, call_id: str, full_text: str) -> str:
@@ -718,21 +701,21 @@ async def _bash_exec(command: str, purpose: str, timeout_seconds: int = 30) -> s
             "The workspace is already your current directory — use relative paths only."
         )
 
+    return await _run_in_sandbox(["sh", "-c", command], timeout_seconds, "Command")
+
+
+async def _run_in_sandbox(argv: list[str], timeout_seconds: int, label: str) -> str:
+    """Run in the run's sandbox (see tools/sandbox.py) and format the result for the model."""
     try:
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=str(_workspace()),
-            env=_sandbox_env(),
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
-        output = stdout.decode(errors="replace")
-        return f"exit_code={proc.returncode}\n{output}"
-    except asyncio.TimeoutError:
-        return f"Command timed out after {timeout_seconds}s"
-    except Exception as exc:
-        return f"Exec error: {exc}"
+        result: ExecResult = await current_sandbox().run(argv, timeout_s=timeout_seconds)
+    except SandboxUnavailableError as exc:
+        return f"Error: sandbox unavailable — {exc}"
+    except OSError as exc:
+        return f"{label} error: {exc}"
+    if result.timed_out:
+        partial = f"\n{result.output}" if result.output else ""
+        return f"{label} timed out after {timeout_seconds}s (process killed){partial}"
+    return f"exit_code={result.exit_code}\n{result.output}"
 
 
 tool_registry.register(ToolDefinition(
@@ -927,36 +910,8 @@ tool_registry.register(ToolDefinition(
 # python_exec
 # ---------------------------------------------------------------------------
 
-def _sandbox_python() -> str:
-    """Return the Python interpreter for python_exec, falling back to python3."""
-    configured = settings.sandbox_python.strip()
-    if not configured:
-        return "python3"
-    p = Path(configured)
-    if not p.is_absolute():
-        p = Path.cwd() / p
-    if p.exists():
-        return str(p)
-    logger.warning("sandbox_python %r not found, falling back to python3", configured)
-    return "python3"
-
-
 async def _python_exec(code: str, purpose: str, timeout_seconds: int = 30) -> str:
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            _sandbox_python(), "-c", code,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=str(_workspace()),
-            env=_sandbox_env(),
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
-        output = stdout.decode(errors="replace")
-        return f"exit_code={proc.returncode}\n{output}"
-    except asyncio.TimeoutError:
-        return f"Python exec timed out after {timeout_seconds}s"
-    except Exception as exc:
-        return f"Python exec error: {exc}"
+    return await _run_in_sandbox([python_interpreter(), "-c", code], timeout_seconds, "Python exec")
 
 
 tool_registry.register(ToolDefinition(

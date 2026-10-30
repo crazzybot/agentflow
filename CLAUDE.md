@@ -24,6 +24,7 @@ optional — a task that changed code but left the KB stale is not done.
 uv sync                                          # install / sync deps
 uv run uvicorn agentflow.main:app --reload       # API dev server (port 8000)
 uv run agentflow run "<task>"                    # CLI entry point
+uv run agentflow worker                          # worker process (DISPATCH_MODE=workers, needs Redis)
 uv run pytest                                    # run the full test suite
 uv run pytest tests/ -v                          # verbose
 ```
@@ -37,11 +38,11 @@ uv run pytest tests/ -v                          # verbose
 
 ```
 src/agentflow/
-  core/          — domain models (Pydantic), RunContext/ContextStore, TaskBus, AgentRegistry, SkillLoader
-  agents/        — Agent class: manifest-driven tool-calling loop against the LLM
-  orchestrator/  — engine, planner, decomposer, scheduler (DAG), reporter, SSE stream
+  core/          — domain models (Pydantic), RunContext/ContextStore, session log, workspaces, leases, AgentRegistry, SkillLoader
+  agents/        — Agent class: manifest-driven tool-calling loop against the LLM; read-time context view
+  orchestrator/  — engine, planner, decomposer, scheduler (DAG), verifier, checkpoints, resume, campaigns, workers, reporter, SSE stream
   llm/           — LLMClient: wraps AsyncAnthropic, injects prompt-cache, tracks UsageStats
-  tools/         — tool registry, builtins (bash/file/web/…), MCP adapter, arxiv, artifacts
+  tools/         — tool registry, builtins (bash/file/web/…), exec sandbox, tool policies, MCP adapter, arxiv, artifacts
   api/           — FastAPI routes: /api/runs CRUD, SSE stream, HITL input, cancel, followup, message
   cli/           — terminal client (Rich display of SSE events)
   main.py        — app factory (AgentRegistry + OrchestratorEngine singletons)

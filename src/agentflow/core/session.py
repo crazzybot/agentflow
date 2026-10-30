@@ -24,7 +24,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -180,8 +180,23 @@ def read_session(run_id: str) -> list[SessionEvent]:
     return _read(session_path(run_id))
 
 
+class SessionWriter(Protocol):
+    """Anything record() can append to: a RunSession, or a worker's relay back to
+    the engine that owns the run's log (orchestrator/workers.py)."""
+
+    async def append(
+        self,
+        type: SessionEventType,
+        *,
+        agent_id: str | None = None,
+        subtask_id: str | None = None,
+        invocation_id: str | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> object: ...
+
+
 # Set by the engine for the lifetime of a run; inherited by every task it spawns.
-_current_session: ContextVar[RunSession | None] = ContextVar("_current_session", default=None)
+_current_session: ContextVar[SessionWriter | None] = ContextVar("_current_session", default=None)
 
 
 async def record(
