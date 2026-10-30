@@ -111,6 +111,27 @@ class AgentStatus(str, Enum):
     failed = "failed"
 
 
+class CriterionCheck(BaseModel):
+    criterion: str
+    met: bool
+    evidence: str = ""
+
+
+class Verification(BaseModel):
+    """An independent verifier's verdict on a subtask's acceptance criteria."""
+    # True = all met, False = at least one unmet, None = inconclusive (the verifier
+    # failed or produced no verdict; treated as a pass so a broken check never
+    # blocks good work).
+    passed: bool | None
+    checks: list[CriterionCheck] = Field(default_factory=list)
+    summary: str = ""
+    repairs: int = 0  # repair rounds the agent was given before this verdict
+
+    @property
+    def unmet(self) -> list[CriterionCheck]:
+        return [c for c in self.checks if not c.met]
+
+
 class AgentOutput(BaseModel):
     structured: dict[str, Any] = Field(default_factory=dict)
     text: str = ""
@@ -138,6 +159,8 @@ class AgentResult(BaseModel):
     # this invocation — the measurement for judging whether context snipping keeps
     # agents bounded (docs/context-optimization-plan.md, Fix 5).
     peak_prompt_tokens: int = 0
+    # Set when the subtask had acceptance criteria and was checked by the verifier.
+    verification: Verification | None = None
     # Relative paths of every file successfully written during this agent's run.
     files_written: list[str] = Field(default_factory=list)
     # Full conversation messages — not serialised, used in-memory for same-agent
@@ -178,6 +201,9 @@ class Subtask(BaseModel):
     # default applies unchanged. See Agent._agentic_loop for resolution order.
     model_tier: str | None = None  # "economy" | "standard" | "premium"
     thinking_effort: str | None = None  # "low" | "medium" | "high" | "xhigh" | "max"
+    # Objectively checkable statements an independent verifier confirms against the
+    # workspace before the subtask counts as done (orchestrator/verifier.py).
+    acceptance_criteria: list[str] = Field(default_factory=list)
 
 
 class ExecutionPlan(BaseModel):
@@ -202,6 +228,7 @@ class SSEEventType(str, Enum):
     task_partial = "task:partial"
     task_failed = "task:failed"
     task_continuing = "task:continuing"
+    task_verified = "task:verified"
     run_complete = "run:complete"
     run_error = "run:error"
     run_budget_exceeded = "run:budget_exceeded"

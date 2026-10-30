@@ -29,6 +29,7 @@ from agentflow.orchestrator.decomposer import decompose_subtask
 from agentflow.orchestrator.planner import create_plan
 from agentflow.orchestrator.reporter import compile_report
 from agentflow.orchestrator.resume import ResumeState, load_resumable
+from agentflow.orchestrator.verifier import repair_message, verify_subtask
 from agentflow.orchestrator.scheduler import DependencyGraph
 from agentflow.orchestrator.stream import StreamEmitter, stream_registry
 from agentflow.tools.artifact_tracker import ArtifactSink, _current_sink
@@ -985,6 +986,13 @@ class OrchestratorEngine:
                         else:
                             result = await self._continue_partial(run_id, subtask, envelope, result, ctx, emitter)
 
+                if (
+                    result.status == AgentStatus.success
+                    and subtask.acceptance_criteria
+                    and settings.enable_verifier
+                ):
+                    result = await self._verify_with_repairs(run_id, subtask, envelope, result, ctx, emitter)
+
                 await _store_result(ctx, subtask.id, result)
 
                 if result.status == AgentStatus.partial:
@@ -1007,6 +1015,90 @@ class OrchestratorEngine:
         finally:
             if registered is not None:
                 await ctx.deregister_agent(registered)
+
+    async def _verify_with_repairs(
+        self,
+        run_id: str,
+        subtask: Subtask,
+        envelope: TaskEnvelope,
+        result: AgentResult,
+        ctx: RunContext,
+        emitter: StreamEmitter,
+    ) -> AgentResult:
+        """Gate a successful result on an independent check of its acceptance criteria.
+
+        Unmet criteria go back to the producing agent, which continues its own
+        transcript to fix them (up to ``verification_max_repairs`` rounds). A result
+        that still fails is downgraded to partial with the unmet criteria as its
+        error, so downstream agents and the report see the gap. An inconclusive
+        verdict (verifier malfunction) passes.
+        """
+        agent = self._agent_instances[subtask.agent_id]
+        repairs = 0
+        while True:
+            verdict, verifier_result = await verify_subtask(run_id, subtask, result, self._client, emitter)
+            await _add_cost(ctx, verifier_result)
+            verdict = verdict.model_copy(update={"repairs": repairs})
+            await record(
+                SessionEventType.subtask_verified,
+                agent_id=subtask.agent_id,
+                subtask_id=subtask.id,
+                data={"verification": verdict.model_dump(mode="json")},
+            )
+            met = sum(1 for c in verdict.checks if c.met)
+            outcome = {True: "passed", False: "failed", None: "inconclusive"}[verdict.passed]
+            emitter.emit(
+                SSEEventType.task_verified,
+                agent_id=subtask.agent_id,
+                message=(
+                    f"Subtask {subtask.id} verification {outcome}"
+                    + (f" ({met}/{len(verdict.checks)} criteria met)" if verdict.checks else "")
+                ),
+                data={"subtask_id": subtask.id, "verification": verdict.model_dump(mode="json")},
+            )
+            if verdict.passed is not False:
+                return result.model_copy(update={"verification": verdict})
+
+            if repairs >= settings.verification_max_repairs:
+                unmet = "; ".join(c.criterion for c in verdict.unmet)
+                logger.warning("[%s] Subtask %s failed verification: %s", run_id, subtask.id, unmet)
+                return result.model_copy(update={
+                    "status": AgentStatus.partial,
+                    "verification": verdict,
+                    "error": f"Failed independent verification — unmet acceptance criteria: {unmet}",
+                })
+
+            repairs += 1
+            emitter.emit(
+                SSEEventType.task_continuing,
+                agent_id=subtask.agent_id,
+                message=f"Subtask {subtask.id} repairing {len(verdict.unmet)} unmet criteria (round {repairs})",
+                data={"subtask_id": subtask.id, "repair": repairs},
+            )
+            try:
+                repaired = await asyncio.wait_for(
+                    agent.run(
+                        envelope, emitter, ctx=ctx,
+                        resume_messages=[*result.messages, {"role": "user", "content": repair_message(verdict)}],
+                    ),
+                    timeout=settings.task_timeout_ms / 1000,
+                )
+            except asyncio.TimeoutError:
+                repaired = AgentResult(
+                    task_id=envelope.task_id, agent_id=subtask.agent_id,
+                    status=AgentStatus.failed, error="repair timed out",
+                )
+            await _add_cost(ctx, repaired)
+            if repaired.status == AgentStatus.failed:
+                # Keep the earlier work; record why it is not accepted as complete.
+                return result.model_copy(update={
+                    "status": AgentStatus.partial,
+                    "verification": verdict,
+                    "error": f"Repair after failed verification errored: {repaired.error}",
+                })
+            result = repaired.model_copy(update={
+                "files_written": list(dict.fromkeys([*result.files_written, *repaired.files_written])),
+            })
 
     async def _request_budget_increase(
         self,

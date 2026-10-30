@@ -50,6 +50,25 @@ def _validate_choice(value: str | None, allowed: set[str], field_name: str, subt
         return None
     return value
 
+_MAX_CRITERIA = 5
+
+
+def _parse_criteria(value: object, subtask_id: str) -> list[str]:
+    """Acceptance criteria are a quality gate, not plan structure: a malformed value
+    is dropped with a warning (the subtask then runs unverified) rather than failing
+    the whole plan."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(c, str) for c in value):
+        logger.warning("Ignoring malformed acceptanceCriteria on subtask %s: %r", subtask_id, value)
+        return []
+    criteria = [c.strip() for c in value if c.strip()]
+    if len(criteria) > _MAX_CRITERIA:
+        logger.warning("Subtask %s has %d acceptance criteria; keeping the first %d",
+                       subtask_id, len(criteria), _MAX_CRITERIA)
+    return criteria[:_MAX_CRITERIA]
+
+
 _SYSTEM_PROMPT_BASE = """\
 You are an orchestration planner. You have read-only tools to explore the workspace
 before you commit to a plan.
@@ -71,10 +90,22 @@ Use ONLY a JSON object — no markdown fences, no prose before or after:
       "agentId": "AgentId",
       "instruction": "...",
       "dependsOn": [],
-      "expectedOutput": "..."
+      "expectedOutput": "...",
+      "acceptanceCriteria": ["..."]
     }
   ]
 }
+
+Acceptance criteria — "acceptanceCriteria" (optional, 1-5 strings per subtask):
+- An independent read-only verifier checks each criterion against the workspace before
+  the subtask counts as done; unmet criteria are sent back to the agent to fix.
+- Write criteria that can be confirmed by reading files: e.g. "src/api/routes.py
+  defines a GET /health endpoint", "report.md has a Risks section with at least 3
+  items", "every function in utils.py has a docstring".
+- Do NOT write criteria that need running code, the network, or taste ("tests pass",
+  "the API responds", "the writing is engaging") — the verifier cannot check them.
+- Omit the field when no objective check applies (exploratory research, open-ended
+  analysis); an empty list means no verification.
 
 Agent selection — derive routing entirely from the agent list provided:
 - Match each subtask to the agent whose domain and capabilities best fit the work.
@@ -253,6 +284,7 @@ async def create_plan(
                 thinking_effort=_validate_choice(
                     st.get("thinkingEffort"), _VALID_THINKING_EFFORTS, "thinkingEffort", st["id"]
                 ),
+                acceptance_criteria=_parse_criteria(st.get("acceptanceCriteria"), st["id"]),
             )
             for st in plan_data["subtasks"]
         ]
