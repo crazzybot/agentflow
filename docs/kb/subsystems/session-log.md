@@ -1,7 +1,7 @@
 ---
 title: Session Log (Durable Run Record)
 last_updated: 2026-10-30
-last_verified_sha: 372c48d
+last_verified_sha: ccf4a77
 sources:
   - src/agentflow/core/session.py
   - src/agentflow/orchestrator/engine.py

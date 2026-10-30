@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-10-30
-last_verified_sha: bdacb49
+last_verified_sha: ccf4a77
 sources:
   - src/agentflow/main.py
   - src/agentflow/api/routes.py
@@ -601,7 +601,7 @@ variants so multiple API replicas can share a run — see
 | `GET /runs/{id}/stream` | SSE; `stream_registry.connect()` so any replica can serve it. |
 | `POST /runs/{id}/input` | HITL response → `ctx.provide_human_input()`; 409 if nothing pending. |
 | `POST /runs/{id}/cancel` | `engine.request_cancel()`: cancels the local Task (`"cancelled"`), or, under Redis, flags a run owned by another replica (`"cancel_requested"`); 404 if no live run. |
-| `POST/GET /campaigns`, `GET /campaigns/{id}`, `POST /campaigns/{id}/pause\|resume` | Long-horizon campaigns driven by `campaign_manager` (see [subsystems/campaigns](subsystems/campaigns.md)). |
+| `POST/GET /campaigns`, `GET/PATCH /campaigns/{id}`, `POST /campaigns/{id}/pause\|resume`, `POST /campaigns/{id}/features/{fid}/retry` | Long-horizon campaigns driven by `campaign_manager`; `PATCH` changes limits, `retry` unblocks a feature (see [subsystems/campaigns](subsystems/campaigns.md)). |
 | `GET /runs/{id}/checkpoints` | Workspace git snapshots (`sha`, `label`, `subtask_id`, `changed`) from the session log. |
 | `POST /runs/{id}/resume` | `engine.schedule_resume()` → `wake()`; same `run_id`/stream. 409 if active (here or on a live lease elsewhere), unlogged, or finished. |
 | `POST /runs/{id}/message` | `ctx.push_user_message()` fan-out (see Data flow); 409 once the emitter is done. |

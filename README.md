@@ -296,7 +296,15 @@ POST /api/campaigns          {"task": "<spec>", "agent_id": "CodeAgent", "max_se
                               "budget_usd": 25, "session_budget_usd": 3, "workspace": "my-app"}
 GET  /api/campaigns          GET /api/campaigns/{id}
 POST /api/campaigns/{id}/pause   POST /api/campaigns/{id}/resume
+PATCH /api/campaigns/{id}    {"max_sessions": 30, "budget_usd": null}   # change limits; null = no budget limit
+POST /api/campaigns/{id}/features/{fid}/retry   {"guidance": "<what to do differently>"}
 ```
+
+A campaign **stops** when it reaches `max_sessions` or its budget, or when only
+`blocked` features remain (each feature gets `CAMPAIGN_MAX_FEATURE_ATTEMPTS` failed
+sessions). To continue, raise or remove the limits, and retry blocked features,
+optionally with guidance that the next session receives. Then resume. If anything still
+blocks it, resume lists everything and how to fix each part.
 
 A campaign builds something too large for one run, in sessions that each start with
 a fresh context:
