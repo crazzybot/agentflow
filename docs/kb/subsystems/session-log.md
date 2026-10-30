@@ -1,7 +1,7 @@
 ---
 title: Session Log (Durable Run Record)
 last_updated: 2026-10-29
-last_verified_sha: 8eee61b
+last_verified_sha: 38d6fc8
 sources:
   - src/agentflow/core/session.py
   - src/agentflow/orchestrator/engine.py
@@ -35,7 +35,7 @@ How it differs from the other per-run files:
 | Type | Recorded by | `data` |
 | --- | --- | --- |
 | `run_started` | `engine.run()` | `task`, `user_context`, `budget_usd`, `workspace` |
-| `plan_created` | `engine.run()` (planner and direct branches) | `plan`, `direct` |
+| `plan_created` | `engine.run()` (planner, direct and preset branches) | `plan`, `direct`, `preset` (caller-supplied plan, e.g. a campaign session) |
 | `subtask_dispatched` | `_dispatch_subtask()` | `subtask`, `task_id` (the envelope's), `budget_usd` |
 | `subtask_decomposed` | `_dispatch_subtask()` when the decomposer splits | `micro`, as dispatched (decomposer context included) |
 | `subtask_finished` | `_execute_plan()` / `_run_micro_subtasks()` | `ok`, optional `reason` (`upstream_failed`). The scheduler's own completed/failed decision. |
@@ -66,6 +66,12 @@ continuations. Link a transcript to its subtask through
 called, so replayed cost matches `ctx.total_cost_usd()`. That means planner and
 decomposer spend is **not** included, which matches today's `RunContext`. Their cost
 is still visible on their own `agent_finished` events.
+
+Campaigns also keep a session log of their own, at
+`<runs_dir>/campaigns/<id>/session.jsonl` (`RunSession(path=…)`). It holds the feature
+planner's and the regression verifiers' transcripts. Campaign sessions are ordinary
+runs with ordinary logs, which the campaign reads back to update its ledger
+([campaigns](campaigns.md)).
 
 ## Writing
 

@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-10-29
-last_verified_sha: 8eee61b
+last_verified_sha: 38d6fc8
 sources:
   - src/agentflow/main.py
   - src/agentflow/api/routes.py
@@ -99,7 +99,10 @@ variants so multiple API replicas can share a run — see
      catches it and emits `run:error`.
 
    Either branch emits `plan:created` (message text distinguishes "Single-agent mode:
-   planner skipped (auto-classified)" from the subtask count).
+   planner skipped (auto-classified)" from the subtask count). A caller-supplied
+   `engine.run(..., plan=...)` skips both: the run executes exactly that preset plan
+   (session event `plan_created` with `preset: true`). Campaign sessions use this; see
+   [subsystems/campaigns](subsystems/campaigns.md).
 4. **Decompose** — gated by `settings.enable_decomposer` (`ENABLE_DECOMPOSER` in `.env`,
    default `true`); setting it `false` skips this step entirely and every subtask runs
    exactly as the planner (or direct-mode) produced it, with no extra ReAct loop. When
@@ -292,7 +295,10 @@ variants so multiple API replicas can share a run — see
   `DependencyGraph` scheduler as the top-level plan) so parallel branches within a
   decomposed subtask run concurrently. The sink micro-task — the one no other
   micro-task declares as a dependency — is promoted to the parent subtask ID so
-  downstream tasks find the aggregated result. A `_skip_decompose=True` flag on
+  downstream tasks find the aggregated result. The promoted result carries the union of
+  all micro-steps' `files_written`, and the parent's `acceptance_criteria` are verified
+  against it (with repairs via the sink agent's transcript). Before this, decomposed
+  subtasks skipped verification. A `_skip_decompose=True` flag on
   `_dispatch_subtask` prevents recursive decomposition when micro-subtasks are dispatched.
   Decomposition prompts must produce: (a) a `<decomposer_context>` block with key facts
   from workspace exploration (architecture, layout, interfaces), (b) parallel branches for
@@ -577,6 +583,7 @@ variants so multiple API replicas can share a run — see
 | `GET /runs/{id}/stream` | SSE; `stream_registry.connect()` so any replica can serve it. |
 | `POST /runs/{id}/input` | HITL response → `ctx.provide_human_input()`; 409 if nothing pending. |
 | `POST /runs/{id}/cancel` | `engine.request_cancel()`: cancels the local Task (`"cancelled"`), or, under Redis, flags a run owned by another replica (`"cancel_requested"`); 404 if no live run. |
+| `POST/GET /campaigns`, `GET /campaigns/{id}`, `POST /campaigns/{id}/pause\|resume` | Long-horizon campaigns driven by `campaign_manager` (see [subsystems/campaigns](subsystems/campaigns.md)). |
 | `GET /runs/{id}/checkpoints` | Workspace git snapshots (`sha`, `label`, `subtask_id`, `changed`) from the session log. |
 | `POST /runs/{id}/resume` | `engine.schedule_resume()` → `wake()`; same `run_id`/stream. 409 if active (here or on a live lease elsewhere), unlogged, or finished. |
 | `POST /runs/{id}/message` | `ctx.push_user_message()` fan-out (see Data flow); 409 once the emitter is done. |
@@ -601,7 +608,9 @@ non-terminal `run_interrupted` and stay resumable (`POST …/resume`, or automat
 `RESUME_INTERRUPTED_RUNS=true`). Legacy runs without a session log and without
 `report.md` are tombstoned as before. Runs whose lease is live on another replica are
 skipped, and an existing report is never overwritten. See
-[subsystems/resume-and-leases](subsystems/resume-and-leases.md).
+[subsystems/resume-and-leases](subsystems/resume-and-leases.md). The lifespan then pauses
+campaigns the restart interrupted (`campaign_manager.mark_interrupted()`), restarting
+them when `RESUME_INTERRUPTED_RUNS=true`.
 
 The CLI (`cli/`, `agentflow run [--workspace NAME] "<task>"`) is a thin click client over this HTTP API.
 It posts to `/api/runs`, renders the SSE stream with Rich (`cli/display.py`) and stops on

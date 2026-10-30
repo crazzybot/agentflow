@@ -1,7 +1,7 @@
 ---
 title: Resuming Runs & Run Leases
 last_updated: 2026-10-29
-last_verified_sha: 8eee61b
+last_verified_sha: 38d6fc8
 sources:
   - src/agentflow/orchestrator/resume.py
   - src/agentflow/orchestrator/engine.py
@@ -102,6 +102,10 @@ decomposition: its transcript already contains any decomposer context.
     it cancels with `msg=LEASE_LOST`. A `RedisError` during renew is logged and retried
     (a transient outage must not kill the run).
   - `request_cancel` sets `run:{id}:cancel` (TTL `redis_key_ttl`) only if a lease exists.
+
+Campaigns reuse leases under the id `campaign-<campaign_id>`, so one replica drives a
+campaign, and reuse `wake()`/`wait_for()` to finish a session interrupted mid-campaign
+(see [campaigns](campaigns.md)).
 
 Engine integration:
 - `_run()` acquires the lease **first**, before touching the log (otherwise

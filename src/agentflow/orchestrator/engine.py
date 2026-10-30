@@ -354,14 +354,29 @@ class OrchestratorEngine:
         user_context: dict[str, Any],
         budget_usd: float | None = None,
         workspace: str | None = None,
+        plan: ExecutionPlan | None = None,
     ) -> None:
         """Execute one run end to end.
 
         *workspace* is the run's workspace path relative to ``settings.workspace_dir``:
         a named workspace, or a prior run's recorded path when following up. ``None``
         gives the run a fresh ``runs/<run_id>`` workspace of its own.
+
+        *plan* skips classification and the planner: the run executes exactly this
+        plan (used by campaigns, whose sessions are planned in code).
         """
-        await self._run(run_id, task, user_context, budget_usd, workspace, resume=None)
+        await self._run(run_id, task, user_context, budget_usd, workspace, resume=None, preset_plan=plan)
+
+    async def wait_for(self, run_id: str) -> None:
+        """Wait until a run executing in this process ends (no-op if it is not active)."""
+        task = self._run_tasks.get(run_id)
+        if task is not None and not task.done():
+            await asyncio.wait({task})
+
+    @property
+    def client(self) -> LLMClient:
+        """The shared LLM client (also used by campaign planning/verification)."""
+        return self._client
 
     def is_active(self, run_id: str) -> bool:
         task = self._run_tasks.get(run_id)
@@ -392,6 +407,7 @@ class OrchestratorEngine:
         budget_usd: float | None,
         workspace: str | None,
         resume: ResumeState | None,
+        preset_plan: ExecutionPlan | None = None,
     ) -> None:
         # Resolve before any per-run state exists: an unsafe path fails loudly here
         # instead of leaving an emitter open that nothing will ever close.
@@ -438,7 +454,7 @@ class OrchestratorEngine:
         # Direct mode is opt-in: without DIRECT_AGENT_ID there is no agent to route a
         # "direct" verdict to, so skip the classifier call and always plan. A resumed
         # run with a logged plan needs no routing decision at all.
-        needs_plan = resume is None or resume.plan is None
+        needs_plan = (resume is None and preset_plan is None) or (resume is not None and resume.plan is None)
         is_direct_task = (
             asyncio.create_task(self._is_single_agent_task(task))
             if settings.direct_agent_id and needs_plan
@@ -533,6 +549,17 @@ class OrchestratorEngine:
                         f"Resumed plan: {len(plan.subtasks)} subtask(s), "
                         f"{sum(1 for st in plan.subtasks if st.id in resume.finished)} already finished"
                     ),
+                    data=plan.model_dump(mode="json"),
+                )
+            elif preset_plan is not None:
+                plan = preset_plan.model_copy(update={"run_id": run_id})
+                await record(
+                    SessionEventType.plan_created,
+                    data={"plan": plan.model_dump(mode="json"), "direct": False, "preset": True},
+                )
+                emitter.emit(
+                    SSEEventType.plan_created,
+                    message=f"Preset plan: {len(plan.subtasks)} subtask(s)",
                     data=plan.model_dump(mode="json"),
                 )
             elif is_direct_task is not None and await is_direct_task:
@@ -785,15 +812,56 @@ class OrchestratorEngine:
         all_results = await ctx.all_results()
         sink_result = all_results.get(sink.id)
         if sink_result is not None:
+            # The parent's output is the sink's, but its files are every micro-step's.
+            files = [p for ms in micro if ms.id in all_results for p in all_results[ms.id].files_written]
+            sink_result = sink_result.model_copy(update={"files_written": list(dict.fromkeys(files))})
+            # The parent's acceptance criteria describe the whole decomposed subtask,
+            # so they are checked against the promoted result (repairs continue the
+            # sink agent's transcript).
+            if (
+                sink_result.status == AgentStatus.success
+                and parent.acceptance_criteria
+                and settings.enable_verifier
+            ):
+                envelope = self._build_envelope(run_id, parent, ctx, task_budget_usd)
+                sink_result = await self._verify_with_repairs(run_id, parent, envelope, sink_result, ctx, emitter)
             await _store_result(ctx, parent.id, sink_result)
 
+        partial = sink_result is not None and sink_result.status == AgentStatus.partial
         emitter.emit(
-            SSEEventType.task_complete,
+            SSEEventType.task_partial if partial else SSEEventType.task_complete,
             agent_id=parent.agent_id,
-            message=f"Subtask {parent.id} complete ({n} micro-steps)",
+            message=(
+                f"Subtask {parent.id} incomplete after {n} micro-steps: {sink_result.error}"
+                if partial and sink_result is not None
+                else f"Subtask {parent.id} complete ({n} micro-steps)"
+            ),
             data={"subtask_id": parent.id},
         )
         return True
+
+    def _build_envelope(
+        self, run_id: str, subtask: Subtask, ctx: RunContext, task_budget_usd: float | None,
+    ) -> TaskEnvelope:
+        agent_user_context = {
+            k: v for k, v in ctx.user_context.items() if k not in _PLANNER_ONLY_CONTEXT_KEYS
+        }
+        return TaskEnvelope(
+            parent_run_id=run_id,
+            agent_id=subtask.agent_id,
+            instruction=subtask.instruction,
+            context=TaskContext(
+                prior_results=ctx.build_prior_results(subtask.depends_on),
+                upstream_artifacts=ctx.build_upstream_artifacts(subtask.depends_on),
+                user_context=agent_user_context,
+            ),
+            constraints=TaskConstraints(
+                budget_usd=task_budget_usd,
+                timeout_ms=settings.task_timeout_ms,
+                model_tier=subtask.model_tier,
+                thinking_effort=subtask.thinking_effort,
+            ),
+        )
 
     async def _dispatch_subtask(
         self,
@@ -874,20 +942,7 @@ class OrchestratorEngine:
                     ctx_block = f"<workspace_context>\n{decomp_ctx}\n</workspace_context>\n\n"
                     subtask = subtask.model_copy(update={"instruction": ctx_block + subtask.instruction})
 
-        prior_results = ctx.build_prior_results(subtask.depends_on)
-        upstream_artifacts = ctx.build_upstream_artifacts(subtask.depends_on)
-        envelope = TaskEnvelope(
-            parent_run_id=run_id,
-            agent_id=subtask.agent_id,
-            instruction=subtask.instruction,
-            context=TaskContext(prior_results=prior_results, upstream_artifacts=upstream_artifacts, user_context=agent_user_context),
-            constraints=TaskConstraints(
-                budget_usd=task_budget_usd,
-                timeout_ms=settings.task_timeout_ms,
-                model_tier=subtask.model_tier,
-                thinking_effort=subtask.thinking_effort,
-            ),
-        )
+        envelope = self._build_envelope(run_id, subtask, ctx, task_budget_usd)
 
         await record(
             SessionEventType.subtask_dispatched,

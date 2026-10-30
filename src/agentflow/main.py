@@ -13,6 +13,7 @@ from agentflow.config import settings
 from agentflow.core.registry import AgentRegistry
 from agentflow.logging_config import setup_logging
 from agentflow.orchestrator.engine import OrchestratorEngine, RunAlreadyActiveError
+from agentflow.orchestrator.campaign import CampaignManager
 from agentflow.orchestrator.resume import RunNotResumableError
 
 setup_logging(
@@ -30,6 +31,7 @@ registry = AgentRegistry()
 registry.load_from_directory(settings.manifests_dir)
 
 engine = OrchestratorEngine(registry)
+campaign_manager = CampaignManager(engine)
 
 # ---------------------------------------------------------------------------
 # FastAPI app
@@ -50,6 +52,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 # Runs recorded before session logs existed cannot be resumed, and
                 # another replica may have claimed it first.
                 logger.info("Not resuming %s: %s", run_id, exc)
+    interrupted_campaigns = await campaign_manager.mark_interrupted()
+    if interrupted_campaigns:
+        logger.warning("Paused %d campaign(s) interrupted by the restart", len(interrupted_campaigns))
+        if settings.resume_interrupted_runs:
+            for campaign_id in interrupted_campaigns:
+                campaign_manager.start(campaign_id)
+                logger.info("Resuming interrupted campaign %s", campaign_id)
     yield
     if settings.state_backend == "redis":
         from agentflow.core.redis_client import close_redis

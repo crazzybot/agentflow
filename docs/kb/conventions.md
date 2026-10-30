@@ -1,7 +1,7 @@
 ---
 title: Conventions & Patterns
 last_updated: 2026-10-29
-last_verified_sha: 8eee61b
+last_verified_sha: 38d6fc8
 sources:
   - pyproject.toml
   - src/agentflow/config.py
@@ -99,7 +99,8 @@ contradict the source):
   resolution, tool isolation, locking, followup inheritance), `test_session.py` (session
   log append/read/replay, agent transcripts, engine replay parity), `test_verifier.py`
   (verdicts and the engine's verify/repair gate), `test_checkpoints.py` (real git in temp
-  dirs, skipped without git), `test_context_view.py`
+  dirs, skipped without git), `test_campaign.py` (ledger, definition, and the session loop
+  through the real engine), `test_context_view.py`
   (read-time snipping and recall), `test_resume.py`
   (crash → reconcile → `wake()`), `test_lease.py` (Redis leases on `fakeredis`,
   two engines as two replicas), and `test_context.py`
@@ -111,8 +112,9 @@ contradict the source):
   `Redis*` classes without the in-memory internals. A test that inspects emitted events
   should monkeypatch `agentflow.orchestrator.engine.{stream_registry,context_store,task_bus}`
   with in-memory instances (see the `engine` fixture in `tests/test_workspace.py`).
-- `tests/conftest.py` has one autouse fixture, which forces the engine's `run_leases`
-  to the in-process `RunLeases`. Lease calls are awaited, not fire-and-forget, so a
+- `tests/conftest.py` has one autouse fixture, which forces both
+  `agentflow.orchestrator.engine.run_leases` and `agentflow.core.lease.run_leases`
+  (used by campaigns) to the in-process `RunLeases`. Lease calls are awaited, not fire-and-forget, so a
   Redis `.env` without a server would fail every engine test. Lease tests opt back in
   by monkeypatching `agentflow.orchestrator.engine.run_leases` with a `RedisRunLeases`
   on `fakeredis`.
