@@ -898,6 +898,8 @@ class OrchestratorEngine:
                 timeout_ms=settings.task_timeout_ms,
                 model_tier=subtask.model_tier,
                 thinking_effort=subtask.thinking_effort,
+                model=subtask.model,
+                max_iterations=subtask.max_iterations,
             ),
         )
 
@@ -1410,6 +1412,16 @@ class OrchestratorEngine:
                     if ctx.within_budget():
                         pass  # fall through to continue
                     else:
+                        if ctx.user_context.get("campaign_id"):
+                            # Campaign sessions are unattended and their budget is the
+                            # campaign's session cap: asking a human would stall the
+                            # campaign for human_input_timeout_s. Accept the partial;
+                            # the operator raises session_budget_usd to allow more.
+                            logger.info(
+                                "[%s] Campaign session budget $%.2f reached — accepting partial for %s",
+                                run_id, ctx.budget_usd, subtask.id,
+                            )
+                            return result
                         response = await self._request_budget_increase(
                             run_id, subtask, envelope, ctx, emitter,
                             request_type="run_budget_exhausted",

@@ -103,6 +103,11 @@ class TaskConstraints(BaseModel):
     # see Agent._agentic_loop's resolution order — but not over a manifest's explicit `model`.
     model_tier: str | None = None
     thinking_effort: str | None = None
+    # Raw model id and iteration limit for this instance (Subtask.model /
+    # Subtask.max_iterations, e.g. set by a campaign session). model loses only to a
+    # manifest's explicit `model`; max_iterations beats the manifest's limit.
+    model: str | None = None
+    max_iterations: int | None = Field(default=None, ge=1)
 
 
 class TaskContext(BaseModel):
@@ -230,6 +235,9 @@ class Subtask(BaseModel):
     # default applies unchanged. See Agent._agentic_loop for resolution order.
     model_tier: str | None = None  # "economy" | "standard" | "premium"
     thinking_effort: str | None = None  # "low" | "medium" | "high" | "xhigh" | "max"
+    # Set by callers with a preset plan (campaign sessions), never by the planner.
+    model: str | None = None  # raw model id; see TaskConstraints.model
+    max_iterations: int | None = Field(default=None, ge=1)  # overrides the manifest's limit
     # Objectively checkable statements an independent verifier confirms against the
     # workspace before the subtask counts as done (orchestrator/verifier.py).
     acceptance_criteria: list[str] = Field(default_factory=list)

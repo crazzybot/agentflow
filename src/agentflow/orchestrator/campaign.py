@@ -264,7 +264,36 @@ async def define_features(campaign: Campaign, client: LLMClient, emitter: Stream
 # Runner
 # ---------------------------------------------------------------------------
 
-def _session_instruction(campaign: Campaign, features: list[Feature], target: Feature) -> str:
+# Directories never worth listing in a session's workspace map.
+_MAP_SKIP_DIRS = frozenset({
+    ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "__pycache__", ".pytest_cache",
+    ".mypy_cache", ".ruff_cache", ".tool_output", "dist", "build", ".next", "coverage", ".turbo",
+})
+
+
+def _workspace_map(root: Path, max_files: int) -> str:
+    """Sorted relative paths of the workspace's files, capped at *max_files*.
+
+    Given to each session so it can open the files its feature needs instead of
+    spending its first turns listing directories.
+    """
+    if not root.is_dir():
+        return ""
+    paths: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in _MAP_SKIP_DIRS)
+        rel = Path(dirpath).relative_to(root)
+        paths.extend(str(rel / f) if rel.parts else f for f in filenames)
+    paths.sort()
+    listed = "\n".join(paths[:max_files])
+    if len(paths) > max_files:
+        listed += f"\n… and {len(paths) - max_files} more files"
+    return listed
+
+
+def _session_instruction(
+    campaign: Campaign, features: list[Feature], target: Feature, workspace_map: str = "",
+) -> str:
     passing = [f for f in features if f.status == FeatureStatus.passing]
     remaining = [f for f in features if f.status != FeatureStatus.passing]
     ledger = "\n".join(f"- {f.id} [{f.status.value}] {f.title}" for f in features)
@@ -278,6 +307,7 @@ def _session_instruction(campaign: Campaign, features: list[Feature], target: Fe
         f"\nThis feature has been attempted {target.attempts} time(s) without passing verification. "
         f"Last notes for it:\n{target.notes}\n" if target.attempts and target.notes else ""
     )
+    map_block = f"\n<workspace_files>\n{workspace_map}\n</workspace_files>\n" if workspace_map else ""
     guidance = (
         f"\n<operator_guidance>\nA human reviewing earlier attempts at this feature says:\n"
         f"{target.guidance}\n</operator_guidance>\n" if target.guidance else ""
@@ -288,12 +318,16 @@ def _session_instruction(campaign: Campaign, features: list[Feature], target: Fe
         f"<project_spec>\n{campaign.task}\n</project_spec>\n\n"
         f"<progress>{len(passing)}/{len(features)} features independently verified passing; "
         f"{len(remaining)} remaining.\n{ledger}\n</progress>\n"
-        f"{notes_block}\n"
+        f"{notes_block}{map_block}\n"
         f'<this_session feature="{target.id}">\n{target.title}\n\n{target.description}\n\n'
         f"An independent reviewer will check, by reading the workspace:\n{checks}\n</this_session>\n"
         f"{retry}{guidance}\n"
         "Rules:\n"
-        "- Orient first: list the workspace and read its README/notes before changing anything.\n"
+        "- Orient briefly: read the README/notes, then only the files this feature needs "
+        "(the workspace files are listed above — no need to explore the tree). Prefer documents "
+        "earlier sessions wrote over re-surveying the original sources.\n"
+        "- Change existing files with targeted edits (file_write mode='replace_text') rather "
+        "than rewriting them.\n"
         "- Implement ONLY this feature, completely. Keep every passing feature working.\n"
         "- Leave the workspace consistent; update the README if behaviour changed.\n"
         "- Finish with a short summary: what you did, anything unfinished, and what the next "
@@ -328,7 +362,12 @@ class CampaignManager:
             agent_id=request.agent_id,
             max_sessions=request.max_sessions,
             budget_usd=request.budget_usd,
-            session_budget_usd=request.session_budget_usd,
+            # An explicit null in the request means no per-session cap.
+            session_budget_usd=(
+                request.session_budget_usd
+                if "session_budget_usd" in request.model_fields_set
+                else settings.campaign_default_session_budget_usd
+            ),
             created_at=datetime.now(timezone.utc).isoformat(),
         )
         self.store.save(campaign)
@@ -507,12 +546,7 @@ class CampaignManager:
             target.sessions.append(run_id)
             self.store.save_features(campaign_id, features)
 
-            plan = ExecutionPlan(run_id=run_id, subtasks=[Subtask(
-                id=SESSION_SUBTASK_ID,
-                agent_id=campaign.agent_id,
-                instruction=_session_instruction(campaign, features, target),
-                acceptance_criteria=target.checks,
-            )])
+            plan = ExecutionPlan(run_id=run_id, subtasks=[self._session_subtask(campaign, features, target)])
             logger.info("[campaign %s] Session %d: %s (%s)", campaign_id, len(campaign.sessions), target.id, run_id)
             await self.engine.run(
                 run_id,
@@ -619,6 +653,28 @@ class CampaignManager:
             _current_workspace.reset(ws_token)
 
     # -- policy --------------------------------------------------------------
+
+    @staticmethod
+    def _session_subtask(campaign: Campaign, features: list[Feature], target: Feature) -> Subtask:
+        """The one-subtask plan of a session. A feature's first attempt runs on the
+        cheaper session model and effort; a failing one (failed a session or regressed)
+        escalates to the escalation model and effort."""
+        escalate = target.status == FeatureStatus.failing
+        model = settings.campaign_escalation_model if escalate else settings.campaign_session_model
+        effort = (
+            settings.campaign_escalation_thinking_effort if escalate
+            else settings.campaign_session_thinking_effort
+        )
+        workspace_map = _workspace_map(workspace_path(campaign.workspace), settings.campaign_workspace_map_max_files)
+        return Subtask(
+            id=SESSION_SUBTASK_ID,
+            agent_id=campaign.agent_id,
+            instruction=_session_instruction(campaign, features, target, workspace_map),
+            acceptance_criteria=target.checks,
+            model=model or None,
+            thinking_effort=effort or None,
+            max_iterations=settings.campaign_session_max_iterations,
+        )
 
     @staticmethod
     def _next_feature(features: list[Feature]) -> Feature | None:

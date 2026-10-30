@@ -509,6 +509,7 @@ async def _file_write(
     pattern: str | None = None,
     start_pattern: str | None = None,
     end_pattern: str | None = None,
+    old_text: str | None = None,
 ) -> str:
     target = _safe_path(path)
     if target is None:
@@ -566,6 +567,18 @@ async def _file_write(
                 f"(file now {new_total} lines; new content at lines {lo + 1}-{new_end}) "
                 f"{_write_preview_note(content)}"
             )
+
+        if mode == "replace_text":
+            if not old_text:
+                return "Error: 'old_text' parameter required for replace_text mode"
+            count = existing.count(old_text)
+            if count == 0:
+                return f"Error: old_text not found in {path} — it must match the file exactly, including whitespace"
+            if count > 1:
+                return f"Error: old_text matches {count} places in {path} — include more surrounding lines so it is unique"
+            target.write_text(existing.replace(old_text, content, 1), encoding="utf-8")
+            await _record_artifact(path)
+            return f"Replaced 1 occurrence of old_text ({len(old_text)} chars → {len(content)} chars) in {path}"
 
         if mode == "replace_pattern":
             if pattern is None:
@@ -656,6 +669,9 @@ tool_registry.register(ToolDefinition(
         "mode='overwrite' (default): REPLACES THE ENTIRE FILE — use only for the first write or a deliberate full rewrite. "
         "mode='append': add content at end of file — preferred for adding sections to an existing file. "
         "mode='insert_at_line': insert content before the given line number (requires line). "
+        "mode='replace_text': replace one exact, unique snippet (requires old_text; content is the replacement) — "
+        "the cheapest way to change an existing file, since only the changed part is written. "
+        "To modify an existing file prefer replace_text over rewriting it with overwrite. "
         "mode='replace_lines': replace a range of lines (requires start_line and end_line). "
         "mode='replace_pattern': find-and-replace using a regex (requires pattern; replaces all occurrences). "
         "mode='replace_between': replace text between two regex markers, keeping the marker lines (requires start_pattern and end_pattern). "
@@ -671,7 +687,7 @@ tool_registry.register(ToolDefinition(
             "content": {"type": "string", "description": "Content to write / insert / use as replacement"},
             "mode": {
                 "type": "string",
-                "enum": ["overwrite", "append", "insert_at_line", "replace_lines", "replace_pattern", "replace_between"],
+                "enum": ["overwrite", "append", "insert_at_line", "replace_text", "replace_lines", "replace_pattern", "replace_between"],
                 "description": "Write mode (default: overwrite)",
                 "default": "overwrite",
             },
@@ -681,6 +697,7 @@ tool_registry.register(ToolDefinition(
             "pattern": {"type": "string", "description": "replace_pattern: regex pattern to find and replace"},
             "start_pattern": {"type": "string", "description": "replace_between: regex marking the start boundary line (kept)"},
             "end_pattern": {"type": "string", "description": "replace_between: regex marking the end boundary line (kept)"},
+            "old_text": {"type": "string", "description": "replace_text: exact text to replace; must occur exactly once in the file"},
         },
         "required": ["path", "content"],
     },

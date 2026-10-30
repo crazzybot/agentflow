@@ -112,7 +112,8 @@ class Settings(BaseSettings):
     # Independent verification of subtasks that carry acceptance criteria
     # (orchestrator/verifier.py). The verifier is read-only and cheap by default.
     enable_verifier: bool = True
-    verifier_max_iterations: int = 8
+    # 8 regularly ran out (finalized at the limit, often inconclusive → a wasted session).
+    verifier_max_iterations: int = 12
     verifier_model_tier: str = "economy"
     # Repair rounds (agent continues with the verifier's findings) before a still-
     # failing subtask is downgraded to partial.
@@ -129,6 +130,20 @@ class Settings(BaseSettings):
     campaign_max_feature_attempts: int = 2
     # Previously passing features re-verified (read-only) before each session.
     campaign_regression_checks: int = 1
+    # Session cost controls. A feature's first attempt runs on the cheaper session
+    # model and effort; a feature that already failed (or regressed) escalates.
+    # "" → the agent's own default (manifest / agent_model / agent_thinking_effort).
+    campaign_session_model: str = "claude-sonnet-5-5"
+    campaign_session_thinking_effort: str = "medium"
+    campaign_escalation_model: str = ""
+    campaign_escalation_thinking_effort: str = "high"
+    # Iteration limit per session invocation. Sessions spend their first turns
+    # orienting; a low limit forces continuations, each re-sending the whole context.
+    campaign_session_max_iterations: int = 40
+    # session_budget_usd applied when a campaign request sets none. None → unlimited.
+    campaign_default_session_budget_usd: float | None = 3.0
+    # Max files listed in each session's workspace map (saves orientation turns).
+    campaign_workspace_map_max_files: int = 300
 
     # Set ENABLE_DECOMPOSER=false to skip per-subtask decomposition entirely.
     # Subtasks then execute as the planner produced them, with no extra ReAct loop.

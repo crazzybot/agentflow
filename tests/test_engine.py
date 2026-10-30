@@ -1,4 +1,5 @@
 """Tests for OrchestratorEngine run routing (LLM and planner fully mocked)."""
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -84,3 +85,26 @@ async def test_continue_partial_resumes_max_tokens_result_that_made_progress(eng
 
     assert result is done
     engine._invoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_campaign_session_over_budget_accepts_partial_without_asking(engine):
+    """Campaign sessions are unattended: hitting the session budget must not wait on a human."""
+    from unittest.mock import MagicMock
+
+    from agentflow.core.models import AgentResult, AgentStatus
+
+    partial = AgentResult(task_id="t", agent_id="CodeAgent", status=AgentStatus.partial, tool_turns=3)
+    engine._invoke = AsyncMock()
+    engine._request_budget_increase = AsyncMock()
+    ctx = MagicMock()
+    ctx.within_budget.return_value = False
+    ctx.user_context = {"campaign_id": "c1", "feature_id": "F01"}
+    ctx.human_input_lock = asyncio.Lock()
+    subtask = MagicMock(id="feature", agent_id="CodeAgent")
+
+    result = await engine._continue_partial("run-e", subtask, MagicMock(), partial, ctx, MagicMock())
+
+    assert result is partial
+    engine._request_budget_increase.assert_not_awaited()
+    engine._invoke.assert_not_awaited()

@@ -29,6 +29,7 @@ from agentflow.orchestrator.campaign import (
     CampaignStateError,
     CampaignStore,
     _session_instruction,
+    _workspace_map,
     define_features,
 )
 from agentflow.orchestrator.engine import OrchestratorEngine
@@ -194,9 +195,11 @@ def test_session_budget():
 class _Coder:
     def __init__(self) -> None:
         self.instructions: list[str] = []
+        self.envelopes: list = []
 
     async def run(self, envelope, emitter, resume_messages=None, ctx=None):
         self.instructions.append(envelope.instruction)
+        self.envelopes.append(envelope)
         return AgentResult(task_id=envelope.task_id, agent_id="A", status=AgentStatus.success, cost_usd=0.1,
                            output=AgentOutput(text=f"session notes {len(self.instructions)}"))
 
@@ -551,3 +554,47 @@ def test_resume_reports_every_obstacle_at_once(manager):
     for expected in ("only blocked features remain", "reached max_sessions (2)", "budget $0.50 spent",
                      "Retry a blocked feature", "Raise max_sessions", "Raise or remove the budget"):
         assert expected in message
+
+
+# ---------------------------------------------------------------------------
+# Session cost controls
+# ---------------------------------------------------------------------------
+
+async def test_first_attempts_run_cheap_and_failing_features_escalate(manager):
+    mgr, coder = manager
+    await _drive(mgr, _features(2), [_verdict(True), _verdict(False), _verdict(True)])
+
+    first, retry = coder.envelopes[1].constraints, coder.envelopes[2].constraints
+    assert first.model == settings.campaign_session_model
+    assert first.thinking_effort == settings.campaign_session_thinking_effort
+    # "" escalation model → no override: the agent's own default model applies.
+    assert retry.model is None
+    assert retry.thinking_effort == settings.campaign_escalation_thinking_effort
+    assert first.max_iterations == retry.max_iterations == settings.campaign_session_max_iterations
+
+
+def test_campaigns_get_the_default_session_budget_unless_the_request_says_otherwise(manager):
+    mgr, _ = manager
+    assert mgr.create(CampaignRequest(task="t", agent_id="A")).session_budget_usd == \
+        settings.campaign_default_session_budget_usd
+    assert mgr.create(CampaignRequest(task="t", agent_id="A", session_budget_usd=7.5)).session_budget_usd == 7.5
+    assert mgr.create(CampaignRequest(task="t", agent_id="A", session_budget_usd=None)).session_budget_usd is None
+
+
+def test_workspace_map_lists_files_skips_noise_and_caps(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x")
+    (tmp_path / "README.md").write_text("x")
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "index.js").write_text("x")
+
+    assert _workspace_map(tmp_path, 10) == "README.md\nsrc/app.py"
+    assert _workspace_map(tmp_path, 1) == "README.md\n… and 1 more files"
+    assert _workspace_map(tmp_path / "missing", 10) == ""
+
+
+def test_session_instruction_includes_the_workspace_map():
+    features = _features(1)
+    text = _session_instruction(_campaign(), features, features[0], "README.md\nsrc/app.py")
+    assert "<workspace_files>\nREADME.md\nsrc/app.py\n</workspace_files>" in text
+    assert "<workspace_files>" not in _session_instruction(_campaign(), features, features[0])
