@@ -1,7 +1,7 @@
 ---
 title: Subtask Verification & Workspace Checkpoints
 last_updated: 2026-10-30
-last_verified_sha: 74de1b7
+last_verified_sha: 3f3d3f6
 sources:
   - src/agentflow/orchestrator/verifier.py
   - src/agentflow/orchestrator/checkpoints.py
@@ -121,7 +121,7 @@ Engine integration:
   work.
 - `GET /api/runs/{id}/checkpoints` lists `checkpoint_created` events from the session
   log (`RunCheckpointsResponse`), so it needs no git. Manual restore:
-  `git --git-dir .runs/<id>/checkpoints.git --work-tree <ws> checkout <sha> -- .`
+  `git --git-dir <runs_dir>/<id>/checkpoints.git --work-tree <ws> checkout <sha> -- .`
 
 **Limits:**
 - A checkpoint captures the whole workspace when a subtask finishes, so with parallel

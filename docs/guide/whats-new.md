@@ -1,7 +1,7 @@
 ---
 title: What's new
 last_updated: 2026-10-30
-last_verified_sha: 74de1b7
+last_verified_sha: 3f3d3f6
 sources:
   - docs/adr/
 status: current
@@ -15,11 +15,14 @@ fixes and internal refactors are not listed here; see the git history for those.
 
 ---
 
-## 30 October 2026: workspaces live outside the repo
+## 30 October 2026: AgentFlow's data lives outside the repo
 
-- **The workspace root moved to `~/agentflow-workspace`.** Projects that agents build no
-  longer sit inside the AgentFlow checkout. Set `WORKSPACE_DIR` to put them anywhere (`~`
-  is expanded). To keep the old layout, set `WORKSPACE_DIR=workspace`.
+- **One data home, `~/agentflow`.** Workspaces (`~/agentflow/workspace`) and run records
+  (`~/agentflow/runs`, formerly `.runs/`) no longer sit inside the AgentFlow checkout.
+  Set `AGENTFLOW_HOME` to move both at once, or `WORKSPACE_DIR` / `RUNS_DIR` one at a time
+  (`~` is expanded). The two must not be inside each other: the server and workers refuse
+  to start if they are. To keep the old layout, set `WORKSPACE_DIR=workspace` and
+  `RUNS_DIR=.runs`.
 - **Artifact paths are always relative to the run's own workspace.** Whatever path an
   agent used, `artifacts.jsonl` and the file lists passed to later subtasks store one
   canonical relative path. That means they keep working if you move the workspace root.

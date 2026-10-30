@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-10-30
-last_verified_sha: 74de1b7
+last_verified_sha: 3f3d3f6
 sources:
   - src/agentflow/main.py
   - src/agentflow/api/routes.py
@@ -638,7 +638,9 @@ variants so multiple API replicas can share a run — see
 Past-run endpoints (`GET /runs`, `/runs/{id}`, `/events`, `/results`, `/report`,
 `/session`, `/artifacts`, `/artifacts/{artifact_id}`) read the filesystem, not in-memory state.
 `/session` (`after_seq`, repeatable `type`, `invocation_id`) also works on live runs.
-Each run's directory is `<runs_dir>/<run_id>/` (`settings.runs_dir`, default `.runs`)
+Each run's directory is `<runs_dir>/<run_id>/` (`settings.runs_dir`, env `RUNS_DIR`, default
+`<AGENTFLOW_HOME>/runs` = `~/agentflow/runs`; always resolved through
+`core.workspace.runs_root()`, which expands `~`)
 and holds `meta.json` (task, generated name, created_at, workspace), `session.jsonl`
 (always — the durable session log), `checkpoints.git` (shadow repo of workspace
 snapshots, when `ENABLE_CHECKPOINTS` and git are available), `events.jsonl` (when `capture_events` is set),
@@ -668,9 +670,13 @@ that `--port` defaults to 8000 (env `AGENTFLOW_PORT`), matching `uvicorn`'s defa
 > **Why it is built this way:** [ADR-002](../adr/002-per-run-and-named-workspaces.md), [ADR-012](../adr/012-workspace-root-outside-repo.md) (root outside the repo, run-relative paths).
 
 `core/workspace.py` gives each run its own directory under the workspace root,
-`settings.workspace_dir` (env `WORKSPACE_DIR`, default `~/agentflow-workspace`, i.e.
-**outside the repo**). `workspace_root()` expands `~` and resolves it; a relative value
-resolves against the process CWD. Concurrent runs cannot overwrite each other's files:
+`settings.workspace_dir` (env `WORKSPACE_DIR`, default `<AGENTFLOW_HOME>/workspace` =
+`~/agentflow/workspace`, i.e. **outside the repo**). `Settings._derive_data_dirs()` fills
+an unset `workspace_dir`/`runs_dir` from `agentflow_home`. `workspace_root()` expands `~`
+and resolves it; a relative value resolves against the process CWD. The runs dir and the
+workspace root must not contain each other: `check_data_dirs()` raises
+`DataDirConflictError` at API startup (`lifespan`) and in `agentflow worker`, since a
+legacy root-level run could otherwise reach session logs and campaign ledgers. Concurrent runs cannot overwrite each other's files:
 
 - **Fresh per-run** (default): `<root>/runs/<run_id>/`. `runs` is a reserved name.
 - **Named**: `<root>/<name>/` when the request sets `workspace`. This is for long-lived

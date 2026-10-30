@@ -1,7 +1,7 @@
 ---
 title: Deployment modes
 last_updated: 2026-10-30
-last_verified_sha: 74de1b7
+last_verified_sha: 3f3d3f6
 sources:
   - src/agentflow/config.py
   - src/agentflow/main.py
@@ -44,7 +44,8 @@ STATE_BACKEND=redis REDIS_URL=redis://… uvicorn agentflow.main:app   # × N, b
 
 - **Any replica can serve any run's stream, human input, messages and cancel.** Leases
   stop replicas from interfering with each other's runs.
-- **Replicas must share `.runs/` and the workspace root** (for example a shared volume).
+- **Replicas must share the runs dir and the workspace root**, for example by mounting
+  `AGENTFLOW_HOME` as one shared volume.
 - **Known gap:** an interrupted run is only noticed when some replica *starts up*.
 
 ### 3. Server plus workers
@@ -60,7 +61,7 @@ uv run agentflow worker --agents CodeAgent --concurrency 4
   stay on the server.
 - **Specialised hosts.** Each worker serves the agents it's started with, so different
   hosts can carry different toolchains or sandboxes.
-- **Shared filesystem required.** Workers need the same `.runs/` and workspace root as
+- **Shared filesystem required.** Workers need the same runs dir and workspace root (`AGENTFLOW_HOME`) as
   the server.
 - **Failures become retries.** A worker that dies, or a task nobody picks up within
   `WORKER_CLAIM_TIMEOUT_S`, becomes a failed attempt that is retried.

@@ -1,7 +1,7 @@
 ---
 title: Conventions & Patterns
 last_updated: 2026-10-30
-last_verified_sha: 74de1b7
+last_verified_sha: 3f3d3f6
 sources:
   - pyproject.toml
   - src/agentflow/config.py
@@ -109,11 +109,11 @@ contradict the source):
   (crash → reconcile → `wake()`), `test_lease.py` (Redis leases on `fakeredis`,
   two engines as two replicas), and `test_context.py`
   (behaviour that must match across the memory and Redis backends, parametrized over both).
-- An autouse fixture in `tests/conftest.py` (`_isolated_workspace_root`) points
-  `settings.workspace_dir` at a fresh temp dir for every test, because the default root
-  is in the user's home (`~/agentflow-workspace`). Tests that need a known root
-  monkeypatch it again (e.g. `ws_root` in `test_workspace.py`). Engine tests must also
-  point `settings.runs_dir` at `tmp_path`. The global
+- An autouse fixture in `tests/conftest.py` (`_isolated_data_dirs`) points
+  `settings.workspace_dir` and `settings.runs_dir` at a fresh temp home for every test,
+  because the defaults are in the user's home (`~/agentflow/`). Tests that need a known
+  dir monkeypatch it again (e.g. `ws_root` in `test_workspace.py`, `tmp_path` runs dirs
+  in engine tests). The global
   `stream_registry`/`context_store`/`task_bus` follow the developer's `.env`. With
   `STATE_BACKEND=redis` and no Redis server they log connection errors, and they are
   `Redis*` classes without the in-memory internals. A test that inspects emitted events

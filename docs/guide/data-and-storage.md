@@ -1,7 +1,7 @@
 ---
 title: Data & storage
 last_updated: 2026-10-30
-last_verified_sha: 74de1b7
+last_verified_sha: 3f3d3f6
 sources:
   - src/agentflow/config.py
   - src/agentflow/core/session.py
@@ -18,14 +18,16 @@ status: current
 
 # Data & storage
 
-AgentFlow keeps no database. Durable state is files under `.runs/` (`RUNS_DIR`) and the
-workspaces (`WORKSPACE_DIR`). Redis, when enabled, holds only *live* coordination state,
+AgentFlow keeps no database. Durable state is files in one data home outside the repo,
+`AGENTFLOW_HOME` (default `~/agentflow`): run records in `runs/` (`RUNS_DIR`) and the
+workspaces in `workspace/` (`WORKSPACE_DIR`). Either can be pointed elsewhere, but they
+must not be inside each other. Redis, when enabled, holds only *live* coordination state,
 which expires.
 
 ## On disk
 
 ```text
-.runs/
+~/agentflow/runs/          RUNS_DIR
 ├── <run_id>/
 │   ├── meta.json          task, generated name, created_at, workspace
 │   ├── session.jsonl      ★ the durable record: every event and every agent conversation
@@ -39,7 +41,7 @@ which expires.
     ├── features.json      ★ the feature ledger (definitions fixed; status, attempts, sessions, guidance move)
     └── session.jsonl      transcripts of the feature planner and regression checks
 
-~/agentflow-workspace/      WORKSPACE_DIR — outside the repo by default
+~/agentflow/workspace/     WORKSPACE_DIR
 ├── runs/<run_id>/         fresh per-run workspace (default)
 ├── <name>/                named project workspace (e.g. app-gateway/), shared by runs
 └── semantic-kb/           the knowledge-base MCP server's project ({workspace_root}/semantic-kb in its manifest)
@@ -47,7 +49,7 @@ which expires.
 
 - **★ marks a source of truth.** A restart rebuilds a run from `session.jsonl` and a
   campaign from its two JSON files.
-- **Agents can't reach `.runs/`.** Their tools are confined to the workspace, which is
+- **Agents can't reach `runs/`.** Their tools are confined to the workspace, which is
   how the campaign ledger is protected from them.
 - **Treat both trees as sensitive.** The session log contains full prompts and tool
   output (anything an agent read), and the workspace contains whatever the agents fetched.
@@ -87,4 +89,4 @@ workers *while* runs execute.
 | API process restarts | Live runs are marked interrupted, and you can resume them. Campaigns pause. Nothing on disk is lost. |
 | Redis is flushed | Live streams and human-input handshakes in progress are lost. Durable records are unaffected. |
 | A worker dies | That subtask attempt fails and is retried or handed to a fallback agent. |
-| `.runs/` is deleted | History, resume and campaigns are gone. Workspaces remain. |
+| `runs/` is deleted | History, resume and campaigns are gone. Workspaces remain. |
