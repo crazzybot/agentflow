@@ -1,7 +1,7 @@
 ---
 title: Conventions & Patterns
 last_updated: 2026-10-30
-last_verified_sha: 629fee4
+last_verified_sha: 74de1b7
 sources:
   - pyproject.toml
   - src/agentflow/config.py
@@ -23,8 +23,8 @@ status: current
   `uv run agentflow run "<task>"` (CLI). The console script `agentflow` maps to
   `agentflow.cli:main` (see `[project.scripts]`).
 - Run tests: `uv run pytest` (or `uv run pytest tests/ -v`). `pyproject.toml` sets
-  `testpaths = ["tests"]` so projects that agents generate under `workspace/` (which ship
-  their own test suites) are never collected.
+  `testpaths = ["tests"]` so projects that agents generate in a workspace (which ship their
+  own test suites) are never collected if `WORKSPACE_DIR` points inside the repo.
 - Dev-only deps (`pytest`, `pytest-asyncio`, `fakeredis[lua]`) live in
   `[dependency-groups].dev`, separate from runtime `dependencies`. `fakeredis[lua]`
   backs the lease tests, which need real Lua `EVAL` semantics.
@@ -109,8 +109,11 @@ contradict the source):
   (crash → reconcile → `wake()`), `test_lease.py` (Redis leases on `fakeredis`,
   two engines as two replicas), and `test_context.py`
   (behaviour that must match across the memory and Redis backends, parametrized over both).
-- Engine tests must point `settings.runs_dir` **and** `settings.workspace_dir` at
-  `tmp_path`, so runs never create directories in the real `workspace/`. The global
+- An autouse fixture in `tests/conftest.py` (`_isolated_workspace_root`) points
+  `settings.workspace_dir` at a fresh temp dir for every test, because the default root
+  is in the user's home (`~/agentflow-workspace`). Tests that need a known root
+  monkeypatch it again (e.g. `ws_root` in `test_workspace.py`). Engine tests must also
+  point `settings.runs_dir` at `tmp_path`. The global
   `stream_registry`/`context_store`/`task_bus` follow the developer's `.env`. With
   `STATE_BACKEND=redis` and no Redis server they log connection errors, and they are
   `Redis*` classes without the in-memory internals. A test that inspects emitted events

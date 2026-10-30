@@ -1,7 +1,7 @@
 ---
 title: Deployment modes
 last_updated: 2026-10-30
-last_verified_sha: 629fee4
+last_verified_sha: 74de1b7
 sources:
   - src/agentflow/config.py
   - src/agentflow/main.py

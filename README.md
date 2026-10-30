@@ -186,7 +186,7 @@ All settings are read from environment variables (or a `.env` file).
 | `RESUME_INTERRUPTED_RUNS` | `false` | Resume runs interrupted by a restart automatically at startup (spends budget without anyone asking) |
 | `RUN_LEASE_TTL_S` | `15` | Redis backend: TTL of the per-run ownership lease. The owner renews it every TTL/3 seconds. A crashed replica's runs become resumable once the lease lapses, and a cancel sent to another replica takes effect within about TTL/3 seconds. |
 | `MANIFESTS_DIR` | `manifests` | Directory scanned for `*.json` agent manifests |
-| `WORKSPACE_DIR` | `workspace` | Root for per-run workspaces: each run's file and shell tools are confined to `workspace/runs/{id}/` or a named `workspace/{name}/` |
+| `WORKSPACE_DIR` | `~/agentflow-workspace` | Root for per-run workspaces, outside the repo by default (`~` is expanded): each run's file and shell tools are confined to `<root>/runs/{id}/` or a named `<root>/{name}/`; artifact paths are recorded relative to that directory |
 | `SKILLS_DIR` | `skills` | Directory scanned for skill packs |
 
 ---
@@ -206,10 +206,10 @@ Content-Type: application/json
 }
 ```
 
-`workspace` (optional) names a long-lived project workspace, `workspace/{name}/`
+`workspace` (optional) names a long-lived project workspace, `<WORKSPACE_DIR>/{name}/`
 (letters, digits, `.`, `_`, `-`; `runs` is reserved), for runs that keep iterating
 on one project. Runs that share a named workspace execute one at a time. When it
-is omitted, the run gets a fresh, isolated `workspace/runs/{run_id}/`. A followup
+is omitted, the run gets a fresh, isolated `<WORKSPACE_DIR>/runs/{run_id}/`. A followup
 (`POST /api/runs/{id}/followup`) continues in the prior run's workspace unless it
 names another one. CLI: `agentflow run --workspace NAME "<task>"`.
 

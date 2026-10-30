@@ -1,7 +1,7 @@
 ---
 title: Data & storage
 last_updated: 2026-10-30
-last_verified_sha: 629fee4
+last_verified_sha: 74de1b7
 sources:
   - src/agentflow/config.py
   - src/agentflow/core/session.py
@@ -30,7 +30,7 @@ which expires.
 │   ├── meta.json          task, generated name, created_at, workspace
 │   ├── session.jsonl      ★ the durable record: every event and every agent conversation
 │   ├── report.md          final report (or an "interrupted" placeholder until resumed)
-│   ├── artifacts.jsonl    files the agents wrote (deliverables)
+│   ├── artifacts.jsonl    files the agents wrote (deliverables), paths relative to the run's workspace
 │   ├── checkpoints.git/   shadow git repo of the workspace (one commit per subtask)
 │   ├── events.jsonl       copy of the SSE stream            (only with CAPTURE_EVENTS)
 │   └── results.jsonl      subtask results                   (only with CAPTURE_RESULTS)
@@ -39,10 +39,10 @@ which expires.
     ├── features.json      ★ the feature ledger (definitions fixed; status, attempts, sessions, guidance move)
     └── session.jsonl      transcripts of the feature planner and regression checks
 
-workspace/
+~/agentflow-workspace/      WORKSPACE_DIR — outside the repo by default
 ├── runs/<run_id>/         fresh per-run workspace (default)
 ├── <name>/                named project workspace (e.g. app-gateway/), shared by runs
-└── semantic-kb/           the knowledge-base MCP server's project
+└── semantic-kb/           the knowledge-base MCP server's project ({workspace_root}/semantic-kb in its manifest)
 ```
 
 - **★ marks a source of truth.** A restart rebuilds a run from `session.jsonl` and a

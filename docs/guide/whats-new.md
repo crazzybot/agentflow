@@ -1,7 +1,7 @@
 ---
 title: What's new
 last_updated: 2026-10-30
-last_verified_sha: 629fee4
+last_verified_sha: 74de1b7
 sources:
   - docs/adr/
 status: current
@@ -12,6 +12,22 @@ status: current
 Changes to AgentFlow's architecture, newest first, in plain words. Each entry links its
 [ADR](../adr/README.md) (why it was built that way) and the KB doc with the details. Bug
 fixes and internal refactors are not listed here; see the git history for those.
+
+---
+
+## 30 October 2026: workspaces live outside the repo
+
+- **The workspace root moved to `~/agentflow-workspace`.** Projects that agents build no
+  longer sit inside the AgentFlow checkout. Set `WORKSPACE_DIR` to put them anywhere (`~`
+  is expanded). To keep the old layout, set `WORKSPACE_DIR=workspace`.
+- **Artifact paths are always relative to the run's own workspace.** Whatever path an
+  agent used, `artifacts.jsonl` and the file lists passed to later subtasks store one
+  canonical relative path. That means they keep working if you move the workspace root.
+- **MCP servers can refer to the workspace.** A manifest can write `{workspace_root}` in a
+  stdio server's `args` or `env`. The bundled semantic-kb server uses it.
+
+[ADR-012](../adr/012-workspace-root-outside-repo.md) ·
+[KB: Workspaces](../kb/architecture.md#workspaces)
 
 ---
 

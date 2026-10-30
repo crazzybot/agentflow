@@ -76,3 +76,4 @@ KB: [link to the doc describing the current implementation]
 | [009](009-sandbox-and-tool-policies.md) | Sandbox interface for exec tools (Docker fails closed); pre-tool-use policy chain | Accepted |
 | [010](010-remote-agent-workers.md) | Remote agent execution through a dedicated work queue | Accepted |
 | [011](011-campaign-session-cost-controls.md) | Campaign session cost controls (cheap first attempt, escalation, cache-stable prompt) | Accepted |
+| [012](012-workspace-root-outside-repo.md) | Workspace root outside the repository; run-relative artifact paths | Accepted |

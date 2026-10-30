@@ -145,8 +145,9 @@ curl -X POST http://localhost:8000/api/runs \
 uv run agentflow run --workspace app-gateway "Add rate limiting to the gateway"
 ```
 
-Tools are confined to `workspace/app-gateway/`. Without `workspace`, a run gets a fresh
-`workspace/runs/<run_id>/`. Names: `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, and `runs` is
+Tools are confined to `<WORKSPACE_DIR>/app-gateway/` (root default `~/agentflow-workspace`).
+Without `workspace`, a run gets a fresh `<WORKSPACE_DIR>/runs/<run_id>/`. Artifact paths
+are recorded relative to that directory. Names: `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, and `runs` is
 reserved; a bad name returns 422. Runs on the same workspace queue behind each other
 (an `agent:progress` event with `data.waiting=true` signals the wait). The queue is
 per process, so with several replicas it only holds when one replica serves both runs.

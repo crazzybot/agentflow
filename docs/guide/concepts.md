@@ -1,7 +1,7 @@
 ---
 title: Concepts
 last_updated: 2026-10-30
-last_verified_sha: 629fee4
+last_verified_sha: 74de1b7
 sources:
   - src/agentflow/core/models.py
   - src/agentflow/core/workspace.py
@@ -63,9 +63,12 @@ the host. [ADR-009](../adr/009-sandbox-and-tool-policies.md)
 
 ### Workspace
 The directory a run's tools work in. By default each run gets a fresh one
-(`workspace/runs/<run_id>/`). A **named workspace** (`workspace/<name>/`) is a long-lived
+(`runs/<run_id>/` under the workspace root). A **named workspace** (`<name>/`) is a long-lived
 project that several runs work on, one at a time. Follow-up runs continue in their
-parent's workspace. [ADR-002](../adr/002-per-run-and-named-workspaces.md)
+parent's workspace. The root is `WORKSPACE_DIR` (default `~/agentflow-workspace`, outside
+the AgentFlow repo). Files a run produces are recorded relative to that run's own
+workspace. [ADR-002](../adr/002-per-run-and-named-workspaces.md),
+[ADR-012](../adr/012-workspace-root-outside-repo.md)
 
 ### Session log
 The durable, append-only record of a run (`.runs/<run_id>/session.jsonl`). It holds
