@@ -89,4 +89,7 @@ decomposition_prompt: |
 fallback_for: []
 max_concurrency: 2
 max_iterations: 15
+# Room for high-effort thinking plus a sizeable file_write in one turn; the 8k
+# fallback truncated every response (thinking shares the max_tokens allowance).
+max_output_tokens: 32000
 thinking_effort: high

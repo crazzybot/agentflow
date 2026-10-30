@@ -44,3 +44,43 @@ async def test_with_direct_agent_id_classifier_decides_routing(engine, monkeypat
 
     engine._is_single_agent_task.assert_awaited_once()
     create_plan.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_continue_partial_skips_max_tokens_result_without_progress(engine):
+    """A subtask truncated by max_tokens before any tool turn ran would just replay the
+    same history — the engine must not spend continuations on it."""
+    from unittest.mock import MagicMock
+
+    from agentflow.core.models import AgentResult, AgentStatus
+
+    stuck = AgentResult(task_id="t", agent_id="CodeAgent", status=AgentStatus.partial, hit_max_tokens=True)
+    engine._invoke = AsyncMock()
+    subtask = MagicMock(id="feature", agent_id="CodeAgent")
+
+    result = await engine._continue_partial("run-c", subtask, MagicMock(), stuck, MagicMock(), MagicMock())
+
+    assert result is stuck
+    engine._invoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_continue_partial_resumes_max_tokens_result_that_made_progress(engine):
+    from unittest.mock import MagicMock
+
+    from agentflow.core.models import AgentResult, AgentStatus
+
+    progressed = AgentResult(
+        task_id="t", agent_id="CodeAgent", status=AgentStatus.partial, hit_max_tokens=True, tool_turns=4,
+    )
+    done = AgentResult(task_id="t", agent_id="CodeAgent", status=AgentStatus.success)
+    engine._invoke = AsyncMock(return_value=done)
+    ctx = MagicMock()
+    ctx.within_budget.return_value = True
+    subtask = MagicMock(id="feature", agent_id="CodeAgent")
+
+    with patch("agentflow.orchestrator.engine._add_cost", AsyncMock()):
+        result = await engine._continue_partial("run-d", subtask, MagicMock(), progressed, ctx, MagicMock())
+
+    assert result is done
+    engine._invoke.assert_awaited_once()

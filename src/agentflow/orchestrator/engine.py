@@ -1393,6 +1393,16 @@ class OrchestratorEngine:
         """Attempt up to max_continuations follow-up calls when a subtask hits its iteration limit."""
 
         for cont in range(1, settings.max_continuations + 1):
+            # Cut off by max_tokens without completing a single tool turn: the agent
+            # already retried in-loop with a truncation notice, so resuming the same
+            # history would only reproduce the truncation.
+            if result.hit_max_tokens and result.tool_turns == 0:
+                logger.warning(
+                    "[%s] Subtask %s made no progress before hitting max_tokens — not continuing",
+                    run_id, subtask.id,
+                )
+                return result
+
             if not ctx.within_budget():
                 async with ctx.human_input_lock:
                     # Re-check after acquiring the lock: a concurrent subtask's request

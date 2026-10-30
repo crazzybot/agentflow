@@ -178,6 +178,9 @@ class AgentResult(BaseModel):
     # Signals the engine that increasing the budget (→ larger max_tokens) is
     # required before continuation can make progress.
     hit_max_tokens: bool = False
+    # Turns in this invocation whose tool calls actually ran. With hit_max_tokens,
+    # zero means the invocation made no progress, so continuing it is futile.
+    tool_turns: int = 0
     # Largest full prompt (input + cache read + cache write tokens) of any call in
     # this invocation — the measurement for judging whether context snipping keeps
     # agents bounded (docs/context-optimization-plan.md, Fix 5).

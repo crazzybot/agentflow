@@ -302,6 +302,17 @@ def _pricing_for(model: str, prompt_tokens: int = 0) -> tuple[float, float, floa
     )
 
 
+def _truncation_notice(max_tokens: int) -> str:
+    """User turn injected after a response is cut off by max_tokens and discarded."""
+    return (
+        f"Your previous response hit the {max_tokens}-token output limit and was cut off, "
+        "so it was discarded and none of its tool calls ran. Produce less output per turn: "
+        "split large files across several file_write calls (create the file with the first "
+        "section, then mode='append' the rest), prefer targeted edits over full rewrites, "
+        "and keep your reasoning brief."
+    )
+
+
 def _budget_to_max_tokens(remaining_budget: float, last_input_tokens: int, input_price: float, output_price: float) -> int:
     """Compute how many output tokens we can afford with *remaining_budget*.
 
@@ -519,6 +530,8 @@ class Agent:
         last_response_content: list = []
         hit_limit = False
         hit_max_tokens = False
+        max_tokens_retries = 0  # truncated responses retried so far (see agent_max_tokens_retries)
+        tool_turns = 0  # turns whose tool calls were executed
         _finalizing = False  # True during the single extra LLM call for on_iteration_limit="finalize"
         all_files_written: list[str] = []
 
@@ -625,7 +638,12 @@ class Agent:
                             self.agent_id, max_iterations,
                         )
                         break
-                max_tokens = self.manifest.max_output_tokens or settings.agent_max_tokens_fallback
+                base_max_tokens = self.manifest.max_output_tokens or settings.agent_max_tokens_fallback
+                # Each max_tokens retry doubles the allowance (never below the manifest's own value).
+                max_tokens = min(
+                    base_max_tokens * 2 ** max_tokens_retries,
+                    max(base_max_tokens, settings.agent_max_tokens_cap),
+                )
 
             # The model sees a view of the history: older bulky tool results are
             # stubbed once the prompt grows past the snip trigger (see context_view).
@@ -771,8 +789,6 @@ class Agent:
                     self.agent_id, response.stop_reason, iteration,
                 )
                 if response.stop_reason == "max_tokens":
-                    hit_limit = True
-                    hit_max_tokens = True
                     # The model was cut off mid-generation — any tool_use blocks in the
                     # response may have truncated inputs (e.g. file_write missing content).
                     # Remove the partial assistant message from history so that
@@ -805,6 +821,19 @@ class Agent:
                             turn_index=iteration,
                             tool_call_id=b.id,
                         )
+                    # Retrying the same history would reproduce the same truncation, so
+                    # tell the model what happened (and, unbudgeted, give it more room).
+                    if max_tokens_retries < settings.agent_max_tokens_retries:
+                        max_tokens_retries += 1
+                        messages.append({"role": "user", "content": _truncation_notice(max_tokens)})
+                        await log_message(messages[-1], truncation_notice=True)
+                        logger.info(
+                            "[%s] Response truncated at max_tokens=%d — retrying with a truncation notice (%d/%d)",
+                            self.agent_id, max_tokens, max_tokens_retries, settings.agent_max_tokens_retries,
+                        )
+                        continue
+                    hit_limit = True
+                    hit_max_tokens = True
                 else:
                     # For other unexpected stop reasons, execute any pending tool calls so
                     # the message history stays valid (every tool_use must be immediately
@@ -816,6 +845,7 @@ class Agent:
                         )
                         messages.append({"role": "user", "content": list(pending_results)})
                         await log_message(messages[-1])
+                        tool_turns += 1
                         all_files_written.extend(
                             _collect_written_paths(pending_tool_use, list(pending_results))
                         )
@@ -829,6 +859,7 @@ class Agent:
 
             messages.append({"role": "user", "content": list(tool_results)})
             await log_message(messages[-1])
+            tool_turns += 1
             all_files_written.extend(
                 _collect_written_paths(tool_use_blocks, list(tool_results))
             )
@@ -872,6 +903,7 @@ class Agent:
             tokens_used=total_input_tokens + total_output_tokens + total_cache_creation_tokens + total_cache_read_tokens,
             cost_usd=total_cost_usd,
             hit_max_tokens=hit_max_tokens,
+            tool_turns=tool_turns,
             peak_prompt_tokens=peak_prompt_tokens,
             files_written=all_files_written,
             messages=messages,

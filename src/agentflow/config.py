@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     agent_max_iterations: int = 10  # fallback when no budget is set
     agent_max_tokens_fallback: int = 8_192  # max_tokens per call when no budget is set
     agent_max_tokens_cap: int = 32_768  # upper bound on max_tokens derived from budget
+    # In-loop retries after a response is cut off by max_tokens. Each retry tells the
+    # model its output was truncated and (without a task budget) doubles max_tokens,
+    # up to agent_max_tokens_cap. Replaying the identical request would just hit the
+    # same wall again.
+    agent_max_tokens_retries: int = 2
     # Minimum remaining budget (USD) required to attempt another agent iteration.
     # Below this threshold the agent stops and returns partial rather than starting
     # a call that is almost certain to be cut short by max_tokens.

@@ -1045,10 +1045,11 @@ async def test_final_text_falls_back_to_last_thinking_block_once():
 
 
 @pytest.mark.asyncio
-async def test_truncated_tool_calls_are_not_executed_on_max_tokens():
+async def test_truncated_tool_calls_are_not_executed_on_max_tokens(monkeypatch):
     """A tool_use cut off by max_tokens may carry incomplete input (e.g. a half-written
     bash command or file_write payload) — it must never run, but clients still get a
     paired, skipped result event."""
+    monkeypatch.setattr(settings, "agent_max_tokens_retries", 0)
     tool_block = MagicMock()
     tool_block.type = "tool_use"
     tool_block.id = "toolu_cut"
@@ -1094,3 +1095,71 @@ async def test_manifest_max_output_tokens_overrides_fallback_without_budget():
     await Agent(manifest, mock_client).run(_make_envelope(), MagicMock())
 
     assert mock_client.messages.create.call_args.kwargs["max_tokens"] == 20_000
+
+
+def _truncated_response():
+    cut = MagicMock()
+    cut.type = "tool_use"
+    cut.id = "toolu_cut"
+    cut.name = "file_write"
+    cut.input = {"path": "big.py"}
+    resp = _mock_response(stop_reason="max_tokens")
+    resp.content = [cut]
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_max_tokens_retry_tells_model_and_doubles_allowance(monkeypatch):
+    """Replaying the same history after a truncation reproduces it, so the retry adds a
+    truncation notice and (without a budget) a larger max_tokens."""
+    monkeypatch.setattr(settings, "agent_max_tokens_fallback", 8_000)
+    monkeypatch.setattr(settings, "agent_max_tokens_cap", 32_000)
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(side_effect=[_truncated_response(), _mock_response()])
+
+    result = await Agent(_make_manifest(), mock_client).run(_make_envelope(), MagicMock())
+
+    assert result.status == AgentStatus.success
+    assert result.hit_max_tokens is False
+    sent = [c.kwargs["max_tokens"] for c in mock_client.messages.create.call_args_list]
+    assert sent == [8_000, 16_000]
+    notice = result.messages[1]
+    assert notice["role"] == "user" and "8000-token output limit" in notice["content"]
+    # The truncated assistant turn itself never enters the history.
+    assert all(m["role"] == "user" for m in result.messages[:2])
+
+
+@pytest.mark.asyncio
+async def test_max_tokens_retries_exhausted_returns_partial_without_progress(monkeypatch):
+    monkeypatch.setattr(settings, "agent_max_tokens_retries", 2)
+    monkeypatch.setattr(settings, "agent_max_tokens_fallback", 8_000)
+    monkeypatch.setattr(settings, "agent_max_tokens_cap", 20_000)
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(side_effect=lambda **_: _truncated_response())
+
+    result = await Agent(_make_manifest(), mock_client).run(_make_envelope(), MagicMock())
+
+    assert result.status == AgentStatus.partial
+    assert result.hit_max_tokens is True
+    assert result.tool_turns == 0
+    sent = [c.kwargs["max_tokens"] for c in mock_client.messages.create.call_args_list]
+    assert sent == [8_000, 16_000, 20_000]  # doubled, clamped to the cap
+
+
+@pytest.mark.asyncio
+async def test_tool_turns_counts_executed_tool_turns():
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"
+    tool_block.id = "toolu_1"
+    tool_block.name = "bash_exec"
+    tool_block.input = {"command": "ls"}
+    tool_resp = _mock_response(stop_reason="tool_use")
+    tool_resp.content = [tool_block]
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(side_effect=[tool_resp, _mock_response()])
+
+    agent = Agent(_make_manifest(tools=["bash_exec"]), mock_client)
+    agent._call_tool = AsyncMock(return_value={"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"})
+    result = await agent.run(_make_envelope(), MagicMock())
+
+    assert result.tool_turns == 1
