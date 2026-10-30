@@ -34,6 +34,7 @@ from agentflow.orchestrator.verifier import repair_message, verify_subtask
 from agentflow.orchestrator.scheduler import DependencyGraph
 from agentflow.orchestrator.stream import StreamEmitter, stream_registry
 from agentflow.tools.artifact_tracker import ArtifactSink, _current_sink
+from agentflow.tools.sandbox import SandboxProvider, _current_sandbox
 from agentflow.tools.kb_dispatcher import _kb_dispatch_fn
 
 logger = logging.getLogger(__name__)
@@ -462,6 +463,9 @@ class OrchestratorEngine:
         )
 
         ws_token = _current_workspace.set(ws_dir)
+        # The run's sandbox ("hands"): created on the first exec tool call, closed below.
+        sandbox_provider = SandboxProvider(ws_dir, run_id)
+        sandbox_token = _current_sandbox.set(sandbox_provider)
         session = RunSession(run_id)  # reopens (and keeps numbering) when resuming
         session_token = _current_session.set(session)
         if resume is None:
@@ -645,6 +649,11 @@ class OrchestratorEngine:
                 # leaked state); the log then simply ends without a terminal event.
                 logger.exception("[%s] Could not record run_finished in the session log", run_id)
             _current_session.reset(session_token)
+            try:
+                await sandbox_provider.close()
+            except OSError:
+                logger.exception("[%s] Could not close the run's sandbox", run_id)
+            _current_sandbox.reset(sandbox_token)
             _current_workspace.reset(ws_token)
             self._resume.pop(run_id, None)
             self._checkpoints.pop(run_id, None)

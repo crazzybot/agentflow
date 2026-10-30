@@ -40,6 +40,23 @@ class MCPServerConfig(BaseModel):
     env_passthrough: list[str] = Field(default_factory=list)
 
 
+_SHELL_TOOLS = frozenset({"bash_exec", "bash_exec_readonly"})
+
+
+class ToolPolicyConfig(BaseModel):
+    """A pre-tool-use policy declared in a manifest (see tools/policy.py)."""
+    tool: str
+    # Every command in a shell pipeline/list must be one of these.
+    allow_commands: list[str] | None = None
+
+    @field_validator("allow_commands")
+    @classmethod
+    def _shell_only(cls, v: list[str] | None, info: Any) -> list[str] | None:
+        if v is not None and info.data.get("tool") not in _SHELL_TOOLS:
+            raise ValueError(f"allow_commands applies only to {sorted(_SHELL_TOOLS)}")
+        return v
+
+
 class AgentManifest(BaseModel):
     agent_id: str
     version: str = "1.0.0"
@@ -60,6 +77,9 @@ class AgentManifest(BaseModel):
     max_concurrency: int = 3
     max_iterations: int | None = None  # None → fall back to settings.agent_max_iterations
     tool_limits: dict[str, int] | None = None  # per-task call budgets e.g. {"fetch_url": 5}
+    # Pre-tool-use policies checked before every call, e.g. a command allowlist for
+    # bash_exec. See tools/policy.py.
+    tool_policies: list[ToolPolicyConfig] = Field(default_factory=list)
     # Enables adaptive extended thinking at this effort level: "low" | "medium" | "high" |
     # "xhigh" | "max". None → fall back to settings.agent_thinking_effort.
     thinking_effort: str | None = None

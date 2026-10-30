@@ -288,7 +288,8 @@ def test_html_to_text_prefers_main_content():
 # Sandbox hardening: path containment, env scrubbing, read-only shell allowlist
 # ---------------------------------------------------------------------------
 
-from agentflow.tools.builtin import _check_readonly_command, _safe_path, _sandbox_env  # noqa: E402
+from agentflow.tools.builtin import _check_readonly_command, _safe_path  # noqa: E402
+from agentflow.tools.sandbox import local_env  # noqa: E402
 
 
 def test_safe_path_rejects_sibling_dir_sharing_the_workspace_prefix(tmp_path, monkeypatch):
@@ -303,7 +304,7 @@ def test_sandbox_env_withholds_credentials(tmp_path, monkeypatch):
     monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
     monkeypatch.setenv("REDIS_URL", "redis://secret")
-    env = _sandbox_env()
+    env = local_env(tmp_path.resolve())
     assert "ANTHROPIC_API_KEY" not in env
     assert "REDIS_URL" not in env
     assert "PATH" in env
@@ -314,7 +315,7 @@ def test_sandbox_env_passthrough_is_configurable(tmp_path, monkeypatch):
     monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path))
     monkeypatch.setattr("agentflow.config.settings.sandbox_env_passthrough", ["NODE_OPTIONS"])
     monkeypatch.setenv("NODE_OPTIONS", "--max-old-space-size=4096")
-    assert _sandbox_env()["NODE_OPTIONS"] == "--max-old-space-size=4096"
+    assert local_env(tmp_path)["NODE_OPTIONS"] == "--max-old-space-size=4096"
 
 
 @pytest.mark.asyncio

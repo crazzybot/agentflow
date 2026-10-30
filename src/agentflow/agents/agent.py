@@ -28,6 +28,7 @@ from agentflow.llm import LLMClient, estimate_thinking_tokens, supports_adaptive
 from agentflow.tools import tool_registry
 from agentflow.tools.builtin import write_overflow_file
 from agentflow.tools.mcp_tools import mcp_session
+from agentflow.tools.policy import ToolPolicy, build_policies
 
 if TYPE_CHECKING:
     from agentflow.orchestrator.stream import StreamEmitter
@@ -491,7 +492,7 @@ class Agent:
         async def call_tool(block: Any, turn: int) -> dict[str, Any]:
             if block.name == RECALL_TOOL_NAME and snipper.enabled:
                 return self._recall_tool_result(block, messages, emitter, turn)
-            return await self._checked_call_tool(block, tools, emitter, tool_call_counts, tool_limits, turn)
+            return await self._checked_call_tool(block, tools, emitter, policies, turn)
         total_input_tokens = 0
         total_output_tokens = 0
         total_thinking_tokens = 0
@@ -509,8 +510,8 @@ class Agent:
         max_iterations = self.manifest.max_iterations or settings.agent_max_iterations
         last_input_tokens = 0
         iteration = 0
-        tool_call_counts: dict[str, int] = {}
-        tool_limits: dict[str, int] = self.manifest.tool_limits or {}
+        # Fresh per invocation: tool_limits budgets are per task attempt.
+        policies = build_policies(self.manifest)
         # Resolution order (most to least specific):
         #   1. envelope.constraints — a planner-assigned override for this one subtask
         #      instance (Subtask.thinking_effort / Subtask.model_tier, see planner.py).
@@ -946,34 +947,25 @@ class Agent:
         block: Any,
         tools: list,
         emitter: "StreamEmitter",
-        counts: dict[str, int],
-        limits: dict[str, int],
+        policies: list[ToolPolicy],
         turn_index: int,
     ) -> dict[str, Any]:
-        """Call a tool, enforcing manifest tool_limits before dispatch."""
-        if block.name in limits:
-            counts[block.name] = counts.get(block.name, 0) + 1
-            if counts[block.name] > limits[block.name]:
-                logger.warning(
-                    "[%s] Tool budget exhausted: '%s' limited to %d call(s), this would be call %d",
-                    self.agent_id, block.name, limits[block.name], counts[block.name],
-                )
-                budget_error = (
-                    f"Tool budget exhausted: '{block.name}' is limited to "
-                    f"{limits[block.name]} call(s) per task. "
-                    "Use information already gathered instead of making additional calls."
-                )
-                emitter.emit(
-                    SSEEventType.agent_tool_result,
-                    agent_id=self.agent_id,
-                    message=budget_error,
-                    data={"tool": block.name, "result": budget_error, "budget_exhausted": True},
-                    turn_index=turn_index,
-                    tool_call_id=block.id,
-                )
-                return {
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": budget_error,
-                }
+        """Call a tool unless a pre-tool-use policy blocks it (tools/policy.py)."""
+        for policy in policies:
+            reason = policy.check(block.name, block.input or {})
+            if reason is None:
+                continue
+            logger.warning("[%s] %s blocked %s: %s", self.agent_id, policy.name, block.name, reason)
+            data: dict[str, Any] = {"tool": block.name, "result": reason, "blocked_by": policy.name}
+            if policy.name == "tool_limits":
+                data["budget_exhausted"] = True
+            emitter.emit(
+                SSEEventType.agent_tool_result,
+                agent_id=self.agent_id,
+                message=reason,
+                data=data,
+                turn_index=turn_index,
+                tool_call_id=block.id,
+            )
+            return {"type": "tool_result", "tool_use_id": block.id, "content": reason}
         return await self._call_tool(block, tools, emitter, turn_index)
