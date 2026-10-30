@@ -1,7 +1,7 @@
 ---
 title: Redis-Backed State Backend
 last_updated: 2026-10-29
-last_verified_sha: e260885
+last_verified_sha: 9464ac1
 sources:
   - src/agentflow/config.py
   - src/agentflow/core/redis_client.py
@@ -18,6 +18,8 @@ status: current
 ---
 
 # Redis-Backed State Backend
+
+> **Why it is built this way:** [ADR-001](../../adr/001-redis-state-backend.md), [ADR-003](../../adr/003-file-backed-session-log.md), [ADR-010](../../adr/010-remote-agent-workers.md).
 
 AgentFlow's per-run state (results/cost/budget, HITL handshake, SSE event stream,
 and the dispatch/result bus) can run either **in-process** (the default) or

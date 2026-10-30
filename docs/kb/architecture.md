@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-10-29
-last_verified_sha: e260885
+last_verified_sha: 9464ac1
 sources:
   - src/agentflow/main.py
   - src/agentflow/api/routes.py
@@ -626,6 +626,8 @@ that `--port` defaults to 8000 (env `AGENTFLOW_PORT`), matching `uvicorn`'s defa
 
 ## Workspaces
 
+> **Why it is built this way:** [ADR-002](../adr/002-per-run-and-named-workspaces.md).
+
 `core/workspace.py` gives each run its own directory under `settings.workspace_dir`
 (default `workspace/`), so concurrent runs cannot overwrite each other's files:
 
@@ -694,6 +696,7 @@ Within one run, components talk through three mechanisms:
 ## Related
 
 - [conventions](conventions.md) — code style, async patterns, testing rules.
+- [`docs/adr/`](../adr/README.md) — why the major choices were made (ADR-001…010); each subsystem doc links its ADR.
 - [subsystems/redis-backend](subsystems/redis-backend.md) — the optional Redis state
   backend (bus, context store, SSE registry) and cross-replica HITL/streaming.
 - [`/how-to` skill](../../.claude/skills/how-to/SKILL.md) — recipes for adding agents, tools, and skills.

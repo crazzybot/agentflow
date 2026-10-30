@@ -17,8 +17,8 @@ done. It keeps `docs/kb/` current with the code.
    is affected if any changed path is at or under one of its `sources` entries.
 
 3. **Reconcile prose.** For each affected doc, update the body so it matches the
-   new code reality — names, flow, recipes. Do not duplicate the human docs in
-   `docs/` (design.md, gap analysis, presentation); link instead.
+   new code reality — names, flow, recipes. Do not copy ADR rationale into the KB;
+   link the ADR instead. Never update anything under `docs/archive/` — it is frozen.
 
 4. **Refresh metadata.** On every doc you reconciled, set `last_updated` to today
    and set `last_verified_sha` to current HEAD (`git rev-parse --short HEAD`).
@@ -26,6 +26,14 @@ done. It keeps `docs/kb/` current with the code.
 5. **New subsystem?** If the change introduced a whole subsystem worth its own
    doc, create `docs/kb/subsystems/<name>.md` (same frontmatter contract) and link
    it from `docs/kb/index.md`.
+
+5a. **ADR needed?** Check the task against `docs/adr/README.md` § "When to write one".
+   Did it choose between real alternatives, add a hard-to-undo constraint (format,
+   protocol, security boundary, behaviour-changing default), or deliberately skip
+   something obvious? If so, write `docs/adr/NNN-slug.md` with **what was weighed**, and
+   add it to the ADR index. Link it from the KB doc(s) the decision shows up in. If the
+   task changed or reversed an earlier ADR's decision, amend or supersede that ADR as
+   the README describes. Never rewrite an accepted ADR's body.
 
 6. **Drift sweep.** For EVERY doc in `docs/kb/`, run the drift query:
    `git diff --stat <last_verified_sha> HEAD -- <that doc's sources>`

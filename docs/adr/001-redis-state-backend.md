@@ -1,6 +1,6 @@
 # ADR-001: Redis state backend for multi-replica runs
 
-**Status:** Accepted
+**Status:** Accepted (amended 2026-10-29: see "Later developments")
 **Date:** 2026-07-09
 
 ## Context
@@ -54,3 +54,19 @@ event log from any point. Key TTLs are controlled via `REDIS_KEY_TTL` (default 2
   Rejected.
 - **Celery / external task queue:** Would require a full rewrite of the scheduling layer.
   Deferred to a future ADR if worker-pool separation becomes necessary.
+
+## Later developments (2026-10-29)
+
+*Appended, not rewritten: the decision above still holds for SSE streaming, HITL
+delivery and shared run context.*
+
+- **`RedisTaskBus` was never used.** It is still created per run, but no work flows
+  through it. Remote execution, which this ADR deferred as "worker-pool separation",
+  was built on a dedicated per-agent work queue instead: see
+  [ADR-010](010-remote-agent-workers.md).
+- **Redis is not the durable record.** Its keys expire after `REDIS_KEY_TTL`, so the
+  run's source of truth became a file-backed session log under both backends: see
+  [ADR-003](003-file-backed-session-log.md).
+- **Redis now also carries per-run ownership leases**, which make cross-replica cancel
+  and safe resume possible: see [ADR-004](004-resume-from-log-with-leases.md).
+

@@ -1,7 +1,7 @@
 ---
 title: Subtask Verification & Workspace Checkpoints
 last_updated: 2026-10-29
-last_verified_sha: e260885
+last_verified_sha: 9464ac1
 sources:
   - src/agentflow/orchestrator/verifier.py
   - src/agentflow/orchestrator/checkpoints.py
@@ -14,6 +14,8 @@ status: current
 ---
 
 # Subtask Verification & Workspace Checkpoints
+
+> **Why it is built this way:** [ADR-006](../../adr/006-independent-verification.md), [ADR-007](../../adr/007-shadow-repo-checkpoints.md).
 
 Two checks run around every subtask in `_dispatch_subtask()`:
 

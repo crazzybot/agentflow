@@ -1,7 +1,7 @@
 ---
 title: Worker Processes (Remote Agent Execution)
 last_updated: 2026-10-29
-last_verified_sha: e260885
+last_verified_sha: 9464ac1
 sources:
   - src/agentflow/orchestrator/workers.py
   - src/agentflow/orchestrator/engine.py
@@ -13,6 +13,8 @@ status: current
 ---
 
 # Worker Processes (Remote Agent Execution)
+
+> **Why it is built this way:** [ADR-010](../../adr/010-remote-agent-workers.md).
 
 With `DISPATCH_MODE=workers`, the API server stays the **brain**: planning, scheduling,
 decomposition, verification, checkpoints, the session log and leases all stay there.

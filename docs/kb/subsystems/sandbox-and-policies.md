@@ -1,7 +1,7 @@
 ---
 title: Execution Sandbox & Tool Policies
 last_updated: 2026-10-29
-last_verified_sha: e260885
+last_verified_sha: 9464ac1
 sources:
   - src/agentflow/tools/sandbox.py
   - src/agentflow/tools/policy.py
@@ -14,6 +14,8 @@ status: current
 ---
 
 # Execution Sandbox & Tool Policies
+
+> **Why it is built this way:** [ADR-009](../../adr/009-sandbox-and-tool-policies.md).
 
 Two layers sit between a model's tool request and its effect:
 
