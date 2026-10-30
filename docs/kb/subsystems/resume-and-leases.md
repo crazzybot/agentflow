@@ -1,7 +1,7 @@
 ---
 title: Resuming Runs & Run Leases
 last_updated: 2026-10-29
-last_verified_sha: d09693f
+last_verified_sha: 8eee61b
 sources:
   - src/agentflow/orchestrator/resume.py
   - src/agentflow/orchestrator/engine.py
@@ -57,6 +57,7 @@ and cancel safe when several replicas share `runs_dir`.
 | --- | --- | --- |
 | Session events | `run_started` | `run_resumed` (`after_seq`, `finished`, `resuming`); log reopened, `seq` continues |
 | Name / meta.json | `_generate_run_name()`, write meta | kept as-is |
+| Checkpoints | baseline `"run start"` | same shadow repo reopened; baseline `"run resumed"` |
 | Tombstone report | — | `_remove_interrupted_tombstone()` deletes it (only if it is the `# Run Interrupted` placeholder) |
 | `RunContext` | empty | `ctx.restore(results, total_cost_usd)` sets (doesn't add) state, budget from the snapshot (includes HITL raises) |
 | Plan | classifier/planner | logged plan reused; re-planned only if the crash happened before `plan_created` |

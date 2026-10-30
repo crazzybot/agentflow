@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-10-29
-last_verified_sha: d09693f
+last_verified_sha: 8eee61b
 sources:
   - src/agentflow/main.py
   - src/agentflow/api/routes.py
@@ -131,7 +131,13 @@ variants so multiple API replicas can share a run — see
    below `agent_min_iteration_budget_usd` **or** when `AgentResult.hit_max_tokens` is
    True (because continuing with the same budget would compute the same `max_tokens` cap
    and hit the wall again). Iteration-limit partials with ample budget remaining continue
-   automatically via `_continue_partial` without interrupting the user.
+   automatically via `_continue_partial` without interrupting the user. A successful
+   result whose subtask has `acceptance_criteria` is then checked by an independent
+   read-only verifier, repaired from the agent's own transcript if criteria are unmet,
+   and downgraded to partial if they still fail. Every finished subtask is then snapshotted
+   into the run's shadow git repo, and a failed attempt's files are rolled back before a
+   retry or fallback (see
+   [subsystems/verification-and-checkpoints](subsystems/verification-and-checkpoints.md)).
    `ctx.deregister_agent(agent_id)` is always called in a `finally` block when the
    subtask finishes. If the run is cancelled (`asyncio.CancelledError` propagates from
    `asyncio.wait`), `_execute_plan` cancels all in-flight subtask tasks and re-raises;
@@ -235,6 +241,9 @@ variants so multiple API replicas can share a run — see
   raises (before any subtask runs) when a subtask names an agent not in the registry, or
   when `DependencyGraph` rejects the plan (duplicate ids, a `dependsOn` naming an id not
   in the plan, or a cycle).
+  Subtasks may carry `acceptanceCriteria` (1–5 file-checkable statements, parsed leniently
+  by `_parse_criteria()`; see
+  [subsystems/verification-and-checkpoints](subsystems/verification-and-checkpoints.md)).
   Each subtask may also carry optional `modelTier`/`thinkingEffort` cost-tuning fields
   (`_COST_TUNING_INSTRUCTIONS` in the system prompt asks the planner to set these only
   when a subtask's difficulty clearly diverges from its target agent's typical work, e.g.
@@ -298,7 +307,8 @@ variants so multiple API replicas can share a run — see
   (dependency-satisfied, non-failed nodes) for the execution loop.
 - **`orchestrator/reporter.py` — `compile_report()`**: synthesizes leaf-subtask results
   (plus partial/failed sections) into the final `report.md` via one more LLM call on the
-  `report_model` / `report_model_tier` model (see step 7).
+  `report_model` / `report_model_tier` model (see step 7). Partial results print
+  `Reason: {error}`, e.g. unmet acceptance criteria after verification.
 - **`orchestrator/stream.py` — `StreamEmitter` / `StreamRegistry`**: per-run SSE event
   buffer; `emit()` appends an `SSEEvent` to an in-memory list and signals an
   `asyncio.Event` so waiting consumers are unblocked without polling (multiple
@@ -567,6 +577,7 @@ variants so multiple API replicas can share a run — see
 | `GET /runs/{id}/stream` | SSE; `stream_registry.connect()` so any replica can serve it. |
 | `POST /runs/{id}/input` | HITL response → `ctx.provide_human_input()`; 409 if nothing pending. |
 | `POST /runs/{id}/cancel` | `engine.request_cancel()`: cancels the local Task (`"cancelled"`), or, under Redis, flags a run owned by another replica (`"cancel_requested"`); 404 if no live run. |
+| `GET /runs/{id}/checkpoints` | Workspace git snapshots (`sha`, `label`, `subtask_id`, `changed`) from the session log. |
 | `POST /runs/{id}/resume` | `engine.schedule_resume()` → `wake()`; same `run_id`/stream. 409 if active (here or on a live lease elsewhere), unlogged, or finished. |
 | `POST /runs/{id}/message` | `ctx.push_user_message()` fan-out (see Data flow); 409 once the emitter is done. |
 | `POST /runs/{id}/followup` | Starts a **new** run whose `context` carries `prior_run_id`, `prior_task`, `prior_report` and `prior_subtask_outputs`, read from the old run's directory. The planner renders them as a "Prior Run" block; `_dispatch_subtask()` strips all four `prior_*` keys before building agent envelopes. Runs in the prior run's workspace unless the request names one; a recorded workspace that escapes the root is a 400. |
@@ -576,7 +587,8 @@ Past-run endpoints (`GET /runs`, `/runs/{id}`, `/events`, `/results`, `/report`,
 `/session` (`after_seq`, repeatable `type`, `invocation_id`) also works on live runs.
 Each run's directory is `<runs_dir>/<run_id>/` (`settings.runs_dir`, default `.runs`)
 and holds `meta.json` (task, generated name, created_at, workspace), `session.jsonl`
-(always — the durable session log), `events.jsonl` (when `capture_events` is set),
+(always — the durable session log), `checkpoints.git` (shadow repo of workspace
+snapshots, when `ENABLE_CHECKPOINTS` and git are available), `events.jsonl` (when `capture_events` is set),
 `results.jsonl`, `artifacts.jsonl` (appended by
 `tools/artifact_tracker.py` as agents write files; paths are relative to the run's own
 workspace — the artifact route resolves them against `meta.workspace`, or the workspace

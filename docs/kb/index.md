@@ -1,7 +1,7 @@
 ---
 title: AgentFlow Knowledge Base — Index
 last_updated: 2026-10-29
-last_verified_sha: d09693f
+last_verified_sha: 8eee61b
 sources:
   - src/agentflow/
   - manifests/
@@ -36,6 +36,10 @@ the doc(s) relevant to your change, before exploring source.
 - [subsystems/context-view](subsystems/context-view.md) — the read-time view of an
   agent's history sent to the model: older tool results stubbed past a token trigger
   (cache-stable, history untouched), recall tool, `peak_prompt_tokens` measurement.
+- [subsystems/verification-and-checkpoints](subsystems/verification-and-checkpoints.md) —
+  acceptance criteria checked by an independent read-only verifier (with repair rounds),
+  and per-subtask git snapshots of the workspace in a shadow repo with rollback of
+  failed attempts.
 - [subsystems/resume-and-leases](subsystems/resume-and-leases.md) — resuming
   interrupted runs from their session log (`wake()`, `POST /runs/{id}/resume`,
   reconciliation) and the Redis per-run leases behind multi-replica resume and cancel.
