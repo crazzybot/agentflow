@@ -4,7 +4,7 @@
 "Dive into Claude Code" — source-level reverse-engineering study of Claude Code's `queryLoop()`
 context shapers)
 **Date:** 2026-07-21
-**Related:** [`docs/presentations/agentflow_gap_analysis.md`](presentations/agentflow_gap_analysis.md)
+**Related:** [`docs/archive/presentations/agentflow_gap_analysis.md`](archive/presentations/agentflow_gap_analysis.md) (archived)
 Gap 6 (uncontrolled context growth, no summarization/truncation) — this plan is the concrete
 implementation of that gap's fix, informed by how Claude Code solves the same problem.
 
