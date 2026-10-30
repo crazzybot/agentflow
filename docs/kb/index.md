@@ -1,7 +1,7 @@
 ---
 title: AgentFlow Knowledge Base — Index
 last_updated: 2026-10-29
-last_verified_sha: 9464ac1
+last_verified_sha: b513b90
 sources:
   - src/agentflow/
   - manifests/
@@ -14,7 +14,8 @@ status: current
 Agent-facing knowledge base. **Read this first on any non-trivial task**, then
 the doc(s) relevant to your change, before exploring source.
 
-> The KB describes how the system works **now**. The reasons behind major choices
+> The KB describes how the system works **now**, for agents. People should start with the
+> [architecture guide](../guide/README.md). The reasons behind major choices
 > are in [`docs/adr/`](../adr/README.md) (immutable decision records). Historical
 > material (the July design doc, gap analysis, presentations, completed plans) is
 > in [`docs/archive/`](../archive/README.md). It is not maintained, so don't rely on it.

@@ -67,6 +67,10 @@ git diff --stat <doc-last_verified_sha> HEAD -- <doc-sources>
 (A tree diff, not `git log sha..HEAD`: PRs are squash-merged, so a recorded SHA is
 often not an ancestor of `main`.)
 
+If this session changed a concept, component, flow, storage location or deployment
+option, check that `docs/guide/whats-new.md` has a dated plain-language entry for it,
+and that the affected guide page was updated. Propose the entry if not.
+
 Also list any architectural decision made this session that has no ADR in
 `docs/adr/` (see its README § "When to write one"), and propose one for each.
 

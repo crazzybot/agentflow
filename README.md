@@ -2,6 +2,8 @@
 
 A multi-agent orchestration system built on FastAPI and Claude. A single task is decomposed into subtasks by an LLM planner, routed to specialised agents across a dependency DAG, and streamed back to the client in real time over SSE.
 
+> **Understanding the system:** start with the **[architecture guide](docs/guide/README.md)**: overview, concepts, flows with diagrams, storage, deployment modes, and [what's new](docs/guide/whats-new.md). The section below is a quick reference.
+
 ---
 
 ## Architecture
