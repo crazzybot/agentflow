@@ -1,7 +1,7 @@
 ---
 title: Session Log (Durable Run Record)
 last_updated: 2026-10-29
-last_verified_sha: e260885
+last_verified_sha: 9464ac1
 sources:
   - src/agentflow/core/session.py
   - src/agentflow/orchestrator/engine.py
@@ -11,6 +11,8 @@ status: current
 ---
 
 # Session Log (Durable Run Record)
+
+> **Why it is built this way:** [ADR-003](../../adr/003-file-backed-session-log.md).
 
 Every run writes an append-only log to `<runs_dir>/<run_id>/session.jsonl`
 ([`core/session.py`](../../../src/agentflow/core/session.py)). The log is the durable

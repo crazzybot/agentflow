@@ -1,7 +1,7 @@
 ---
 title: AgentFlow Knowledge Base — Index
 last_updated: 2026-10-29
-last_verified_sha: e260885
+last_verified_sha: 9464ac1
 sources:
   - src/agentflow/
   - manifests/
@@ -14,9 +14,10 @@ status: current
 Agent-facing knowledge base. **Read this first on any non-trivial task**, then
 the doc(s) relevant to your change, before exploring source.
 
-> These docs are maintained separately from the human/design docs in `docs/`
-> (`design.md`, `agentflow_gap_analysis.md`, presentation material). Do not
-> duplicate those; link to them only when needed.
+> The KB describes how the system works **now**. The reasons behind major choices
+> are in [`docs/adr/`](../adr/README.md) (immutable decision records). Historical
+> material (the July design doc, gap analysis, presentations, completed plans) is
+> in [`docs/archive/`](../archive/README.md). It is not maintained, so don't rely on it.
 
 ## Reading order
 

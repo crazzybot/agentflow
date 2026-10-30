@@ -7,9 +7,12 @@ This repo maintains an agent-facing knowledge base at **`docs/kb/`**.
 - **At the start of any non-trivial task:** read [`docs/kb/index.md`](docs/kb/index.md),
   then the KB doc(s) relevant to your change, before exploring source. It exists
   so you don't rediscover the architecture every time.
-- The human/design docs in `docs/presentations` (`design.md`, `agentflow_gap_analysis.md`,
-  presentation files) are reference material — do not treat them as the KB and do
-  not duplicate them.
+- `docs/adr/` records *why* architectural decisions were made (immutable once accepted);
+  the KB records *how* the system works now. Read the ADR linked from a KB doc before
+  changing a decision it covers.
+- `docs/archive/` holds historical documents (the July design doc, gap analysis,
+  presentations, completed plans). They are not maintained and are not the KB — do not
+  rely on them for current behaviour.
 
 ## Keeping the knowledge base current (required)
 

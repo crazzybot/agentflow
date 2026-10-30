@@ -1,7 +1,7 @@
 ---
 title: Campaigns (Long-Horizon Sessions)
 last_updated: 2026-10-29
-last_verified_sha: e260885
+last_verified_sha: 9464ac1
 sources:
   - src/agentflow/orchestrator/campaign.py
   - src/agentflow/orchestrator/engine.py
@@ -12,6 +12,8 @@ status: current
 ---
 
 # Campaigns (Long-Horizon Sessions)
+
+> **Why it is built this way:** [ADR-008](../../adr/008-campaign-ledger-in-code.md).
 
 A campaign builds something too large for one run as a **sequence of runs
 ("sessions") with fresh contexts**, held together by a feature ledger. It follows

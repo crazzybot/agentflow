@@ -1,7 +1,7 @@
 ---
 title: Resuming Runs & Run Leases
 last_updated: 2026-10-29
-last_verified_sha: e260885
+last_verified_sha: 9464ac1
 sources:
   - src/agentflow/orchestrator/resume.py
   - src/agentflow/orchestrator/engine.py
@@ -15,6 +15,8 @@ status: current
 ---
 
 # Resuming Runs & Run Leases
+
+> **Why it is built this way:** [ADR-004](../../adr/004-resume-from-log-with-leases.md).
 
 A run interrupted by a restart is **resumed from its session log**
 ([session-log](session-log.md)), not marked dead. `OrchestratorEngine.wake(run_id)`

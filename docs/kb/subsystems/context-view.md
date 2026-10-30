@@ -1,7 +1,7 @@
 ---
 title: Context View (Read-Time Snipping & Recall)
 last_updated: 2026-10-29
-last_verified_sha: e260885
+last_verified_sha: 9464ac1
 sources:
   - src/agentflow/agents/context_view.py
   - src/agentflow/agents/agent.py
@@ -10,6 +10,8 @@ status: current
 ---
 
 # Context View (Read-Time Snipping & Recall)
+
+> **Why it is built this way:** [ADR-005](../../adr/005-read-time-context-view.md).
 
 An agent's loop keeps its **full** message history. That history is what the session
 log records, what `AgentResult.messages` returns, and what continuations and resumes

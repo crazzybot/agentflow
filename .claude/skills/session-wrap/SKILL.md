@@ -61,8 +61,14 @@ For each `docs/kb/` doc whose `sources` overlap with changed files, run the drif
 check and flag any doc that needs reconciliation:
 
 ```bash
-git log --oneline <doc-last_verified_sha>..HEAD -- <doc-sources>
+git diff --stat <doc-last_verified_sha> HEAD -- <doc-sources>
 ```
+
+(A tree diff, not `git log sha..HEAD`: PRs are squash-merged, so a recorded SHA is
+often not an ancestor of `main`.)
+
+Also list any architectural decision made this session that has no ADR in
+`docs/adr/` (see its README § "When to write one"), and propose one for each.
 
 If any doc is stale and the `update-kb` skill has not been run yet, recommend
 running it before closing the session.
