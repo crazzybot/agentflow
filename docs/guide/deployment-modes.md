@@ -1,7 +1,7 @@
 ---
 title: Deployment modes
 last_updated: 2026-10-30
-last_verified_sha: 2c73ec5
+last_verified_sha: 629fee4
 sources:
   - src/agentflow/config.py
   - src/agentflow/main.py
@@ -85,6 +85,9 @@ SANDBOX_BACKEND=docker SANDBOX_DOCKER_NETWORK=none   # or bridge (default) for p
 - `PLANNER_MODEL`, `AGENT_MODEL`, and `MODEL_TIER_ECONOMY/STANDARD/PREMIUM`, which
   re-tier every agent at once.
 - `AGENT_THINKING_EFFORT` and `REPORT_MODEL_TIER`.
+- `CAMPAIGN_SESSION_MODEL` / `CAMPAIGN_ESCALATION_MODEL` (and their `_THINKING_EFFORT`
+  pairs): what a campaign's first attempt runs on, and what a failing feature moves up to.
+  `CAMPAIGN_DEFAULT_SESSION_BUDGET_USD` caps each session.
 
 **Limits**
 - `TASK_TIMEOUT_MS`, `TASK_MAX_RETRIES`, `MAX_CONTINUATIONS`, `AGENT_MAX_ITERATIONS`.

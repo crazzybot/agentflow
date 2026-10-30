@@ -1,7 +1,7 @@
 ---
 title: Flows
 last_updated: 2026-10-30
-last_verified_sha: 2c73ec5
+last_verified_sha: 629fee4
 sources:
   - src/agentflow/orchestrator/engine.py
   - src/agentflow/orchestrator/planner.py
@@ -134,7 +134,11 @@ flowchart TD
     done -. "stopped: operator raises limits<br/>or retries a blocked feature,<br/>then resumes" .-> loop
     loop -- no --> regress[Re-verify a passing feature<br/>regression? → fix it next]
     regress --> pick[Pick the next failing or pending feature]
-    pick --> session[Run a session: an ordinary run<br/>fresh context · one feature ·<br/>its checks as acceptance criteria]
+    pick --> tier{Feature failed before?}
+    tier -- "no: first attempt" --> cheap[Cheaper model · medium effort]
+    tier -- "yes: failing" --> strong[Agent's default model · high effort]
+    cheap --> session[Run a session: an ordinary run<br/>fresh context · one feature ·<br/>its checks as acceptance criteria]
+    strong --> session
     session --> absorb[Read the outcome from the session log]
     absorb --> verdict{Verified pass?}
     verdict -- yes --> passing[feature: passing] --> loop
@@ -144,7 +148,12 @@ flowchart TD
 ```
 
 - **Session instructions** carry the spec, overall progress, the previous session's own
-  notes, and the feature's checks.
+  notes, a list of the workspace's files, and the feature's checks.
+- **Cost controls.** A feature's first attempt runs on a cheaper model (Sonnet by
+  default). Only a feature that has already failed moves up to the agent's default model
+  at higher effort. Each session has a budget ($3 unless the campaign sets another), and a
+  session that reaches it stops and hands back what it has. It doesn't wait for a human.
+  [ADR-011](../adr/011-campaign-session-cost-controls.md)
 - **Pausing** takes effect after the current session. A restart pauses the campaign;
   resuming it finishes the interrupted session first.
 - **Getting unstuck.** A campaign stops when it hits `max_sessions`, its budget, or has

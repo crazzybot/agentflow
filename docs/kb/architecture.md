@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-10-30
-last_verified_sha: 2c73ec5
+last_verified_sha: 629fee4
 sources:
   - src/agentflow/main.py
   - src/agentflow/api/routes.py
@@ -136,7 +136,10 @@ variants so multiple API replicas can share a run — see
    below `agent_min_iteration_budget_usd` **or** when `AgentResult.hit_max_tokens` is
    True (because continuing with the same budget would compute the same `max_tokens` cap
    and hit the wall again). Iteration-limit partials with ample budget remaining continue
-   automatically via `_continue_partial` without interrupting the user. `_continue_partial`
+   automatically via `_continue_partial` without interrupting the user. A campaign session
+   (`ctx.user_context["campaign_id"]`) that reaches its run budget between continuations
+   accepts the partial instead of asking a human: it is unattended, and its budget is the
+   campaign's session cap. `_continue_partial`
    stops early when a result has `hit_max_tokens` and `tool_turns == 0`: the agent already
    retried in-loop, and resuming the same history would only reproduce the truncation. A successful
    result whose subtask has `acceptance_criteria` is then checked by an independent
@@ -340,12 +343,22 @@ variants so multiple API replicas can share a run — see
   1. `manifest.model` — an explicit raw model id is a hard ops-level pin; wins over
      everything, including a planner-assigned override, since it represents a fixed
      requirement (e.g. "this agent must always run on Opus").
-  2. `envelope.constraints.model_tier` / `.thinking_effort` — a planner-assigned
+  2. `envelope.constraints.model` (a raw model id) — set from `Subtask.model` by callers
+     with a preset plan (campaign sessions), never by the planner.
+  3. `envelope.constraints.model_tier` / `.thinking_effort` — a planner-assigned
      per-subtask-instance override (see `orchestrator/planner.py`'s cost-tuning fields
      above), resolved to a model id via `settings.resolve_model_tier()`.
-  3. `manifest.model_tier` / `manifest.thinking_effort` — the agent's own declared
+  4. `manifest.model_tier` / `manifest.thinking_effort` — the agent's own declared
      default tier/effort (e.g. `decompose_subtask()`'s hardcoded `"economy"`).
-  4. `settings.agent_model` / `settings.agent_thinking_effort` — the global fallback.
+  5. `settings.agent_model` / `settings.agent_thinking_effort` — the global fallback.
+  The iteration limit resolves the same way: `envelope.constraints.max_iterations`
+  (from `Subtask.max_iterations`), else `manifest.max_iterations`, else
+  `settings.agent_max_iterations`.
+  **System prompt** — two blocks: the static persona + pre-injected skills (cached), then
+  `Current date: <UTC date> / <local date>`. Date only, never the time of day: the
+  block precedes the messages in the cache prefix, so a value that changed between a
+  partial invocation and its continuation invalidated the whole cached conversation and
+  re-wrote it at the cache-write rate (each continuation re-paid its full prompt).
   Named tiers (`"economy"` | `"standard"` | `"premium"`) are defined in `config.py` as
   `model_tier_economy`/`_standard`/`_premium` and resolved by `settings.resolve_model_tier()`,
   which returns `None` for an unset or unrecognised tier name (non-fatal — the caller
@@ -523,7 +536,12 @@ variants so multiple API replicas can share a run — see
     follow-up call makes forward progress. The `pattern` (regex) mode is capped by
     the same char budget and reports `shown X of Y matches` plus a suggestion to
     narrow the pattern when truncated.
-  - `file_write` — multi-mode writer (`overwrite`, `append`, `replace_lines`, etc.).
+  - `file_write` — multi-mode writer (`overwrite`, `append`, `insert_at_line`,
+    `replace_text`, `replace_lines`, `replace_pattern`, `replace_between`).
+    `replace_text` replaces one exact, unique `old_text` snippet (literal, not regex) and
+    is the cheap way to edit an existing file — only the changed part is generated as
+    output tokens; zero or several matches return an `Error: …` (so the path is not
+    counted as written).
     Artifacts recorded via `_record_artifact()` which writes to the `_current_sink`
     ContextVar set by the engine per run. `replace_lines`/`replace_between` echo a
     short (300-char) preview of the content via `_write_preview_note()`, explicitly

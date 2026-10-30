@@ -1,7 +1,7 @@
 ---
 title: Subtask Verification & Workspace Checkpoints
 last_updated: 2026-10-30
-last_verified_sha: 2c73ec5
+last_verified_sha: 629fee4
 sources:
   - src/agentflow/orchestrator/verifier.py
   - src/agentflow/orchestrator/checkpoints.py
@@ -45,7 +45,7 @@ The order inside a successful attempt is: agent result → (partial continuation
 
 - **The verifier** is an in-memory manifest: `"{agent}.verifier"`, tools
   `file_read`/`bash_exec_readonly`, `settings.verifier_model_tier` (default `economy`),
-  `thinking_effort="low"`, `verifier_max_iterations` (8), and `finalize` on the
+  `thinking_effort="low"`, `verifier_max_iterations` (12; 8 regularly ran out and finalized inconclusive), and `finalize` on the
   iteration limit.
 - **Its input** is the subtask instruction, the criteria, the agent's `files_written`,
   and its reported output capped at 6,000 chars and framed as a claim to verify. It

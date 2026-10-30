@@ -1,7 +1,7 @@
 ---
 title: What's new
 last_updated: 2026-10-30
-last_verified_sha: 4ce4f41
+last_verified_sha: 629fee4
 sources:
   - docs/adr/
 status: current
@@ -14,6 +14,23 @@ Changes to AgentFlow's architecture, newest first, in plain words. Each entry li
 fixes and internal refactors are not listed here; see the git history for those.
 
 ---
+
+## 30 October 2026: cheaper campaigns
+
+- **A first attempt runs on a cheaper model.** Campaign sessions start on Sonnet at
+  medium effort. Only a feature that has failed, regressed or been retried moves up to
+  the agent's default model (Opus) at high effort. Configure this with `CAMPAIGN_SESSION_*` /
+  `CAMPAIGN_ESCALATION_*`.
+- **Sessions have a default budget** of $3, and a session that reaches it stops instead
+  of waiting for a human. Sessions also get more turns (40) and a list of the
+  workspace's files, so they spend less time looking around.
+- **Continuations reuse the prompt cache.** The agent prompt now shows only the date,
+  not the time, so a continued conversation is no longer re-written to the cache.
+- **Small edits are cheap.** `file_write` has a `replace_text` mode that replaces one
+  exact snippet, so the agent no longer has to rewrite a whole file.
+- **Interrupted work is charged.** Spend from an agent call that a restart cut off now
+  counts toward run and campaign costs.
+  [ADR-011](../adr/011-campaign-session-cost-controls.md) · [KB](../kb/subsystems/campaigns.md)
 
 ## 30 October 2026: campaigns can be unstuck
 
