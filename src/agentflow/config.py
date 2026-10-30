@@ -135,6 +135,9 @@ class Settings(BaseSettings):
 
     # Campaigns (orchestrator/campaign.py): long-horizon work in fresh-context sessions.
     campaign_max_features: int = 30
+    # Agent for a feature the planner left unrouted (missing or unknown agentId) in a
+    # campaign that does not pin one agent.
+    campaign_default_agent: str = "CodeAgent"
     # Sessions a feature may fail verification before it is marked blocked.
     campaign_max_feature_attempts: int = 2
     # Previously passing features re-verified (read-only) before each session.

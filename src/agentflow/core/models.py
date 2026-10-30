@@ -436,6 +436,10 @@ class Feature(BaseModel):
     # Operator guidance for the next session(s) on this feature, set by a retry.
     # Cleared once the feature passes.
     guidance: str = ""
+    # The agent that implements this feature, routed by the feature planner (or the
+    # campaign's pinned agent). Routing, not scope: an operator retry may reassign it.
+    # None (ledgers from before routing) → the campaign's agent.
+    agent_id: str | None = None
 
 
 class CampaignStatus(str, Enum):
@@ -451,7 +455,8 @@ class Campaign(BaseModel):
     campaign_id: str
     task: str
     workspace: str
-    agent_id: str
+    # Pins every feature to one agent. None → the feature planner routes each feature.
+    agent_id: str | None = None
     max_sessions: int
     budget_usd: float | None = None
     session_budget_usd: float | None = None
@@ -469,7 +474,9 @@ class Campaign(BaseModel):
 
 class CampaignRequest(_WorkspaceRequest):
     task: str
-    agent_id: str = "CodeAgent"
+    # Omit to let the feature planner pick an agent per feature (like a run's
+    # planner); set to run every feature on this one agent.
+    agent_id: str | None = None
     max_sessions: int = Field(default=10, ge=1, le=500)
     budget_usd: float | None = Field(default=None, gt=0)
     session_budget_usd: float | None = Field(default=None, gt=0)
@@ -487,6 +494,8 @@ class FeatureRetryRequest(BaseModel):
     """Give a failing or blocked feature fresh attempts, optionally with guidance
     that the next session's instruction will carry."""
     guidance: str = Field(default="", max_length=4000)
+    # Reassign the feature to another registered agent for its next sessions.
+    agent_id: str | None = None
 
 
 class CampaignView(BaseModel):

@@ -598,3 +598,132 @@ def test_session_instruction_includes_the_workspace_map():
     text = _session_instruction(_campaign(), features, features[0], "README.md\nsrc/app.py")
     assert "<workspace_files>\nREADME.md\nsrc/app.py\n</workspace_files>" in text
     assert "<workspace_files>" not in _session_instruction(_campaign(), features, features[0])
+
+
+# ---------------------------------------------------------------------------
+# Per-feature agent routing
+# ---------------------------------------------------------------------------
+
+def _two_agent_registry() -> AgentRegistry:
+    registry = AgentRegistry()
+    registry.register(AgentManifest(agent_id="A", domain="Software Engineering", system_prompt="s"))
+    registry.register(AgentManifest(agent_id="W", domain="Writing", system_prompt="s"))
+    return registry
+
+
+async def test_define_features_routes_each_feature_to_an_agent(dirs, monkeypatch):
+    monkeypatch.setattr("agentflow.config.settings.campaign_default_agent", "A")
+    captured = {}
+
+    class RoutingPlanner:
+        def __init__(self, manifest, client):
+            captured["prompt"] = manifest.system_prompt
+
+        async def run(self, envelope, emitter):
+            captured["instruction"] = envelope.instruction
+            return AgentResult(task_id="x", agent_id="p", status=AgentStatus.success, output=AgentOutput(
+                structured={"features": [
+                    {"title": "api", "checks": ["api.py exists"], "agentId": "A"},
+                    {"title": "user guide", "checks": ["docs/guide.md exists"], "agentId": "W"},
+                    {"title": "unknown agent", "checks": ["c"], "agentId": "Ghost"},
+                    {"title": "unrouted", "checks": ["c"]},
+                ]}))
+
+    with patch("agentflow.orchestrator.campaign.Agent", RoutingPlanner):
+        features = await define_features(_campaign(agent_id=None), MagicMock(), MagicMock(), _two_agent_registry())
+
+    assert [f.agent_id for f in features] == ["A", "W", "A", "A"]  # unknown/missing → default agent
+    assert "agentId" in captured["prompt"]
+    assert "<available_agents>" in captured["instruction"] and "## W" in captured["instruction"]
+
+
+async def test_pinned_campaign_skips_routing(dirs):
+    captured = {}
+
+    class Planner:
+        def __init__(self, manifest, client):
+            captured["prompt"] = manifest.system_prompt
+
+        async def run(self, envelope, emitter):
+            captured["instruction"] = envelope.instruction
+            return AgentResult(task_id="x", agent_id="p", status=AgentStatus.success, output=AgentOutput(
+                structured={"features": [{"title": "guide", "checks": ["c"], "agentId": "W"}]}))
+
+    with patch("agentflow.orchestrator.campaign.Agent", Planner):
+        features = await define_features(_campaign(agent_id="A"), MagicMock(), MagicMock(), _two_agent_registry())
+
+    assert features[0].agent_id == "A"
+    assert "agentId" not in captured["prompt"] and "<available_agents>" not in captured["instruction"]
+
+
+@pytest.fixture
+def team(manager, monkeypatch):
+    """The manager with a second agent, W, alongside the coder A (the default agent)."""
+    monkeypatch.setattr("agentflow.config.settings.campaign_default_agent", "A")
+    mgr, coder = manager
+    mgr.engine.registry.register(AgentManifest(agent_id="W", domain="Writing", system_prompt="s"))
+    writer = _Coder()
+    mgr.engine._agent_instances["W"] = writer
+    return mgr, coder, writer
+
+
+async def test_sessions_run_on_each_features_agent(team):
+    mgr, coder, writer = team
+    features = _features(2)
+    features[0].agent_id, features[1].agent_id = "A", "W"
+    regression = AsyncMock(return_value=_verdict(True))
+    campaign = mgr.create(CampaignRequest(task="build an app"))  # no pinned agent
+    with (
+        patch("agentflow.orchestrator.campaign.define_features", AsyncMock(return_value=features)),
+        patch("agentflow.orchestrator.engine.verify_subtask", AsyncMock(side_effect=[_verdict(True)] * 2)),
+        patch("agentflow.orchestrator.campaign.verify_subtask", regression),
+        patch("agentflow.orchestrator.engine.compile_report", AsyncMock(return_value="report.md")),
+    ):
+        await mgr.start(campaign.campaign_id)
+
+    view = mgr.store.view(campaign.campaign_id)
+    assert view.campaign.status == CampaignStatus.completed and view.campaign.agent_id is None
+    assert len(coder.instructions) == 1 and 'feature="F01"' in coder.instructions[0]
+    assert len(writer.instructions) == 1 and 'feature="F02"' in writer.instructions[0]
+    assert "feature 2 (W)" in writer.instructions[0]  # the ledger shows who does what
+    # F01's regression check (before F02's session) is verified as A's work.
+    assert regression.await_args.args[1].agent_id == "A"
+
+
+def test_feature_agent_falls_back_when_unrouted_or_unregistered(manager, monkeypatch):
+    mgr, _ = manager
+    monkeypatch.setattr("agentflow.config.settings.campaign_default_agent", "Default")
+    feature = _features(1)[0]
+    assert mgr._feature_agent(_campaign(agent_id="A"), feature) == "A"  # ledger from before routing
+    feature.agent_id = "Removed"
+    assert mgr._feature_agent(_campaign(agent_id=None), feature) == "Default"
+    feature.agent_id = "A"
+    assert mgr._feature_agent(_campaign(agent_id=None), feature) == "A"
+
+
+async def test_retry_can_reassign_a_features_agent(team, monkeypatch):
+    from agentflow.api import routes
+    from agentflow.core.models import FeatureRetryRequest
+    mgr, _, _ = team
+    monkeypatch.setattr(routes, "_get_campaigns", lambda: mgr)
+    mgr.store.save(_campaign(agent_id=None, status=CampaignStatus.stopped))
+    features = _features(1)
+    features[0].status, features[0].agent_id = FeatureStatus.blocked, "A"
+    mgr.store.save_features("c1", features)
+
+    view = await routes.retry_campaign_feature("c1", "F01", FeatureRetryRequest(agent_id="W"))
+    assert view.features[0].agent_id == "W" and view.features[0].status == FeatureStatus.failing
+    with pytest.raises(HTTPException) as exc:
+        await routes.retry_campaign_feature("c1", "F01", FeatureRetryRequest(agent_id="Ghost"))
+    assert exc.value.status_code == 422
+    assert mgr.store.features("c1")[0].agent_id == "W"  # unchanged by the rejected retry
+
+
+def test_unpinned_campaign_needs_a_registered_default_agent(manager, monkeypatch):
+    from agentflow.orchestrator.campaign import UnknownAgentError
+    mgr, _ = manager
+    monkeypatch.setattr("agentflow.config.settings.campaign_default_agent", "A")
+    assert mgr.create(CampaignRequest(task="t")).agent_id is None
+    monkeypatch.setattr("agentflow.config.settings.campaign_default_agent", "Ghost")
+    with pytest.raises(UnknownAgentError):
+        mgr.create(CampaignRequest(task="t"))

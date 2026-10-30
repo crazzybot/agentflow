@@ -47,6 +47,7 @@ from agentflow.orchestrator.campaign import (
     CampaignActiveError,
     CampaignNotFoundError,
     CampaignStateError,
+    UnknownAgentError,
 )
 from agentflow.orchestrator.engine import RunAlreadyActiveError
 from agentflow.orchestrator.resume import RunNotResumableError
@@ -433,7 +434,7 @@ async def start_campaign(request: CampaignRequest):
     manager = _get_campaigns()
     try:
         campaign = manager.create(request)
-    except CampaignStateError as exc:
+    except (CampaignStateError, UnknownAgentError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     manager.start(campaign.campaign_id)
     return manager.store.view(campaign.campaign_id)
@@ -496,12 +497,14 @@ async def update_campaign_limits(campaign_id: str, update: CampaignLimitsUpdate)
 @router.post("/campaigns/{campaign_id}/features/{feature_id}/retry", response_model=CampaignView)
 async def retry_campaign_feature(campaign_id: str, feature_id: str, request: FeatureRetryRequest):
     """Give a blocked or failing feature fresh attempts, with optional guidance that
-    its next session will receive. Resume the campaign afterwards if it is stopped."""
+    its next session will receive and optionally a different agent. Resume the campaign afterwards if it is stopped."""
     manager = _get_campaigns()
     try:
-        manager.retry_feature(campaign_id, feature_id, request.guidance)
+        manager.retry_feature(campaign_id, feature_id, request.guidance, request.agent_id)
     except CampaignNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except UnknownAgentError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except CampaignStateError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return manager.store.view(campaign_id)
