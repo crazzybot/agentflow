@@ -54,7 +54,13 @@ from agentflow.core.models import (
     TaskEnvelope,
 )
 from agentflow.core.session import RunSession, _current_session, read_session, replay
-from agentflow.core.workspace import _current_workspace, run_workspace_rel, validate_workspace_name, workspace_path
+from agentflow.core.workspace import (
+    _current_workspace,
+    run_workspace_rel,
+    runs_root,
+    validate_workspace_name,
+    workspace_path,
+)
 from agentflow.orchestrator.planner import _parse_criteria
 from agentflow.orchestrator.resume import RunNotResumableError
 from agentflow.orchestrator.stream import StreamEmitter
@@ -89,7 +95,7 @@ class CampaignStateError(Exception):
 # ---------------------------------------------------------------------------
 
 def _campaigns_root() -> Path:
-    return Path(settings.runs_dir) / "campaigns"
+    return runs_root() / "campaigns"
 
 
 def _write_atomic(path: Path, text: str) -> None:

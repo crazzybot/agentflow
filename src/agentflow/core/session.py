@@ -28,7 +28,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
-from agentflow.config import settings
+from agentflow.core.workspace import runs_root
 from agentflow.core.models import AgentResult, ExecutionPlan, Subtask
 
 logger = logging.getLogger(__name__)
@@ -76,7 +76,7 @@ class RunSessionResponse(BaseModel):
 
 
 def session_path(run_id: str) -> Path:
-    return Path(settings.runs_dir) / run_id / SESSION_FILE
+    return runs_root() / run_id / SESSION_FILE
 
 
 def _read(path: Path) -> list[SessionEvent]:

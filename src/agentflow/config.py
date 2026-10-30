@@ -1,3 +1,6 @@
+from pathlib import PurePath
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -32,11 +35,14 @@ class Settings(BaseSettings):
     task_max_retries: int = 1
 
     manifests_dir: str = "manifests"
-    # Root of all run workspaces (named ones and runs/<run_id>/). Kept outside the
-    # repo so agent-written projects never mix with AgentFlow's own source; "~" is
-    # expanded, and a relative value resolves against the process's CWD.
-    workspace_dir: str = "~/agentflow-workspace"
-    runs_dir: str = ".runs"
+    # AgentFlow's data home, outside the repo: the defaults for the two dirs below.
+    # Paths expand "~"; a relative value resolves against the process's CWD.
+    agentflow_home: str = "~/agentflow"
+    # Root of all run workspaces (named ones and runs/<run_id>/). "" = <home>/workspace.
+    workspace_dir: str = ""
+    # Run records (meta, session log, checkpoints, campaign ledgers); never reachable
+    # by agents, so it must not overlap the workspace root. "" = <home>/runs.
+    runs_dir: str = ""
     skills_dir: str = "skills"
     sandbox_python: str = "sandbox/.venv/bin/python"
     # Extra environment variable names passed through to bash_exec / python_exec
@@ -204,6 +210,15 @@ class Settings(BaseSettings):
             "standard": self.model_tier_standard,
             "premium": self.model_tier_premium,
         }.get(tier or "")
+
+    @model_validator(mode="after")
+    def _derive_data_dirs(self) -> "Settings":
+        """Fill unset workspace_dir / runs_dir from agentflow_home."""
+        if not self.workspace_dir:
+            self.workspace_dir = str(PurePath(self.agentflow_home, "workspace"))
+        if not self.runs_dir:
+            self.runs_dir = str(PurePath(self.agentflow_home, "runs"))
+        return self
 
 
 settings = Settings()

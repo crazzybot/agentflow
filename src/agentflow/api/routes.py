@@ -9,7 +9,6 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
-from agentflow.config import settings
 from agentflow.core.context import context_store
 from agentflow.core.models import (
     FollowUpRequest,
@@ -43,7 +42,7 @@ from agentflow.core.session import (
     filter_events,
     read_session,
 )
-from agentflow.core.workspace import LEGACY_ROOT, InvalidWorkspaceError, workspace_path
+from agentflow.core.workspace import InvalidWorkspaceError, LEGACY_ROOT, runs_root, workspace_path
 from agentflow.orchestrator.campaign import (
     CampaignActiveError,
     CampaignNotFoundError,
@@ -234,7 +233,7 @@ async def send_run_message(run_id: str, message: UserMessage):
 
 
 def _run_dir(run_id: str) -> Path:
-    return Path(settings.runs_dir) / run_id
+    return runs_root() / run_id
 
 
 def _require_run(run_id: str) -> Path:
@@ -290,7 +289,7 @@ async def _run_info(d: Path) -> RunInfo:
 
 @router.get("/runs", response_model=RunListResponse)
 async def list_runs():
-    runs_dir = Path(settings.runs_dir)
+    runs_dir = runs_root()
     if not runs_dir.exists():
         return RunListResponse(runs=[])
     dirs = [d for d in runs_dir.iterdir() if d.is_dir()]

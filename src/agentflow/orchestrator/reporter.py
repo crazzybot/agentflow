@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from agentflow.config import settings
+from agentflow.core.workspace import runs_root
 from agentflow.core.models import AgentResult, AgentStatus, ExecutionPlan
 from agentflow.llm import LLMClient, supports_adaptive_thinking
 
@@ -174,7 +175,7 @@ async def compile_report(
     )
     full_report = header + report_body
 
-    run_dir = os.path.join(settings.runs_dir, run_id)
+    run_dir = os.path.join(runs_root(), run_id)
     os.makedirs(run_dir, exist_ok=True)
     report_path = os.path.join(run_dir, "report.md")
     with open(report_path, "w", encoding="utf-8") as fh:

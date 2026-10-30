@@ -35,7 +35,6 @@ import json
 import logging
 import time
 import uuid
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import redis.asyncio as aioredis
@@ -45,7 +44,13 @@ from agentflow.config import settings
 from agentflow.core.models import AgentResult, AgentStatus, TaskEnvelope, WorkItem
 from agentflow.core.registry import AgentRegistry
 from agentflow.core.session import SessionEventType, _current_session, record
-from agentflow.core.workspace import _current_workspace, current_workspace, workspace_path, workspace_root
+from agentflow.core.workspace import (
+    _current_workspace,
+    current_workspace,
+    runs_root,
+    workspace_path,
+    workspace_root,
+)
 from agentflow.tools.artifact_tracker import ArtifactSink, _current_sink
 from agentflow.tools.sandbox import SandboxProvider, _current_sandbox
 
@@ -248,7 +253,7 @@ class Worker:
             (_current_session, _current_session.set(RemoteSessionWriter(self.redis, item.item_id))),
             (_current_sandbox, _current_sandbox.set(provider)),
             (_current_sink, _current_sink.set(
-                ArtifactSink(Path(settings.runs_dir) / item.run_id / "artifacts.jsonl"))),
+                ArtifactSink(runs_root() / item.run_id / "artifacts.jsonl"))),
         ]
         try:
             # Publishes to the run's SSE stream (Redis Streams: visible to every replica).

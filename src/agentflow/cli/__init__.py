@@ -125,9 +125,14 @@ def serve(ctx: click.Context, reload: bool) -> None:
 def worker(agents: str, concurrency: int) -> None:
     """Run a worker that executes subtask agents queued by servers in DISPATCH_MODE=workers."""
     from agentflow.config import settings
+    from agentflow.core.workspace import DataDirConflictError, check_data_dirs
 
     if settings.state_backend != "redis":
         raise click.UsageError("workers need STATE_BACKEND=redis (and a runs_dir/workspace shared with the server)")
+    try:
+        check_data_dirs()
+    except DataDirConflictError as exc:
+        raise click.UsageError(str(exc)) from exc
     asyncio.run(_run_worker([a for a in agents.split(",") if a.strip()], concurrency))
 
 

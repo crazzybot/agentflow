@@ -303,12 +303,60 @@ def test_workspace_root_expands_home(tmp_path, monkeypatch):
     assert workspace_root() == (tmp_path / "agentflow-workspace").resolve()
 
 
-def test_default_workspace_dir_is_outside_the_repo():
+@pytest.fixture
+def clean_env(monkeypatch):
+    for var in ("AGENTFLOW_HOME", "WORKSPACE_DIR", "RUNS_DIR"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_data_dirs_default_to_agentflow_home_outside_the_repo(clean_env):
     from agentflow.config import Settings
 
-    default = Path(Settings.model_fields["workspace_dir"].default).expanduser().resolve()
+    s = Settings(_env_file=None)
+    assert (s.workspace_dir, s.runs_dir) == ("~/agentflow/workspace", "~/agentflow/runs")
     repo = Path(__file__).resolve().parents[1]
-    assert not default.is_relative_to(repo)
+    for d in (s.workspace_dir, s.runs_dir):
+        assert not Path(d).expanduser().resolve().is_relative_to(repo)
+
+
+def test_data_dirs_follow_home_and_explicit_values_win(clean_env, monkeypatch):
+    from agentflow.config import Settings
+
+    monkeypatch.setenv("AGENTFLOW_HOME", "/data/af")
+    monkeypatch.setenv("RUNS_DIR", "/var/af-runs")
+    s = Settings(_env_file=None)
+    assert (s.workspace_dir, s.runs_dir) == ("/data/af/workspace", "/var/af-runs")
+
+
+def test_runs_root_expands_home(tmp_path, monkeypatch):
+    from agentflow.core.session import session_path
+    from agentflow.core.workspace import runs_root
+    from agentflow.orchestrator.campaign import _campaigns_root
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("agentflow.config.settings.runs_dir", "~/af/runs")
+    root = (tmp_path / "af" / "runs").resolve()
+    assert runs_root() == root
+    assert session_path("r1") == root / "r1" / "session.jsonl"
+    assert _campaigns_root() == root / "campaigns"
+
+
+@pytest.mark.parametrize("ws, runs, ok", [
+    ("home/workspace", "home/runs", True),
+    ("home/workspace", "home/workspace/.runs", False),
+    ("home", "home/runs", False),
+    ("home/workspace", "home/workspace", False),
+])
+def test_check_data_dirs_rejects_overlap(tmp_path, monkeypatch, ws, runs, ok):
+    from agentflow.core.workspace import DataDirConflictError, check_data_dirs
+
+    monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path / ws))
+    monkeypatch.setattr("agentflow.config.settings.runs_dir", str(tmp_path / runs))
+    if ok:
+        check_data_dirs()
+    else:
+        with pytest.raises(DataDirConflictError):
+            check_data_dirs()
 
 
 @pytest.mark.parametrize("given", [
