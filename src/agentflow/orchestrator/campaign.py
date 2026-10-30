@@ -186,29 +186,61 @@ Rules:
 """
 
 
-async def define_features(campaign: Campaign, client: LLMClient, emitter: StreamEmitter) -> list[Feature]:
-    """Run the read-only feature planner and return a validated ledger (may be empty)."""
+async def _run_feature_planner(
+    campaign: Campaign, client: LLMClient, emitter: StreamEmitter, max_features: int,
+) -> AgentResult:
     manifest = AgentManifest(
         agent_id="campaign.feature_planner",
         domain="Planning",
         tools=["file_read", "bash_exec_readonly"],
-        system_prompt=_DEFINER_PROMPT.replace("{max_features}", str(settings.campaign_max_features)),
+        system_prompt=_DEFINER_PROMPT.replace("{max_features}", str(max_features)),
         max_iterations=settings.planner_max_iterations,
         on_iteration_limit=IterationLimitAction.finalize,
         model=settings.planner_model,
+        # The whole ledger is one final JSON answer, and thinking shares the same
+        # output allowance — the default fallback (8k) truncates a 30-feature ledger.
+        max_output_tokens=settings.agent_max_tokens_cap,
     )
     envelope = TaskEnvelope(
         parent_run_id=f"campaign-{campaign.campaign_id}",
         agent_id=manifest.agent_id,
         instruction=f"<project_spec>\n{campaign.task}\n</project_spec>",
     )
-    result = await Agent(manifest, client).run(envelope, emitter)
+    return await Agent(manifest, client).run(envelope, emitter)
+
+
+def _feature_list(result: AgentResult) -> list[Any] | None:
     raw = (result.output.structured or {}).get("features")
     if result.status == AgentStatus.failed or not isinstance(raw, list):
-        logger.warning("[campaign %s] Feature planner produced no feature list", campaign.campaign_id)
+        return None
+    return raw
+
+
+async def define_features(campaign: Campaign, client: LLMClient, emitter: StreamEmitter) -> list[Feature]:
+    """Run the read-only feature planner and return a validated ledger (may be empty).
+
+    If the planner's answer is cut off by max_tokens, it is retried once asking for
+    half as many features, since a shorter ledger is the only way to fit the answer.
+    """
+    max_features = settings.campaign_max_features
+    result = await _run_feature_planner(campaign, client, emitter, max_features)
+    raw = _feature_list(result)
+    if raw is None and result.hit_max_tokens:
+        max_features = max(1, max_features // 2)
+        logger.warning(
+            "[campaign %s] Feature planner output was truncated by max_tokens — "
+            "retrying with at most %d features", campaign.campaign_id, max_features,
+        )
+        result = await _run_feature_planner(campaign, client, emitter, max_features)
+        raw = _feature_list(result)
+    if raw is None:
+        logger.warning(
+            "[campaign %s] Feature planner produced no feature list (status=%s, truncated=%s)",
+            campaign.campaign_id, result.status, result.hit_max_tokens,
+        )
         return []
     features: list[Feature] = []
-    for entry in raw[: settings.campaign_max_features]:
+    for entry in raw[:max_features]:
         if not isinstance(entry, dict):
             continue
         fid = f"F{len(features) + 1:02d}"  # ids assigned in code, in the planner's order

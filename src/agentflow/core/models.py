@@ -76,6 +76,9 @@ class AgentManifest(BaseModel):
     model_tier: str | None = None
     max_concurrency: int = 3
     max_iterations: int | None = None  # None → fall back to settings.agent_max_iterations
+    # Per-call max_tokens when the task has no budget. None → settings.agent_max_tokens_fallback.
+    # Raise it for agents whose final answer is one large block (e.g. a JSON ledger).
+    max_output_tokens: int | None = Field(default=None, gt=0)
     tool_limits: dict[str, int] | None = None  # per-task call budgets e.g. {"fetch_url": 5}
     # Pre-tool-use policies checked before every call, e.g. a command allowlist for
     # bash_exec. See tools/policy.py.

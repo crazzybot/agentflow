@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from agentflow.config import settings
 from agentflow.core.bus import TaskBus
 from agentflow.core.context import ContextStore
 from agentflow.core.models import (
@@ -106,18 +107,44 @@ async def test_define_features_assigns_ids_and_drops_uncheckable(dirs, monkeypat
     assert [(f.id, f.title) for f in features] == [("F01", "skeleton"), ("F02", "api")]
     assert features[1].description == "api"  # falls back to the title
     assert set(captured["manifest"].tools) == {"file_read", "bash_exec_readonly"}
+    assert captured["manifest"].max_output_tokens == settings.agent_max_tokens_cap
+
+
+async def test_define_features_retries_smaller_ledger_after_truncation(dirs, monkeypatch):
+    monkeypatch.setattr("agentflow.config.settings.campaign_max_features", 30)
+    prompts: list[str] = []
+
+    class TruncatingPlanner:
+        def __init__(self, manifest, client):
+            prompts.append(manifest.system_prompt)
+
+        async def run(self, envelope, emitter):
+            if len(prompts) == 1:  # first attempt: cut off mid-JSON, nothing parsed
+                return AgentResult(task_id="x", agent_id="p", status=AgentStatus.partial,
+                                   hit_max_tokens=True, output=AgentOutput(text='{"features": [{"ti'))
+            return AgentResult(task_id="x", agent_id="p", status=AgentStatus.success, output=AgentOutput(
+                structured={"features": [{"title": "skeleton", "checks": ["README.md exists"]}]}))
+
+    with patch("agentflow.orchestrator.campaign.Agent", TruncatingPlanner):
+        features = await define_features(_campaign(), MagicMock(), MagicMock())
+
+    assert [f.title for f in features] == ["skeleton"]
+    assert "At most 30 features" in prompts[0] and "At most 15 features" in prompts[1]
 
 
 async def test_define_features_failure_yields_empty_ledger(dirs):
     class Broken:
+        calls = 0
+
         def __init__(self, *_a):
-            pass
+            Broken.calls += 1
 
         async def run(self, *_a):
             return AgentResult(task_id="x", agent_id="p", status=AgentStatus.failed, error="nope")
 
     with patch("agentflow.orchestrator.campaign.Agent", Broken):
         assert await define_features(_campaign(), MagicMock(), MagicMock()) == []
+    assert Broken.calls == 1  # a plain failure is not retried
 
 
 def test_session_instruction_carries_spec_progress_target_and_notes():

@@ -625,7 +625,7 @@ class Agent:
                             self.agent_id, max_iterations,
                         )
                         break
-                max_tokens = settings.agent_max_tokens_fallback
+                max_tokens = self.manifest.max_output_tokens or settings.agent_max_tokens_fallback
 
             # The model sees a view of the history: older bulky tool results are
             # stubbed once the prompt grows past the snip trigger (see context_view).
