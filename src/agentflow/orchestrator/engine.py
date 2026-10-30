@@ -785,15 +785,56 @@ class OrchestratorEngine:
         all_results = await ctx.all_results()
         sink_result = all_results.get(sink.id)
         if sink_result is not None:
+            # The parent's output is the sink's, but its files are every micro-step's.
+            files = [p for ms in micro if ms.id in all_results for p in all_results[ms.id].files_written]
+            sink_result = sink_result.model_copy(update={"files_written": list(dict.fromkeys(files))})
+            # The parent's acceptance criteria describe the whole decomposed subtask,
+            # so they are checked against the promoted result (repairs continue the
+            # sink agent's transcript).
+            if (
+                sink_result.status == AgentStatus.success
+                and parent.acceptance_criteria
+                and settings.enable_verifier
+            ):
+                envelope = self._build_envelope(run_id, parent, ctx, task_budget_usd)
+                sink_result = await self._verify_with_repairs(run_id, parent, envelope, sink_result, ctx, emitter)
             await _store_result(ctx, parent.id, sink_result)
 
+        partial = sink_result is not None and sink_result.status == AgentStatus.partial
         emitter.emit(
-            SSEEventType.task_complete,
+            SSEEventType.task_partial if partial else SSEEventType.task_complete,
             agent_id=parent.agent_id,
-            message=f"Subtask {parent.id} complete ({n} micro-steps)",
+            message=(
+                f"Subtask {parent.id} incomplete after {n} micro-steps: {sink_result.error}"
+                if partial and sink_result is not None
+                else f"Subtask {parent.id} complete ({n} micro-steps)"
+            ),
             data={"subtask_id": parent.id},
         )
         return True
+
+    def _build_envelope(
+        self, run_id: str, subtask: Subtask, ctx: RunContext, task_budget_usd: float | None,
+    ) -> TaskEnvelope:
+        agent_user_context = {
+            k: v for k, v in ctx.user_context.items() if k not in _PLANNER_ONLY_CONTEXT_KEYS
+        }
+        return TaskEnvelope(
+            parent_run_id=run_id,
+            agent_id=subtask.agent_id,
+            instruction=subtask.instruction,
+            context=TaskContext(
+                prior_results=ctx.build_prior_results(subtask.depends_on),
+                upstream_artifacts=ctx.build_upstream_artifacts(subtask.depends_on),
+                user_context=agent_user_context,
+            ),
+            constraints=TaskConstraints(
+                budget_usd=task_budget_usd,
+                timeout_ms=settings.task_timeout_ms,
+                model_tier=subtask.model_tier,
+                thinking_effort=subtask.thinking_effort,
+            ),
+        )
 
     async def _dispatch_subtask(
         self,
@@ -874,20 +915,7 @@ class OrchestratorEngine:
                     ctx_block = f"<workspace_context>\n{decomp_ctx}\n</workspace_context>\n\n"
                     subtask = subtask.model_copy(update={"instruction": ctx_block + subtask.instruction})
 
-        prior_results = ctx.build_prior_results(subtask.depends_on)
-        upstream_artifacts = ctx.build_upstream_artifacts(subtask.depends_on)
-        envelope = TaskEnvelope(
-            parent_run_id=run_id,
-            agent_id=subtask.agent_id,
-            instruction=subtask.instruction,
-            context=TaskContext(prior_results=prior_results, upstream_artifacts=upstream_artifacts, user_context=agent_user_context),
-            constraints=TaskConstraints(
-                budget_usd=task_budget_usd,
-                timeout_ms=settings.task_timeout_ms,
-                model_tier=subtask.model_tier,
-                thinking_effort=subtask.thinking_effort,
-            ),
-        )
+        envelope = self._build_envelope(run_id, subtask, ctx, task_budget_usd)
 
         await record(
             SessionEventType.subtask_dispatched,

@@ -237,3 +237,23 @@ async def test_no_criteria_or_disabled_means_no_verifier(engine, monkeypatch):
     result, _, verify = await _run(eng, store, _Agent(), [])
     verify.assert_not_awaited()
     assert result.verification is None
+
+
+async def test_decomposed_subtask_is_verified_on_its_promoted_result(engine, monkeypatch):
+    """Criteria on a subtask routed to a decomposing agent (e.g. CodeAgent) used to be
+    skipped: the micro-step path stored the promoted result without verification."""
+    eng, store = engine
+    monkeypatch.setattr("agentflow.config.settings.enable_decomposer", True)
+    manifest = MagicMock(decomposition_prompt="split it")
+    eng.registry = MagicMock(get=MagicMock(return_value=manifest))
+    agent = _Agent()
+    micro = [
+        Subtask(id="s1.a", agent_id="A", instruction="part a"),
+        Subtask(id="s1.b", agent_id="A", instruction="part b", depends_on=["s1.a"]),
+    ]
+    with patch("agentflow.orchestrator.engine.decompose_subtask", AsyncMock(return_value=(micro, ""))):
+        result, _, verify = await _run(eng, store, agent, [_verdict(False), _verdict(False)])
+
+    assert verify.await_count == 2  # verified, repaired once, verified again
+    assert verify.await_args_list[0].args[1].id == "s1"  # the parent's criteria
+    assert result.status == AgentStatus.partial and CRITERIA[1] in result.error
