@@ -2,7 +2,7 @@
 name: how-to
 description: Step-by-step recipes for common AgentFlow extension tasks: adding a new
              agent, adding a new tool, attaching a skill to an agent, and using the
-             cancel/resume/followup/message API endpoints, and running in a named workspace.
+             cancel/resume/followup/message API endpoints, campaigns, and running in a named workspace.
              Invoke when the user asks how to
              add or wire up any of these things.
 invocation: manual
@@ -104,6 +104,21 @@ At startup, runs left in flight are marked `run_interrupted` in their session lo
 `wake()` reuses the logged plan, skips finished subtasks, and continues mid-flight
 subtasks from their last logged agent turn. Set `RESUME_INTERRUPTED_RUNS=true` to do
 this automatically at startup. Details: `docs/kb/subsystems/resume-and-leases.md`.
+
+## Run a long-horizon campaign
+
+```bash
+curl -X POST http://localhost:8000/api/campaigns \
+  -H "Content-Type: application/json" \
+  -d '{"task": "<full project spec>", "agent_id": "CodeAgent", "max_sessions": 20, "budget_usd": 25, "workspace": "my-app"}'
+curl http://localhost:8000/api/campaigns/<campaign_id>          # ledger: features, statuses, sessions, spend
+curl -X POST http://localhost:8000/api/campaigns/<campaign_id>/pause   # after the current session
+curl -X POST http://localhost:8000/api/campaigns/<campaign_id>/resume
+```
+
+A read-only planner writes a fixed feature list. Each session is a normal run (stream it
+via its run id from `sessions`) that implements one feature. A feature passes only when
+the independent verifier confirms its checks. Details: `docs/kb/subsystems/campaigns.md`.
 
 ## Start a follow-up run
 

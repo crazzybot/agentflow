@@ -1,7 +1,7 @@
 ---
 title: AgentFlow Knowledge Base — Index
 last_updated: 2026-10-29
-last_verified_sha: 8eee61b
+last_verified_sha: 38d6fc8
 sources:
   - src/agentflow/
   - manifests/
@@ -40,6 +40,9 @@ the doc(s) relevant to your change, before exploring source.
   acceptance criteria checked by an independent read-only verifier (with repair rounds),
   and per-subtask git snapshots of the workspace in a shadow repo with rollback of
   failed attempts.
+- [subsystems/campaigns](subsystems/campaigns.md) — long-horizon work as fresh-context
+  sessions over a code-enforced feature ledger; a feature passes only on independent
+  verification, with regression checks, bounds, and pause/resume across restarts.
 - [subsystems/resume-and-leases](subsystems/resume-and-leases.md) — resuming
   interrupted runs from their session log (`wake()`, `POST /runs/{id}/resume`,
   reconciliation) and the Redis per-run leases behind multi-replica resume and cancel.
@@ -49,7 +52,7 @@ the doc(s) relevant to your change, before exploring source.
 These are available as `/skill-name` — they inject live context when needed rather
 than being loaded every session:
 
-- `/how-to` — step-by-step recipes: add an agent, add a tool, attach a skill, cancel/resume/followup/message API, named workspaces
+- `/how-to` — step-by-step recipes: add an agent, add a tool, attach a skill, cancel/resume/followup/message API, campaigns, named workspaces
 - `/update-kb` — reconcile `docs/kb/` after an implementation task
 - `/session-wrap` — end-of-session KB review and session log entry
 

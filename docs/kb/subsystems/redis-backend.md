@@ -1,7 +1,7 @@
 ---
 title: Redis-Backed State Backend
 last_updated: 2026-10-29
-last_verified_sha: 8eee61b
+last_verified_sha: 38d6fc8
 sources:
   - src/agentflow/config.py
   - src/agentflow/core/redis_client.py
@@ -92,6 +92,7 @@ All keys are `run:{run_id}:*` and carry `redis_key_ttl`:
 | `…:active_agents` | Set | `RedisRunContext` | Agent IDs with active subtasks; managed by `register_agent`/`deregister_agent`. |
 | `…:msg:{agent_id}` | List | `RedisRunContext` | Per-agent user-message queue; `push_user_message` fans out via `SMEMBERS` then pipelines `RPUSH` to each; `pop_user_message(agent_id)` does `LPOP`. |
 | `…:lease` | String | `RedisRunLeases` | Owner process id; `PX` = `RUN_LEASE_TTL_S`, renewed every TTL/3 (Lua compare-and-set). |
+| `…:lease` (campaigns) | String | `RedisRunLeases` | Same lease under `run:campaign-<id>:lease`: the replica driving a campaign. |
 | `…:cancel` | String | `RedisRunLeases` | Cross-replica cancel request, acted on by the owner's keep-alive; cleared on acquire/release. |
 | `…:dispatch` | List | `RedisTaskBus` | Orchestrator → worker (not yet wired). |
 | `…:result` | List | `RedisTaskBus` | Worker → orchestrator (not yet wired). |

@@ -1,7 +1,7 @@
 ---
 title: Subtask Verification & Workspace Checkpoints
 last_updated: 2026-10-29
-last_verified_sha: 8eee61b
+last_verified_sha: 38d6fc8
 sources:
   - src/agentflow/orchestrator/verifier.py
   - src/agentflow/orchestrator/checkpoints.py
@@ -58,7 +58,11 @@ The order inside a successful attempt is: agent result → (partial continuation
 
 `OrchestratorEngine._verify_with_repairs()` runs only when `status == success`,
 `acceptance_criteria` is non-empty and `ENABLE_VERIFIER` is on. Partial, failed and
-fallback results are not verified. Each round:
+fallback results are not verified. **Decomposed subtasks** (agents with a
+`decomposition_prompt`, e.g. `CodeAgent`) are verified in `_run_micro_subtasks()`, on
+the promoted sink result. That result carries the union of every micro-step's
+`files_written`, and repairs continue the sink agent's transcript with an envelope from
+`_build_envelope()`. An incomplete result then emits `task:partial`. Each round:
 
 1. Verify, and charge the verifier's cost (`_add_cost`). Record a `subtask_verified`
    session event and emit a `task:verified` SSE event ("passed/failed/inconclusive (n/m
