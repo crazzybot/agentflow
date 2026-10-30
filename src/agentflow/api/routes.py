@@ -17,6 +17,8 @@ from agentflow.core.models import (
     RunArtifact,
     RunArtifactContentResponse,
     RunArtifactsResponse,
+    RunCheckpoint,
+    RunCheckpointsResponse,
     RunEventsResponse,
     RunInfo,
     RunListResponse,
@@ -322,6 +324,24 @@ async def get_run_session(
         read_session(run_id), after_seq=after_seq, types=type, invocation_id=invocation_id
     )
     return RunSessionResponse(run_id=run_id, events=events)
+
+
+@router.get("/runs/{run_id}/checkpoints", response_model=RunCheckpointsResponse)
+async def get_run_checkpoints(run_id: str):
+    """Workspace git checkpoints of a run (from its session log), oldest first."""
+    _require_run(run_id)
+    checkpoints = [
+        RunCheckpoint(
+            sha=e.data["sha"],
+            label=e.data.get("label", ""),
+            subtask_id=e.subtask_id,
+            agent_id=e.agent_id,
+            changed=e.data.get("changed", []),
+            ts=e.ts,
+        )
+        for e in filter_events(read_session(run_id), types={SessionEventType.checkpoint_created})
+    ]
+    return RunCheckpointsResponse(run_id=run_id, checkpoints=checkpoints)
 
 
 @router.get("/runs/{run_id}/results", response_model=RunResultsResponse)

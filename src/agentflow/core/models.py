@@ -161,6 +161,9 @@ class AgentResult(BaseModel):
     peak_prompt_tokens: int = 0
     # Set when the subtask had acceptance criteria and was checked by the verifier.
     verification: Verification | None = None
+    # Workspace checkpoint commit taken when this subtask finished (None: no
+    # changes, or checkpoints disabled). See orchestrator/checkpoints.py.
+    checkpoint: str | None = None
     # Relative paths of every file successfully written during this agent's run.
     files_written: list[str] = Field(default_factory=list)
     # Full conversation messages — not serialised, used in-memory for same-agent
@@ -356,6 +359,20 @@ class RunResultsResponse(BaseModel):
 class RunEventsResponse(BaseModel):
     run_id: str
     events: list[SSEEvent]
+
+
+class RunCheckpoint(BaseModel):
+    sha: str
+    label: str
+    subtask_id: str | None = None
+    agent_id: str | None = None
+    changed: list[str] = Field(default_factory=list)
+    ts: int
+
+
+class RunCheckpointsResponse(BaseModel):
+    run_id: str
+    checkpoints: list[RunCheckpoint]
 
 
 class RunReportResponse(BaseModel):

@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     # failing subtask is downgraded to partial.
     verification_max_repairs: int = 1
 
+    # Git checkpoints of each run's workspace in a shadow repo under the run dir
+    # (orchestrator/checkpoints.py): baseline + one per finished subtask, and
+    # rollback of a failed attempt's files before a retry. Needs `git` on PATH.
+    enable_checkpoints: bool = True
+
     # Set ENABLE_DECOMPOSER=false to skip per-subtask decomposition entirely.
     # Subtasks then execute as the planner produced them, with no extra ReAct loop.
     enable_decomposer: bool = True

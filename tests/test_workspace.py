@@ -188,25 +188,36 @@ async def test_runs_sharing_a_workspace_are_serialised(engine):
     active = 0
     peak = 0
 
+    planning = asyncio.Event()
+
     async def slow_plan(*_args, **_kwargs):
         nonlocal active, peak
         active += 1
         peak = max(peak, active)
+        planning.set()
         await release.wait()
         active -= 1
         raise RuntimeError("done")
 
+    from agentflow.orchestrator import engine as engine_mod
+
+    def r4_waiting() -> bool:
+        emitter = engine_mod.stream_registry.get("r4")
+        return emitter is not None and any((e.payload.data or {}).get("waiting") for e in emitter._buffer)
+
     with patch("agentflow.orchestrator.engine.create_plan", AsyncMock(side_effect=slow_plan)):
         first = asyncio.create_task(engine.run("r3", "t", {}, workspace="proj"))
-        await asyncio.sleep(0.02)
+        await asyncio.wait_for(planning.wait(), timeout=5)  # r3 holds the workspace
         second = asyncio.create_task(engine.run("r4", "t", {}, workspace="proj"))
-        await asyncio.sleep(0.02)
+        for _ in range(500):  # until r4 reaches the lock and reports it is waiting
+            if r4_waiting():
+                break
+            await asyncio.sleep(0.01)
         assert active == 1
         release.set()
         await asyncio.gather(first, second)
 
     assert peak == 1
-    from agentflow.orchestrator import engine as engine_mod
     events = engine_mod.stream_registry.get("r4")._buffer
     assert any(
         e.type == SSEEventType.agent_progress and (e.payload.data or {}).get("waiting") for e in events

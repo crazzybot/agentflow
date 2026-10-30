@@ -25,6 +25,7 @@ from agentflow.core.session import (RunSession, SessionEventType, _current_sessi
 from agentflow.core.workspace import (WorkspaceLocks, _current_workspace,
                                        run_workspace_rel, workspace_path)
 from agentflow.llm import LLMClient
+from agentflow.orchestrator.checkpoints import Checkpoint, CheckpointError, WorkspaceCheckpoints
 from agentflow.orchestrator.decomposer import decompose_subtask
 from agentflow.orchestrator.planner import create_plan
 from agentflow.orchestrator.reporter import compile_report
@@ -133,6 +134,8 @@ class OrchestratorEngine:
         self._workspace_locks = WorkspaceLocks()
         # Runs being resumed by wake(): consulted by the scheduler and dispatch.
         self._resume: dict[str, ResumeState] = {}
+        # Open workspace checkpoint repos of running runs (None entries never stored).
+        self._checkpoints: dict[str, WorkspaceCheckpoints] = {}
         self._build_agents()
 
     async def request_cancel(self, run_id: str) -> str | None:
@@ -512,6 +515,12 @@ class OrchestratorEngine:
                 )
             await ws_stack.enter_async_context(self._workspace_locks.hold(ws_rel))
 
+            if settings.enable_checkpoints:
+                checkpoints = await WorkspaceCheckpoints.open(run_id, ws_dir)
+                if checkpoints is not None:
+                    self._checkpoints[run_id] = checkpoints
+                    await self._checkpoint(run_id, "run resumed" if resume is not None else "run start")
+
             # Step 02: classify then plan.  When direct mode is configured, a cheap
             # Haiku call decides whether the task warrants multi-agent planning or
             # can be routed directly to a single agent.  Falls back to the full
@@ -611,6 +620,7 @@ class OrchestratorEngine:
             _current_session.reset(session_token)
             _current_workspace.reset(ws_token)
             self._resume.pop(run_id, None)
+            self._checkpoints.pop(run_id, None)
             if keep_alive is not None:
                 keep_alive.cancel()
             await run_leases.release(run_id)
@@ -900,6 +910,9 @@ class OrchestratorEngine:
         # deregister the right one.  Set to None when we explicitly deregister
         # before switching to a fallback agent.
         registered: str | None = subtask.agent_id
+        # Workspace snapshot this subtask starts from: what a failed attempt's files
+        # are rolled back to.
+        baseline = await self._checkpoint_head(run_id)
         await ctx.register_agent(subtask.agent_id)
         try:
             for attempt in range(1, settings.task_max_retries + 1):
@@ -932,6 +945,7 @@ class OrchestratorEngine:
                 await _add_cost(ctx, result)
 
                 if result.status == AgentStatus.failed:
+                    await self._roll_back_attempt(run_id, subtask, baseline, result, emitter)
                     if attempt < settings.task_max_retries:
                         logger.warning(
                             "[%s] Subtask %s failed (attempt %d/%d) — retrying in %ds",
@@ -954,6 +968,8 @@ class OrchestratorEngine:
                         finally:
                             await ctx.deregister_agent(fallback.agent_id)
                         await _add_cost(ctx, fallback_result)
+                        if fallback_result.status != AgentStatus.failed:
+                            fallback_result = await self._with_checkpoint(run_id, subtask, fallback_result)
                         await _store_result(ctx, subtask.id, fallback_result)
                         emitter.emit(
                             SSEEventType.task_complete,
@@ -993,6 +1009,7 @@ class OrchestratorEngine:
                 ):
                     result = await self._verify_with_repairs(run_id, subtask, envelope, result, ctx, emitter)
 
+                result = await self._with_checkpoint(run_id, subtask, result)
                 await _store_result(ctx, subtask.id, result)
 
                 if result.status == AgentStatus.partial:
@@ -1015,6 +1032,76 @@ class OrchestratorEngine:
         finally:
             if registered is not None:
                 await ctx.deregister_agent(registered)
+
+    async def _checkpoint(
+        self,
+        run_id: str,
+        label: str,
+        subtask_id: str | None = None,
+        agent_id: str | None = None,
+    ) -> Checkpoint | None:
+        """Commit the run's workspace; None if checkpoints are off or nothing changed."""
+        checkpoints = self._checkpoints.get(run_id)
+        if checkpoints is None:
+            return None
+        try:
+            checkpoint = await checkpoints.commit(label)
+        except CheckpointError as exc:
+            logger.warning("[%s] Checkpoint %r failed: %s", run_id, label, exc)
+            return None
+        if checkpoint is not None:
+            await record(
+                SessionEventType.checkpoint_created,
+                agent_id=agent_id,
+                subtask_id=subtask_id,
+                data={"sha": checkpoint.sha, "label": checkpoint.label, "changed": checkpoint.changed},
+            )
+        return checkpoint
+
+    async def _with_checkpoint(self, run_id: str, subtask: Subtask, result: AgentResult) -> AgentResult:
+        """Snapshot the workspace as this subtask leaves it; stamp the commit on the result."""
+        checkpoint = await self._checkpoint(
+            run_id, f"{subtask.id} ({result.agent_id}): {result.status.value}", subtask.id, result.agent_id,
+        )
+        return result.model_copy(update={"checkpoint": checkpoint.sha}) if checkpoint else result
+
+    async def _checkpoint_head(self, run_id: str) -> str | None:
+        checkpoints = self._checkpoints.get(run_id)
+        return await checkpoints.head() if checkpoints is not None else None
+
+    async def _roll_back_attempt(
+        self,
+        run_id: str,
+        subtask: Subtask,
+        baseline: str | None,
+        failed: AgentResult,
+        emitter: StreamEmitter,
+    ) -> None:
+        """Undo the files a failed attempt wrote before the next attempt (or fallback)
+        starts, so it does not build on half-finished output. Only those files: other
+        subtasks may be writing elsewhere in the shared workspace right now."""
+        checkpoints = self._checkpoints.get(run_id)
+        if checkpoints is None or not failed.files_written:
+            return
+        try:
+            restored = await checkpoints.restore_paths(baseline, failed.files_written)
+        except CheckpointError as exc:
+            logger.warning("[%s] Rolling back %s's failed attempt failed: %s", run_id, subtask.id, exc)
+            return
+        if not restored:
+            return
+        await record(
+            SessionEventType.workspace_restored,
+            agent_id=failed.agent_id,
+            subtask_id=subtask.id,
+            data={"sha": baseline, "paths": restored},
+        )
+        emitter.emit(
+            SSEEventType.agent_progress,
+            agent_id=failed.agent_id,
+            message=f"Rolled back {len(restored)} file(s) written by the failed attempt at {subtask.id}",
+            data={"subtask_id": subtask.id, "restored": restored},
+        )
 
     async def _verify_with_repairs(
         self,
