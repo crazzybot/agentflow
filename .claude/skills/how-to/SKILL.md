@@ -2,7 +2,7 @@
 name: how-to
 description: Step-by-step recipes for common AgentFlow extension tasks: adding a new
              agent, adding a new tool, attaching a skill to an agent, and using the
-             cancel/followup/message API endpoints, and running in a named workspace.
+             cancel/resume/followup/message API endpoints, and running in a named workspace.
              Invoke when the user asks how to
              add or wire up any of these things.
 invocation: manual
@@ -82,16 +82,28 @@ invocation: manual
 
 ```bash
 curl -X POST http://localhost:8000/api/runs/<run_id>/cancel
-# returns {"status": "cancelled"} or 404 if not active
+# {"status": "cancelled"}         — the run executed on this replica
+# {"status": "cancel_requested"}  — Redis backend: another replica owns it; it stops within ~RUN_LEASE_TTL_S/3 s
+# 404                             — no live run with this id
 ```
 
-`engine.cancel_run(run_id)` cancels the asyncio Task in `OrchestratorEngine._run_tasks`.
-The scheduler catches `CancelledError`, cancels all in-flight subtask tasks, and re-raises;
-`engine.run()` emits `run:cancelled` and cleans up.
+`engine.request_cancel(run_id)` cancels the local asyncio Task in `_run_tasks` if the run
+executes here. Otherwise, under `STATE_BACKEND=redis`, it sets `run:{id}:cancel`, and the
+owner's lease keep-alive cancels the run. The scheduler catches `CancelledError`,
+cancels in-flight subtasks and re-raises, and the run ends `run:cancelled`.
 
-**Cross-replica note:** `_run_tasks` is in-process only — the cancel request must reach
-the replica that started the run, or use sticky sessions. With `STATE_BACKEND=redis` this
-limitation still applies (no distributed task cancellation yet).
+## Resume an interrupted run
+
+```bash
+curl -X POST http://localhost:8000/api/runs/<run_id>/resume
+# {"run_id": "<run_id>", "status": "resumed"} — reattach to the same /stream URL
+# 409 — still running (here or on a live lease elsewhere), no session log, or already finished
+```
+
+At startup, runs left in flight are marked `run_interrupted` in their session log.
+`wake()` reuses the logged plan, skips finished subtasks, and continues mid-flight
+subtasks from their last logged agent turn. Set `RESUME_INTERRUPTED_RUNS=true` to do
+this automatically at startup. Details: `docs/kb/subsystems/resume-and-leases.md`.
 
 ## Start a follow-up run
 

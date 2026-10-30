@@ -167,6 +167,8 @@ All settings are read from environment variables (or a `.env` file).
 | `ENABLE_PROMPT_CACHING` | `true` | Inject Anthropic cache headers on every call |
 | `CAPTURE_EVENTS` | `false` | Write SSE events to `.runs/{id}/events.jsonl` |
 | `CAPTURE_RESULTS` | `false` | Write subtask results to `.runs/{id}/results.jsonl` |
+| `RESUME_INTERRUPTED_RUNS` | `false` | Resume runs interrupted by a restart automatically at startup (spends budget without anyone asking) |
+| `RUN_LEASE_TTL_S` | `15` | Redis backend: TTL of the per-run ownership lease. The owner renews it every TTL/3 seconds. A crashed replica's runs become resumable once the lease lapses, and a cancel sent to another replica takes effect within about TTL/3 seconds. |
 | `MANIFESTS_DIR` | `manifests` | Directory scanned for `*.json` agent manifests |
 | `WORKSPACE_DIR` | `workspace` | Root for per-run workspaces: each run's file and shell tools are confined to `workspace/runs/{id}/` or a named `workspace/{name}/` |
 | `SKILLS_DIR` | `skills` | Directory scanned for skill packs |
@@ -223,6 +225,38 @@ Returns a stream of Server-Sent Events. Each event's `data` field is a JSON obje
   }
 }
 ```
+
+### Session log
+
+```
+GET /api/runs/{run_id}/session?after_seq=0&type=message_appended&invocation_id=<id>
+```
+
+Every run keeps an always-on, append-only log at `.runs/{run_id}/session.jsonl`. It
+holds the run's inputs, the plan, subtask dispatches and results, cost, human-input
+exchanges, and the full message history of every agent invocation. The SSE stream is
+a live view for clients, while the session log is the record the run can be rebuilt
+from. All query parameters are optional, and `type` can be repeated. The endpoint
+works while the run is still in progress.
+
+### Resume an interrupted run
+
+```
+POST /api/runs/{run_id}/resume
+```
+
+If the service stops while a run is in progress, the next startup marks the run
+interrupted instead of ending it. Resuming continues the same `run_id`, and you can
+reattach to the same `/stream` URL. Subtasks that had finished are not run again,
+the logged plan is reused, and a subtask that was mid-flight continues from its
+last logged agent turn. Any tool request that was still executing is dropped, and
+the model issues it again if it still needs it.
+
+Returns `409` if the run is still running (on this replica, or on another replica
+that still holds its lease), has no session log (it predates session logs), or
+already finished. Set `RESUME_INTERRUPTED_RUNS=true` to resume automatically at
+startup. With `STATE_BACKEND=redis`, `POST /api/runs/{id}/cancel` also reaches runs
+that execute on another replica and returns `{"status": "cancel_requested"}`.
 
 ### Health check
 

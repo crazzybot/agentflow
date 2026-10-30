@@ -6,7 +6,7 @@ import json
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
 from agentflow.config import settings
@@ -29,7 +29,16 @@ from agentflow.core.models import (
     SubtaskResult,
     UserMessage,
 )
+from agentflow.core.session import (
+    SESSION_FILE,
+    RunSessionResponse,
+    SessionEventType,
+    filter_events,
+    read_session,
+)
 from agentflow.core.workspace import LEGACY_ROOT, InvalidWorkspaceError, workspace_path
+from agentflow.orchestrator.engine import RunAlreadyActiveError
+from agentflow.orchestrator.resume import RunNotResumableError
 from agentflow.orchestrator.stream import stream_registry
 
 
@@ -104,11 +113,40 @@ async def provide_run_input(run_id: str, response: HumanInputResponse):
 
 @router.post("/runs/{run_id}/cancel")
 async def cancel_run(run_id: str):
-    """Cancel an active run. Returns 404 if the run is not found or already finished."""
+    """Cancel an active run on whichever replica executes it.
+
+    Returns {"status": "cancelled"} when it ran here, {"status": "cancel_requested"}
+    when another replica owns it (it stops within one lease heartbeat), and 404 if
+    no live run has this id.
+    """
     engine = _get_engine()
-    if not engine.cancel_run(run_id):
+    status = await engine.request_cancel(run_id)
+    if status is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found or already finished")
-    return {"status": "cancelled"}
+    return {"status": status}
+
+
+@router.post("/runs/{run_id}/resume", response_model=RunResponse)
+async def resume_run(run_id: str):
+    """Resume an interrupted run from its session log (same run_id, same stream URL).
+
+    404 if the run does not exist; 409 if it is still running or cannot be resumed
+    (no session log, or it already finished).
+    """
+    _require_run(run_id)
+    engine = _get_engine()
+    try:
+        await engine.schedule_resume(run_id)
+    except (RunAlreadyActiveError, RunNotResumableError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    for _ in range(20):
+        emitter = stream_registry.get(run_id)
+        if emitter is not None and not emitter.done:
+            break
+        await asyncio.sleep(0.05)
+
+    return RunResponse(run_id=run_id, status="resumed")
 
 
 @router.post("/runs/{run_id}/followup", response_model=RunResponse)
@@ -223,6 +261,7 @@ async def _run_info(d: Path) -> RunInfo:
         has_results=(d / "results.jsonl").exists(),
         has_report=(d / "report.md").exists(),
         has_artifacts=(d / "artifacts.jsonl").exists(),
+        has_session=(d / SESSION_FILE).exists(),
         is_streaming=emitter is not None and not emitter.done,
         is_awaiting_input=ctx.is_awaiting_input if ctx else False,
         task=meta.task if meta else None,
@@ -266,6 +305,23 @@ async def get_run_events(run_id: str):
         if line.strip()
     ]
     return RunEventsResponse(run_id=run_id, events=events)
+
+
+@router.get("/runs/{run_id}/session", response_model=RunSessionResponse)
+async def get_run_session(
+    run_id: str,
+    after_seq: int = 0,
+    type: list[SessionEventType] | None = Query(default=None),
+    invocation_id: str | None = None,
+):
+    """Read a slice of the run's durable session log (works while the run is live)."""
+    d = _require_run(run_id)
+    if not (d / SESSION_FILE).exists():
+        raise HTTPException(status_code=404, detail="No session log for this run")
+    events = filter_events(
+        read_session(run_id), after_seq=after_seq, types=type, invocation_id=invocation_id
+    )
+    return RunSessionResponse(run_id=run_id, events=events)
 
 
 @router.get("/runs/{run_id}/results", response_model=RunResultsResponse)

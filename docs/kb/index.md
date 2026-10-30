@@ -1,7 +1,7 @@
 ---
 title: AgentFlow Knowledge Base — Index
 last_updated: 2026-10-29
-last_verified_sha: 4aedd12
+last_verified_sha: 8214412
 sources:
   - src/agentflow/
   - manifests/
@@ -30,13 +30,19 @@ the doc(s) relevant to your change, before exploring source.
 - [subsystems/redis-backend](subsystems/redis-backend.md) — the optional Redis state
   backend: bus, context store, and SSE registry variants selected by
   `STATE_BACKEND=redis`, plus cross-replica HITL and streaming.
+- [subsystems/session-log](subsystems/session-log.md) — the always-on, append-only
+  `session.jsonl` per run (inputs, plan, results, cost, HITL, full agent transcripts),
+  its slice API and `replay()` into a `RunSnapshot`.
+- [subsystems/resume-and-leases](subsystems/resume-and-leases.md) — resuming
+  interrupted runs from their session log (`wake()`, `POST /runs/{id}/resume`,
+  reconciliation) and the Redis per-run leases behind multi-replica resume and cancel.
 
 ## On-demand skills (invoke instead of reading)
 
 These are available as `/skill-name` — they inject live context when needed rather
 than being loaded every session:
 
-- `/how-to` — step-by-step recipes: add an agent, add a tool, attach a skill, cancel/followup/message API, named workspaces
+- `/how-to` — step-by-step recipes: add an agent, add a tool, attach a skill, cancel/resume/followup/message API, named workspaces
 - `/update-kb` — reconcile `docs/kb/` after an implementation task
 - `/session-wrap` — end-of-session KB review and session log entry
 

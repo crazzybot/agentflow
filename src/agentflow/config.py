@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     enable_prompt_caching: bool = True
     capture_events: bool = False
     capture_results: bool = False
+    # Resume runs interrupted by a restart automatically at startup (from their
+    # session logs). Off by default: resuming spends API budget unprompted.
+    # Interrupted runs can always be resumed explicitly via POST /api/runs/{id}/resume.
+    resume_interrupted_runs: bool = False
 
     # Pricing (USD per 1M tokens) — defaults match claude-sonnet-5's standard rate
     # ($2/$10; the launch "introductory" rate became permanent on 2026-09-01).
@@ -111,6 +115,10 @@ class Settings(BaseSettings):
     redis_key_ttl: int = 86_400
     # Maximum connections in the shared Redis pool.
     redis_max_connections: int = 50
+    # Per-run ownership lease (Redis backend): the owning replica renews it every
+    # ttl/3 seconds. A crashed owner's runs become reconcilable/resumable once it
+    # lapses; a cross-replica cancel takes effect within ~ttl/3 seconds.
+    run_lease_ttl_s: float = 15.0
 
     def resolve_model_tier(self, tier: str | None) -> str | None:
         """Resolve a named cost tier to a model id, or None if *tier* is unset/unrecognised.

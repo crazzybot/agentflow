@@ -111,6 +111,16 @@ class RunContext:
             return True
         return self._total_cost_usd < self.budget_usd
 
+    async def restore(self, results: dict[str, AgentResult], total_cost_usd: float) -> None:
+        """Seed a resumed run with state replayed from its session log.
+
+        Sets rather than adds, and skips results.jsonl: these results were already
+        recorded when the run first produced them.
+        """
+        async with self._lock:
+            self._results.update(results)
+        self._total_cost_usd = total_cost_usd
+
     async def store_result(self, subtask_id: str, result: AgentResult) -> None:
         async with self._lock:
             self._results[subtask_id] = result
