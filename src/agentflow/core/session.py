@@ -234,6 +234,9 @@ class Invocation:
     messages: list[dict[str, Any]] = field(default_factory=list)
     finished: bool = False
     status: str | None = None
+    # Sum of the per-call cost_usd on this invocation's live assistant turns (the
+    # inherited prefix a resumed invocation re-logs carries none).
+    cost_usd: float = 0.0
 
 
 @dataclass
@@ -268,6 +271,7 @@ class RunSnapshot:
 def replay(run_id: str, events: list[SessionEvent]) -> RunSnapshot:
     """Fold a session log into the run state it describes."""
     snap = RunSnapshot(run_id=run_id)
+    orphaned: set[str] = set()  # invocations cut off by an interruption, already costed
     for e in events:
         snap.last_seq = e.seq
         d = e.data
@@ -305,6 +309,7 @@ def replay(run_id: str, events: list[SessionEvent]) -> RunSnapshot:
                 inv = snap.invocations.get(e.invocation_id or "")
                 if inv is not None:
                     inv.messages.append(d["message"])
+                    inv.cost_usd += d.get("cost_usd", 0.0)
             case SessionEventType.message_discarded:
                 inv = snap.invocations.get(e.invocation_id or "")
                 if inv is not None and inv.messages:
@@ -316,6 +321,13 @@ def replay(run_id: str, events: list[SessionEvent]) -> RunSnapshot:
                     inv.status = d.get("status")
             case SessionEventType.run_interrupted:
                 snap.interrupted = True
+                # An invocation open at an interruption never finishes (a resume
+                # continues its transcript in a new invocation), so its calls never
+                # reach cost_added. Count what it spent here instead.
+                for inv in snap.invocations.values():
+                    if not inv.finished and inv.invocation_id not in orphaned:
+                        orphaned.add(inv.invocation_id)
+                        snap.total_cost_usd += inv.cost_usd
             case SessionEventType.run_resumed:
                 snap.interrupted = False
                 snap.status = None

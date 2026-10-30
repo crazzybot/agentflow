@@ -308,8 +308,8 @@ def _truncation_notice(max_tokens: int) -> str:
         f"Your previous response hit the {max_tokens}-token output limit and was cut off, "
         "so it was discarded and none of its tool calls ran. Produce less output per turn: "
         "split large files across several file_write calls (create the file with the first "
-        "section, then mode='append' the rest), prefer targeted edits over full rewrites, "
-        "and keep your reasoning brief."
+        "section, then mode='append' the rest), prefer targeted edits (mode='replace_text') "
+        "over full rewrites, and keep your reasoning brief."
     )
 
 
@@ -427,21 +427,21 @@ class Agent:
             # 3. Build a 2-block system prompt list:
             #    Block 0 — static content (persona + full skill docs) → cache_control marks
             #              this for caching; Anthropic serves it from cache on every turn.
-            #    Block 1 — current date/time (no cache_control) → always processed fresh
-            #              so the model never assumes a stale date.
+            #    Block 1 — current date (no cache_control) so the model never assumes a
+            #              stale date. Date only, not time: this block precedes the
+            #              messages in the cache prefix, so a value that changed between
+            #              a partial invocation and its continuation would invalidate the
+            #              whole cached conversation and re-write it at the cache-write rate.
             static_content = self.manifest.system_prompt
             if self.manifest.skills:
                 static_content += skill_loader.full_content(self.manifest.skills)
 
             utc_now = datetime.now(timezone.utc)
             local_now = utc_now.astimezone()
-            now_str = (
-                f"{utc_now.strftime('%Y-%m-%d %H:%M UTC')} "
-                f"/ {local_now.strftime('%Y-%m-%d %H:%M %Z')}"
-            )
+            today_str = f"{utc_now.strftime('%Y-%m-%d')} UTC / {local_now.strftime('%Y-%m-%d %Z')}"
             system_blocks = [
                 {"type": "text", "text": static_content, "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": f"Current date and time: {now_str}"},
+                {"type": "text", "text": f"Current date: {today_str}"},
             ]
 
             # 4. Run the agentic loop
@@ -536,7 +536,11 @@ class Agent:
         all_files_written: list[str] = []
 
         task_budget = envelope.constraints.budget_usd
-        max_iterations = self.manifest.max_iterations or settings.agent_max_iterations
+        max_iterations = (
+            envelope.constraints.max_iterations
+            or self.manifest.max_iterations
+            or settings.agent_max_iterations
+        )
         last_input_tokens = 0
         iteration = 0
         # Fresh per invocation: tool_limits budgets are per task attempt.
@@ -547,7 +551,10 @@ class Agent:
         #   2. manifest — the agent's own declared default.
         #   3. settings — the global fallback.
         # model_tier is a *soft* knob: manifest.model, an explicit raw model id, always
-        # wins over both tier sources since it represents a hard ops-level pin.
+        # wins over both tier sources since it represents a hard ops-level pin. A raw
+        # envelope.constraints.model (e.g. a campaign's session model) beats the tiers
+        # but not that pin. envelope.constraints.max_iterations likewise beats the
+        # manifest's own limit.
         thinking_effort = (
             envelope.constraints.thinking_effort
             or self.manifest.thinking_effort
@@ -560,6 +567,7 @@ class Agent:
         # below use the rate for the model actually being called.
         resolved_model = (
             self.manifest.model
+            or envelope.constraints.model
             or settings.resolve_model_tier(envelope.constraints.model_tier)
             or settings.resolve_model_tier(self.manifest.model_tier)
             or settings.agent_model
@@ -728,13 +736,14 @@ class Agent:
             total_cache_read_tokens += call_cache_read
             # Re-price with this call's prompt size (models with long-prompt tiers).
             model_input_price, model_output_price, model_thinking_price, model_cache_write_price, model_cache_read_price = _pricing_for(resolved_model, last_prompt_tokens)
-            total_cost_usd += (
+            call_cost_usd = (
                 u.input_tokens * model_input_price
                 + call_regular_output * model_output_price
                 + call_thinking * model_thinking_price
                 + call_cache_write * model_cache_write_price
                 + call_cache_read * model_cache_read_price
             ) / 1_000_000
+            total_cost_usd += call_cost_usd
             iteration += 1
 
             # Store the assistant response as plain dicts so the history can be
@@ -750,6 +759,9 @@ class Agent:
                     "cache_creation_input_tokens": call_cache_write,
                     "cache_read_input_tokens": call_cache_read,
                 },
+                # Per-call spend, so replay() can still count an invocation that a
+                # restart interrupted before agent_finished/cost_added were written.
+                cost_usd=call_cost_usd,
             )
             last_response_content = list(response.content)
 

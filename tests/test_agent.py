@@ -1163,3 +1163,56 @@ async def test_tool_turns_counts_executed_tool_turns():
     result = await agent.run(_make_envelope(), MagicMock())
 
     assert result.tool_turns == 1
+
+
+# ---------------------------------------------------------------------------
+# Raw model / iteration-limit overrides (campaign sessions) and cache stability
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_envelope_model_beats_tiers_but_not_a_manifest_pin():
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+    envelope = _make_envelope(model_tier="premium")
+    envelope.constraints.model = "claude-sonnet-5-5"
+
+    await Agent(_make_manifest(model_tier="economy"), mock_client).run(envelope, MagicMock())
+    assert mock_client.messages.create.call_args[1]["model"] == "claude-sonnet-5-5"
+
+    await Agent(_make_manifest(model="claude-pinned-model"), mock_client).run(envelope, MagicMock())
+    assert mock_client.messages.create.call_args[1]["model"] == "claude-pinned-model"
+
+
+@pytest.mark.asyncio
+async def test_envelope_max_iterations_overrides_the_manifest_limit(tmp_path, monkeypatch):
+    from anthropic.types import ToolUseBlock
+
+    monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path))
+    response = _mock_response(stop_reason="tool_use")
+    response.content = [ToolUseBlock(type="tool_use", id="toolu_1", name="file_read", input={"path": "x"})]
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=response)
+    manifest = _make_manifest(tools=["file_read"])
+    manifest.max_iterations = 5
+    envelope = _make_envelope()
+    envelope.constraints.max_iterations = 2
+
+    result = await Agent(manifest, mock_client).run(envelope, MagicMock())
+
+    assert result.status == AgentStatus.partial
+    assert mock_client.messages.create.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_carries_the_date_but_no_time_of_day():
+    """The block before the messages in the cache prefix must not change between a
+    partial invocation and its continuation, or the cached conversation is re-written."""
+    import re
+
+    mock_client = MagicMock()
+    mock_client.messages.create = AsyncMock(return_value=_mock_response())
+    await Agent(_make_manifest(), mock_client).run(_make_envelope(), MagicMock())
+
+    date_block = mock_client.messages.create.call_args[1]["system"][1]["text"]
+    assert date_block.startswith("Current date: ")
+    assert not re.search(r"\d{2}:\d{2}", date_block)

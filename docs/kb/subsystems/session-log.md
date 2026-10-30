@@ -1,7 +1,7 @@
 ---
 title: Session Log (Durable Run Record)
 last_updated: 2026-10-30
-last_verified_sha: 2c73ec5
+last_verified_sha: 629fee4
 sources:
   - src/agentflow/core/session.py
   - src/agentflow/orchestrator/engine.py
@@ -48,7 +48,7 @@ How it differs from the other per-run files:
 | `cost_added` | `_add_cost()` | `cost_usd`, `task_id` |
 | `human_input_requested` / `_received` | `_request_budget_increase()`, agent `ask_user` | request / response, new `budget_usd` |
 | `agent_started` | `Agent.run()` | `task_id`, `resumed` |
-| `message_appended` | `_agentic_loop()` | `message`; assistant turns add `model`, `stop_reason`, `usage`; injected user messages add `injected`; max_tokens retry notices add `truncation_notice` |
+| `message_appended` | `_agentic_loop()` | `message`; assistant turns add `model`, `stop_reason`, `usage`, `cost_usd` (that call's spend); injected user messages add `injected`; max_tokens retry notices add `truncation_notice` |
 | `message_discarded` | `_agentic_loop()` on `max_tokens` | `reason`. Drops the invocation's last message. |
 | `context_snipped` | `_agentic_loop()` | `boundary`, `snipped`, `freed_chars`, `prompt_tokens`. Affects only the model's view; transcripts in the log stay full ([context-view](context-view.md)). |
 | `agent_finished` | `Agent.run()` (also on exceptions) | `status`, `cost_usd`, tokens, `peak_prompt_tokens`, `duration_ms`, `error` |
@@ -67,7 +67,13 @@ continuations. Link a transcript to its subtask through
 **Cost parity.** `cost_added` is written exactly where `ctx.add_result_cost()` was
 called, so replayed cost matches `ctx.total_cost_usd()`. That means planner and
 decomposer spend is **not** included, which matches today's `RunContext`. Their cost
-is still visible on their own `agent_finished` events.
+is still visible on their own `agent_finished` events. One addition: an invocation
+still open at a `run_interrupted` never finishes (a resume continues its transcript in
+a new invocation), so its calls never reach `cost_added`. `replay()` adds that
+invocation's summed per-call `cost_usd` (`Invocation.cost_usd`) to `total_cost_usd` at
+the interruption, once. A resumed invocation's re-logged prefix carries no `cost_usd`,
+so nothing is double-counted. Logs written before `cost_usd` existed can't be costed
+this way.
 
 Campaigns also keep a session log of their own, at
 `<runs_dir>/campaigns/<id>/session.jsonl` (`RunSession(path=…)`). It holds the feature

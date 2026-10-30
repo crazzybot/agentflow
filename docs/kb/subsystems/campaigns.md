@@ -1,7 +1,7 @@
 ---
 title: Campaigns (Long-Horizon Sessions)
 last_updated: 2026-10-30
-last_verified_sha: 2c73ec5
+last_verified_sha: 629fee4
 sources:
   - src/agentflow/orchestrator/campaign.py
   - src/agentflow/orchestrator/engine.py
@@ -13,7 +13,8 @@ status: current
 
 # Campaigns (Long-Horizon Sessions)
 
-> **Why it is built this way:** [ADR-008](../../adr/008-campaign-ledger-in-code.md).
+> **Why it is built this way:** [ADR-008](../../adr/008-campaign-ledger-in-code.md);
+> session cost controls: [ADR-011](../../adr/011-campaign-session-cost-controls.md).
 
 A campaign builds something too large for one run as a **sequence of runs
 ("sessions") with fresh contexts**, held together by a feature ledger. It follows
@@ -87,7 +88,15 @@ workspace lock.
    - **Run the session.** `engine.run(run_id, …, workspace=campaign.workspace,
      budget_usd=_session_budget(), plan=…)` with a **preset plan**: one subtask
      `SESSION_SUBTASK_ID = "feature"` for `agent_id`, the instruction from
-     `_session_instruction()`, and `acceptance_criteria = feature.checks`.
+     `_session_instruction()`, and `acceptance_criteria = feature.checks`. The subtask
+     is built by `_session_subtask()`, which also sets the session's cost controls:
+     `max_iterations = CAMPAIGN_SESSION_MAX_ITERATIONS` (40), and a model and thinking
+     effort chosen by the target's status. A `pending` feature (first attempt) runs on
+     `CAMPAIGN_SESSION_MODEL` (Sonnet 5.5) at `CAMPAIGN_SESSION_THINKING_EFFORT`
+     (`medium`). A `failing` one (failed a session, regressed, or retried by the operator)
+     escalates to `CAMPAIGN_ESCALATION_MODEL` (`""` = the agent's own default, Opus 5.5)
+     at `CAMPAIGN_ESCALATION_THINKING_EFFORT` (`high`). These reach the agent through
+     `Subtask.model`/`.thinking_effort`/`.max_iterations` → `TaskConstraints`.
    - **Absorb** (`_absorb`). It reads the run's **session log** (`replay`), not memory.
      `spent_usd += snapshot.total_cost_usd` (agent and verifier costs; decomposer spend
      isn't counted, as in runs), and `pending_*` is cleared.
@@ -103,11 +112,18 @@ workspace lock.
 - ledger progress (`n/m` and every feature's status);
 - the most recent session's notes (`<previous_session_notes>`), standing in for the
   pattern's progress file;
+- a workspace map (`<workspace_files>`): `_workspace_map()` lists the workspace's files,
+  sorted, skipping `.git`/`node_modules`/`.venv`/caches/build output and capped at
+  `CAMPAIGN_WORKSPACE_MAP_MAX_FILES` (300), so a session doesn't spend its first turns
+  listing directories;
 - the target feature, with its checks spelled out;
 - for a retry, the attempt count and that feature's last notes;
 - operator guidance from a retry, as `<operator_guidance>`, until the feature passes;
-- the session rules: orient first, this feature only, keep passing features working,
-  end with a summary for the next session.
+- the session rules: orient briefly (README/notes, then only the files this feature
+  needs; prefer documents earlier sessions wrote over re-surveying original sources),
+  edit existing files with `file_write` `mode='replace_text'` rather than rewriting them,
+  this feature only, keep passing features working, end with a summary for the next
+  session.
 
 Note that a session's in-run repair rounds (`VERIFICATION_MAX_REPAIRS`) happen
 *inside* one session before it is absorbed.
@@ -116,7 +132,7 @@ Note that a session's in-run repair rounds (`VERIFICATION_MAX_REPAIRS`) happen
 
 | Call | Behaviour |
 | --- | --- |
-| `POST /api/campaigns` | `create()` validates `agent_id` (unknown → 422) and the workspace name, saves, and `start()`s a background `_drive` task. |
+| `POST /api/campaigns` | `create()` validates `agent_id` (unknown → 422) and the workspace name, saves, and `start()`s a background `_drive` task. A request without `session_budget_usd` gets `CAMPAIGN_DEFAULT_SESSION_BUDGET_USD` ($3); an explicit `null` means no per-session cap. A session that reaches its budget between continuations accepts its partial result without asking a human (the engine skips HITL for runs with a `campaign_id`). |
 | `GET /api/campaigns[/{id}]` | `CampaignView`: campaign, features, passing/total. |
 | `POST …/pause` | Sets `pause_requested`; the campaign stops **after** the current session (409 if not running here). Cancel the session's run to stop sooner. |
 | `POST …/resume` | `start()` again; 409 if already active or `completed`/`failed`. A `stopped` campaign (no pending session) is first checked against `_stop_reasons`, and refused with **every** blocking condition and its fix in one message, rather than starting a loop that would stop again at once. |

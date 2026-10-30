@@ -410,3 +410,27 @@ def test_stdio_env_literal_values_override_passthrough(monkeypatch):
     )
 
     assert _stdio_env(config) == {"REGION": "from-manifest"}
+
+
+@pytest.mark.asyncio
+async def test_file_write_replace_text_edits_one_exact_unique_snippet(tmp_path, monkeypatch):
+    monkeypatch.setattr("agentflow.config.settings.workspace_dir", str(tmp_path))
+    await tool_registry.execute("file_write", {"path": "m.py", "content": "a = 1\nb = (1)\nc = 1\n"})
+
+    # Regex metacharacters in old_text are literal.
+    result = await tool_registry.execute(
+        "file_write", {"path": "m.py", "mode": "replace_text", "old_text": "b = (1)", "content": "b = 2"}
+    )
+    assert result.startswith("Replaced 1 occurrence")
+    assert (tmp_path / "m.py").read_text() == "a = 1\nb = 2\nc = 1\n"
+
+    ambiguous = await tool_registry.execute(
+        "file_write", {"path": "m.py", "mode": "replace_text", "old_text": " = 1", "content": " = 3"}
+    )
+    missing = await tool_registry.execute(
+        "file_write", {"path": "m.py", "mode": "replace_text", "old_text": "zzz", "content": "y"}
+    )
+    # Failures start with "Error" so the agent does not count the path as written.
+    assert ambiguous.startswith("Error: old_text matches 2 places")
+    assert missing.startswith("Error: old_text not found")
+    assert (tmp_path / "m.py").read_text() == "a = 1\nb = 2\nc = 1\n"

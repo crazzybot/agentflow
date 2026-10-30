@@ -1,7 +1,7 @@
 ---
 title: Concepts
 last_updated: 2026-10-30
-last_verified_sha: 2c73ec5
+last_verified_sha: 629fee4
 sources:
   - src/agentflow/core/models.py
   - src/agentflow/core/workspace.py
@@ -113,8 +113,10 @@ Long-horizon work: a **feature ledger** is planned once, then built over many **
 Each session is an ordinary run that implements one feature with a fresh context, and a
 feature counts as done only when the verifier confirms it. Agents can't edit the ledger.
 An operator can **retry** a feature that keeps failing, with guidance for its next
-session, and can change the session and budget limits.
-[ADR-008](../adr/008-campaign-ledger-in-code.md)
+session, and can change the session and budget limits. A feature's first session runs
+on a cheaper model, and only a feature that has failed moves up to a stronger one.
+[ADR-008](../adr/008-campaign-ledger-in-code.md),
+[ADR-011](../adr/011-campaign-session-cost-controls.md)
 
 ### Worker
 A separate process (`agentflow worker`) that executes agent invocations queued by the API

@@ -1,7 +1,7 @@
 ---
 title: Resuming Runs & Run Leases
 last_updated: 2026-10-30
-last_verified_sha: 2c73ec5
+last_verified_sha: 629fee4
 sources:
   - src/agentflow/orchestrator/resume.py
   - src/agentflow/orchestrator/engine.py
@@ -78,9 +78,11 @@ left it. If only the opening instruction survives, the subtask is dispatched fre
 from the subtask's (a fallback was running). A subtask with a transcript skips
 decomposition: its transcript already contains any decomposer context.
 
+The crashed invocation's spend is charged: `replay()` counts its logged per-call
+`cost_usd` at the `run_interrupted` event (see [session-log](session-log.md), cost
+parity), and the resumed run's restored cost includes it.
+
 **Known gaps:**
-- The crashed invocation's spend is not charged: `cost_added` is only written when an
-  invocation ends.
 - Single-subtask decompositions are not logged as micro-plans. Their context is
   already in the transcript.
 - Runs whose logs predate `subtask_finished` re-run every subtask without a stored

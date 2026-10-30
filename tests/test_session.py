@@ -330,3 +330,25 @@ async def test_cancelled_run_records_cancelled_status(engine):
         await task
 
     assert replay("r", read_session("r")).status == "cancelled"
+
+
+async def test_replay_charges_an_interrupted_invocation_once(runs_dir):
+    """A restart leaves an invocation without agent_finished/cost_added; its logged
+    per-call spend is counted at the interruption. A resume's re-logged prefix
+    carries no cost, and a second interruption does not count it again."""
+    s = RunSession("r")
+    await s.append(T.agent_started, agent_id="X", invocation_id="i1", data={"task_id": "t1"})
+    await s.append(T.message_appended, invocation_id="i1", data={"message": {"role": "user", "content": "go"}})
+    await s.append(T.message_appended, invocation_id="i1",
+                   data={"message": {"role": "assistant", "content": "a"}, "usage": {}, "cost_usd": 0.3})
+    await s.append(T.run_interrupted, data={"reason": "service restarted"})
+    await s.append(T.run_resumed, data={})
+    await s.append(T.agent_started, agent_id="X", invocation_id="i2", data={"task_id": "t1", "resumed": True})
+    await s.append(T.message_appended, invocation_id="i2", data={"message": {"role": "user", "content": "go"}})
+    await s.append(T.message_appended, invocation_id="i2", data={"message": {"role": "assistant", "content": "a"}})
+    await s.append(T.run_interrupted, data={"reason": "service restarted"})
+
+    snap = replay("r", s.events())
+
+    assert snap.invocations["i1"].cost_usd == pytest.approx(0.3)
+    assert snap.total_cost_usd == pytest.approx(0.3)

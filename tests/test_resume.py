@@ -254,8 +254,12 @@ async def test_wake_skips_finished_work_and_continues_the_interrupted_transcript
     assert snap.finished == {"s1": True, "s2": True}
     ctx = store.get("r")
     assert set((await ctx.all_results())) == {"s1", "s2"}
-    # Restored cost of s1 plus the resumed s2 (the crashed invocation's spend is not charged).
-    assert ctx.total_cost_usd() == pytest.approx(0.25 + snap.results["s2"].cost_usd)
+    # Restored cost of s1, the crashed invocation's pre-crash call (counted at the
+    # interruption, since it never reached cost_added), and the resumed s2.
+    crashed = [inv for inv in snap.invocations.values() if not inv.finished]
+    assert len(crashed) == 1 and crashed[0].cost_usd > 0
+    assert ctx.total_cost_usd() == pytest.approx(0.25 + crashed[0].cost_usd + snap.results["s2"].cost_usd)
+    assert snap.total_cost_usd == pytest.approx(ctx.total_cost_usd())
     assert ctx.budget_usd == 5.0
 
 
