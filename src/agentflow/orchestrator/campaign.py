@@ -42,6 +42,7 @@ from agentflow.core.models import (
     AgentResult,
     AgentStatus,
     Campaign,
+    CampaignLimitsUpdate,
     CampaignRequest,
     CampaignStatus,
     CampaignView,
@@ -121,7 +122,12 @@ class CampaignStore:
         path = self.dir(campaign_id) / "features.json"
         if not path.exists():
             return []
-        return [Feature.model_validate(f) for f in json.loads(path.read_text(encoding="utf-8"))]
+        features = [Feature.model_validate(f) for f in json.loads(path.read_text(encoding="utf-8"))]
+        for f in features:
+            # Ledgers written before per-feature session history only know the last one.
+            if not f.sessions and f.last_run_id:
+                f.sessions = [f.last_run_id]
+        return features
 
     def save_features(self, campaign_id: str, features: list[Feature]) -> None:
         existing = {f.id: f for f in self.features(campaign_id)}
@@ -272,6 +278,10 @@ def _session_instruction(campaign: Campaign, features: list[Feature], target: Fe
         f"\nThis feature has been attempted {target.attempts} time(s) without passing verification. "
         f"Last notes for it:\n{target.notes}\n" if target.attempts and target.notes else ""
     )
+    guidance = (
+        f"\n<operator_guidance>\nA human reviewing earlier attempts at this feature says:\n"
+        f"{target.guidance}\n</operator_guidance>\n" if target.guidance else ""
+    )
     return (
         "You are one session of a long-running project. You start with no memory of earlier "
         "sessions; the workspace and the notes below are all that carries over.\n\n"
@@ -281,7 +291,7 @@ def _session_instruction(campaign: Campaign, features: list[Feature], target: Fe
         f"{notes_block}\n"
         f'<this_session feature="{target.id}">\n{target.title}\n\n{target.description}\n\n'
         f"An independent reviewer will check, by reading the workspace:\n{checks}\n</this_session>\n"
-        f"{retry}\n"
+        f"{retry}{guidance}\n"
         "Rules:\n"
         "- Orient first: list the workspace and read its README/notes before changing anything.\n"
         "- Implement ONLY this feature, completely. Keep every passing feature working.\n"
@@ -330,9 +340,64 @@ class CampaignManager:
         campaign = self.store.load(campaign_id)
         if campaign.status in _TERMINAL and campaign.status != CampaignStatus.stopped:
             raise CampaignStateError(f"Campaign {campaign_id!r} is {campaign.status.value}")
+        features = self.store.features(campaign_id)
+        if features and not campaign.pending_session:
+            # Without this a resume at a limit starts the loop, which stops again at
+            # once — the "Resume does nothing" symptom. Say everything to change instead.
+            reasons = self._stop_reasons(campaign, features)
+            if reasons:
+                problems = "; ".join(r for _, r in reasons)
+                fixes = " ".join(h for _, r in reasons if (h := self._unblock_hint(r)))
+                raise CampaignStateError(f"Cannot resume: {problems}. {fixes}".strip())
         task = asyncio.create_task(self._drive(campaign_id))
         self._tasks[campaign_id] = task
         return task
+
+    def update_limits(self, campaign_id: str, update: CampaignLimitsUpdate) -> Campaign:
+        """Change max_sessions / budgets. Only fields present in the request change;
+        an explicit null removes a budget. Safe while the campaign runs: the loop
+        re-reads the campaign before every decision."""
+        campaign = self.store.load(campaign_id)
+        if campaign.status in (CampaignStatus.completed, CampaignStatus.failed):
+            raise CampaignStateError(f"Campaign {campaign_id!r} is {campaign.status.value}; limits no longer apply")
+        for field in update.model_fields_set:
+            value = getattr(update, field)
+            if field == "max_sessions" and value is None:
+                raise CampaignStateError("max_sessions cannot be removed, only changed")
+            setattr(campaign, field, value)
+        self.store.save(campaign)
+        logger.info("[campaign %s] Limits updated: %s", campaign_id,
+                    {f: getattr(campaign, f) for f in update.model_fields_set})
+        return campaign
+
+    def retry_feature(self, campaign_id: str, feature_id: str, guidance: str = "") -> Feature:
+        """Give a blocked or failing feature fresh attempts, optionally with operator
+        guidance for its next session. Its definition and checks stay fixed, and only
+        the verifier can still mark it passing (ADR-008)."""
+        self.store.load(campaign_id)  # 404 for an unknown campaign
+        features = self.store.features(campaign_id)
+        feature = next((f for f in features if f.id == feature_id), None)
+        if feature is None:
+            raise CampaignNotFoundError(f"Feature {feature_id!r} not found in campaign {campaign_id!r}")
+        if feature.status not in (FeatureStatus.blocked, FeatureStatus.failing):
+            raise CampaignStateError(f"Feature {feature_id} is {feature.status.value}; only blocked or failing features can be retried")
+        feature.status, feature.attempts = FeatureStatus.failing, 0  # failing features go first
+        if guidance.strip():
+            feature.guidance = guidance.strip()
+        self.store.save_features(campaign_id, features)
+        logger.info("[campaign %s] %s reset for retry%s", campaign_id, feature_id,
+                    " with operator guidance" if feature.guidance else "")
+        return feature
+
+    @staticmethod
+    def _unblock_hint(reason: str) -> str:
+        if reason.startswith("reached max_sessions"):
+            return "Raise max_sessions, then resume."
+        if reason.startswith("budget"):
+            return "Raise or remove the budget, then resume."
+        if reason.startswith("only blocked"):
+            return "Retry a blocked feature (optionally with guidance), then resume."
+        return ""
 
     def request_pause(self, campaign_id: str) -> Campaign:
         """Graceful: the campaign pauses after its current session finishes."""
@@ -418,9 +483,11 @@ class CampaignManager:
             if campaign.pause_requested:
                 self._set_status(campaign_id, CampaignStatus.paused, "paused on request")
                 return
-            stop = self._stop(campaign, features)
-            if stop is not None:
-                self._set_status(campaign_id, *stop)
+            reasons = self._stop_reasons(campaign, features)
+            if reasons:
+                problems = "; ".join(r for _, r in reasons)
+                fixes = " ".join(h for _, r in reasons if (h := self._unblock_hint(r)))
+                self._set_status(campaign_id, reasons[0][0], f"{problems}. {fixes}" if fixes else problems)
                 return
 
             await self._check_regressions(campaign, features, emitter)
@@ -434,6 +501,11 @@ class CampaignManager:
             campaign.sessions.append(run_id)
             campaign.pending_session, campaign.pending_feature = run_id, target.id
             self.store.save(campaign)  # before the run: a restart must know about it
+            # Recorded on the feature too, so the ledger shows the session in progress.
+            features = self.store.features(campaign_id)
+            target = next(f for f in features if f.id == target.id)
+            target.sessions.append(run_id)
+            self.store.save_features(campaign_id, features)
 
             plan = ExecutionPlan(run_id=run_id, subtasks=[Subtask(
                 id=SESSION_SUBTASK_ID,
@@ -482,12 +554,15 @@ class CampaignManager:
         result = snap.results.get(SESSION_SUBTASK_ID)
         feature = next(f for f in features if f.id == feature_id)
         feature.last_run_id = run_id
+        if run_id not in feature.sessions:
+            feature.sessions.append(run_id)
         feature.last_checked_session = session_no
         if result is not None and result.output.text:
             feature.notes = result.output.text[:2_000]
         verification = result.verification if result is not None else None
         if result is not None and result.status == AgentStatus.success and verification and verification.passed is True:
             feature.status, feature.evidence = FeatureStatus.passing, verification.checks
+            feature.guidance = ""  # it served its purpose
         else:
             # Unlike a single run, an inconclusive verdict does not count as a pass here:
             # the ledger only records what was independently confirmed.
@@ -555,16 +630,28 @@ class CampaignManager:
 
     @staticmethod
     def _stop(campaign: Campaign, features: list[Feature]) -> tuple[CampaignStatus, str] | None:
+        reasons = CampaignManager._stop_reasons(campaign, features)
+        return reasons[0] if reasons else None
+
+    @staticmethod
+    def _stop_reasons(campaign: Campaign, features: list[Feature]) -> list[tuple[CampaignStatus, str]]:
+        """Every condition that keeps the campaign from running another session.
+
+        Several can hold at once (a blocked feature *and* the session limit *and* the
+        budget); resume reports all of them so the operator fixes them in one go.
+        """
         if all(f.status == FeatureStatus.passing for f in features):
-            return CampaignStatus.completed, f"all {len(features)} features passing"
+            return [(CampaignStatus.completed, f"all {len(features)} features passing")]
+        reasons: list[tuple[CampaignStatus, str]] = []
         if CampaignManager._next_feature(features) is None:
             blocked = [f.id for f in features if f.status == FeatureStatus.blocked]
-            return CampaignStatus.stopped, f"only blocked features remain: {blocked}"
+            reasons.append((CampaignStatus.stopped, f"only blocked features remain: {blocked}"))
         if len(campaign.sessions) >= campaign.max_sessions:
-            return CampaignStatus.stopped, f"reached max_sessions ({campaign.max_sessions})"
+            reasons.append((CampaignStatus.stopped, f"reached max_sessions ({campaign.max_sessions})"))
         if campaign.budget_usd is not None and campaign.spent_usd >= campaign.budget_usd:
-            return CampaignStatus.stopped, f"budget ${campaign.budget_usd:.2f} spent (${campaign.spent_usd:.4f})"
-        return None
+            reasons.append((CampaignStatus.stopped,
+                            f"budget ${campaign.budget_usd:.2f} spent (${campaign.spent_usd:.4f})"))
+        return reasons
 
     @staticmethod
     def _session_budget(campaign: Campaign) -> float | None:

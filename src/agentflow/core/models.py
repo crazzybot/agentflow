@@ -419,6 +419,12 @@ class Feature(BaseModel):
     last_checked_session: int = 0  # session count when last verified (regression order)
     notes: str = ""                # the last session's own summary for this feature
     evidence: list[CriterionCheck] = Field(default_factory=list)
+    # Run ids of every session that worked on this feature, oldest first. The
+    # in-progress session is appended when it starts.
+    sessions: list[str] = Field(default_factory=list)
+    # Operator guidance for the next session(s) on this feature, set by a retry.
+    # Cleared once the feature passes.
+    guidance: str = ""
 
 
 class CampaignStatus(str, Enum):
@@ -456,6 +462,20 @@ class CampaignRequest(_WorkspaceRequest):
     max_sessions: int = Field(default=10, ge=1, le=500)
     budget_usd: float | None = Field(default=None, gt=0)
     session_budget_usd: float | None = Field(default=None, gt=0)
+
+
+class CampaignLimitsUpdate(BaseModel):
+    """PATCH body for a campaign's limits. Omitted fields stay unchanged; an explicit
+    null removes a budget limit."""
+    max_sessions: int | None = Field(default=None, ge=1, le=500)
+    budget_usd: float | None = Field(default=None, gt=0)
+    session_budget_usd: float | None = Field(default=None, gt=0)
+
+
+class FeatureRetryRequest(BaseModel):
+    """Give a failing or blocked feature fresh attempts, optionally with guidance
+    that the next session's instruction will carry."""
+    guidance: str = Field(default="", max_length=4000)
 
 
 class CampaignView(BaseModel):
