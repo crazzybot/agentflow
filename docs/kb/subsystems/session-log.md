@@ -1,7 +1,7 @@
 ---
 title: Session Log (Durable Run Record)
 last_updated: 2026-10-29
-last_verified_sha: 69d4830
+last_verified_sha: e260885
 sources:
   - src/agentflow/core/session.py
   - src/agentflow/orchestrator/engine.py
@@ -74,6 +74,12 @@ runs with ordinary logs, which the campaign reads back to update its ledger
 ([campaigns](campaigns.md)).
 
 ## Writing
+
+`_current_session` holds any `SessionWriter` (protocol in `core/session.py`): a
+`RunSession` in the server, or a worker's `RemoteSessionWriter`, which relays events to
+the server that owns the run so the log has a single writer
+([workers](workers.md)).
+
 
 - The engine arms the `_current_session` ContextVar in `run()`. Asyncio tasks copy the
   context, so the planner, subtasks, decomposer and KB dispatch all log without

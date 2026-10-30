@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-10-29
-last_verified_sha: 69d4830
+last_verified_sha: e260885
 sources:
   - src/agentflow/main.py
   - src/agentflow/api/routes.py
@@ -127,8 +127,9 @@ variants so multiple API replicas can share a run — see
    builds a `TaskEnvelope` (instruction + prior results/messages + budget/timeout
    constraints; the planner-only follow-up keys `prior_run_id`, `prior_task`,
    `prior_report` and `prior_subtask_outputs` are stripped before the envelope is built so agents only
-   receive user-supplied extra context), and calls `Agent.run(envelope, emitter,
-   ctx=ctx)`. It handles retries with exponential backoff, fallback-agent routing on
+   receive user-supplied extra context), and invokes the agent through `_invoke()`, which
+   is `Agent.run(envelope, emitter, ctx=ctx)` in this process, or a worker process when
+   `DISPATCH_MODE=workers` (see [subsystems/workers](subsystems/workers.md)). It handles retries with exponential backoff, fallback-agent routing on
    final failure (deregistering the primary agent and registering the fallback before
    its `run()` call), and partial-result continuation (`_continue_partial`,
    `_request_budget_increase`). HITL is triggered when the remaining USD budget is at or
@@ -514,10 +515,11 @@ variants so multiple API replicas can share a run — see
   - `_kb_dispatch_fn` (`tools/kb_dispatcher.py`) — a `ContextVar` holding the per-run
     KB dispatch callable; set to `None` when `KnowledgebaseAgent` is not configured.
 - **`core/bus.py` — `TaskBus`**: in-process asyncio-queue pair (dispatch/result) keyed
-  by `run_id`. Not currently on the request's critical path (dispatch is direct-call via
-  `_dispatch_subtask`), but the per-run channels are created/closed alongside the run. A
-  `_make_task_bus()` factory returns the Redis-backed `RedisTaskBus` (`bus_redis.py`)
-  when `STATE_BACKEND=redis`; both remain the future seam for a worker-pool split.
+  by `run_id`, with a Redis variant (`bus_redis.py`). Its per-run channels are still
+  created and closed alongside each run, but nothing sends work through it. The worker
+  split was built on `orchestrator/workers.py` instead, because that needs per-agent
+  queues, item correlation, liveness and cancellation (see
+  [subsystems/workers](subsystems/workers.md)).
 - **`core/context.py` — `RunContext` / `ContextStore`**: per-run shared state — stores
   each subtask's `AgentResult`, running cost totals and budget, the human-input
   request/response handshake (`request_human_input`/`await_human_input`/async
@@ -679,10 +681,8 @@ Within one run, components talk through three mechanisms:
   registered agent's queue; `pop_user_message(agent_id)` drains one message from that
   agent's own queue; `deregister_agent(agent_id)` removes the queue when the subtask
   finishes. This guarantees all parallel agents receive the same injected message.
-- **Events — `core/bus.py` / `orchestrator/stream.py`**: `TaskBus` gives each run an
-  asyncio dispatch/result queue pair (`create_run`/`close_run`), intended as the seam
-  for a future distributed worker model. Live progress that the HTTP layer actually
-  streams to clients flows through `StreamEmitter.emit()` instead — every planning
+- **Events — `orchestrator/stream.py`**: live progress that the HTTP layer streams to
+  clients flows through `StreamEmitter.emit()` — every planning
   step, dispatch, tool call, retry, and completion emits an `SSEEvent` that is both
   queued for `/api/runs/{run_id}/stream` and persisted to `events.jsonl` when
   `settings.capture_events` is set.

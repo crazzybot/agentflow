@@ -1,7 +1,7 @@
 ---
 title: Context View (Read-Time Snipping & Recall)
 last_updated: 2026-10-29
-last_verified_sha: 69d4830
+last_verified_sha: e260885
 sources:
   - src/agentflow/agents/context_view.py
   - src/agentflow/agents/agent.py

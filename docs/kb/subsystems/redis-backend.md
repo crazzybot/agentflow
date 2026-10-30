@@ -1,7 +1,7 @@
 ---
 title: Redis-Backed State Backend
 last_updated: 2026-10-29
-last_verified_sha: 69d4830
+last_verified_sha: e260885
 sources:
   - src/agentflow/config.py
   - src/agentflow/core/redis_client.py
@@ -94,8 +94,11 @@ All keys are `run:{run_id}:*` and carry `redis_key_ttl`:
 | `…:lease` | String | `RedisRunLeases` | Owner process id; `PX` = `RUN_LEASE_TTL_S`, renewed every TTL/3 (Lua compare-and-set). |
 | `…:lease` (campaigns) | String | `RedisRunLeases` | Same lease under `run:campaign-<id>:lease`: the replica driving a campaign. |
 | `…:cancel` | String | `RedisRunLeases` | Cross-replica cancel request, acted on by the owner's keep-alive; cleared on acquire/release. |
-| `…:dispatch` | List | `RedisTaskBus` | Orchestrator → worker (not yet wired). |
-| `…:result` | List | `RedisTaskBus` | Worker → orchestrator (not yet wired). |
+| `…:dispatch` / `…:result` | List | `RedisTaskBus` | Legacy per-run bus lists; unused. |
+
+Worker processes (`DISPATCH_MODE=workers`) use their own keys outside `run:*`:
+`agentflow:work:<agent_id>` queues and `work:<item>:{claimed,events,result,cancel}`
+(see [workers](workers.md)).
 
 ## SSE over Redis Streams
 
@@ -138,13 +141,14 @@ agent from the set and deletes its list. A message sent while no agents are
 registered (e.g. during the planning phase) is silently dropped — agents that
 start after the message was sent will not receive it.
 
-## The bus is not yet wired
+## The bus is not the worker seam
 
-`RedisTaskBus` ([`bus_redis.py`](../../../src/agentflow/core/bus_redis.py))
-implements the dispatch/result list operations, but — like the in-process
-`TaskBus` — it is not on the request's critical path today (the orchestrator
-drives agents directly via `_dispatch_subtask`). It exists so a future
-Celery/worker-pool split can happen without interface changes.
+`RedisTaskBus` ([`bus_redis.py`](../../../src/agentflow/core/bus_redis.py)) and the
+in-process `TaskBus` implement per-run dispatch/result lists that nothing uses. Remote
+execution lives in [workers](workers.md), which needs what the bus lacks: per-agent
+queues, item correlation, liveness and cancellation. This backend is what makes it work
+across processes, through SSE via Redis Streams, and user messages and HITL via
+`context_store.connect()`.
 
 ## Running with Redis
 
