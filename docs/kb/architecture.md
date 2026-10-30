@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
 last_updated: 2026-10-30
-last_verified_sha: ccf4a77
+last_verified_sha: 2c73ec5
 sources:
   - src/agentflow/main.py
   - src/agentflow/api/routes.py
@@ -136,7 +136,9 @@ variants so multiple API replicas can share a run — see
    below `agent_min_iteration_budget_usd` **or** when `AgentResult.hit_max_tokens` is
    True (because continuing with the same budget would compute the same `max_tokens` cap
    and hit the wall again). Iteration-limit partials with ample budget remaining continue
-   automatically via `_continue_partial` without interrupting the user. A successful
+   automatically via `_continue_partial` without interrupting the user. `_continue_partial`
+   stops early when a result has `hit_max_tokens` and `tool_turns == 0`: the agent already
+   retried in-loop, and resuming the same history would only reproduce the truncation. A successful
    result whose subtask has `acceptance_criteria` is then checked by an independent
    read-only verifier, repaired from the agent's own transcript if criteria are unmet,
    and downgraded to partial if they still fail. Every finished subtask is then snapshotted
@@ -401,7 +403,12 @@ variants so multiple API replicas can share a run — see
   **not** executed — their inputs may be truncated (a half-written `bash_exec` command or
   `file_write` payload). Instead one `agent:tool_result` event per call is emitted with
   `data.skipped=true` and the matching `tool_call_id`, so clients still see each call
-  resolved. SSE events emitted during the loop
+  resolved. The loop then retries in place up to `settings.agent_max_tokens_retries` (2)
+  times: it appends a user turn from `_truncation_notice()` (cut off, nothing ran, split
+  large writes / use `mode='append'`) and, without a task budget, doubles `max_tokens` per
+  retry up to `max(base, agent_max_tokens_cap)`. Only when retries are exhausted does it
+  return partial with `hit_max_tokens=True`. `AgentResult.tool_turns` counts turns whose
+  tool calls actually ran — the engine's progress signal (see `_continue_partial` above). SSE events emitted during the loop
   carry `turn_index` (1-based LLM call counter); `agent:progress` tool-call events carry
   `tool_call_id` (the Anthropic `tool_use` block ID); `_call_tool()` emits a matching
   `agent:tool_result` event (same `tool_call_id`) after the tool returns so clients can
