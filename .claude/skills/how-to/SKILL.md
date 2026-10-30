@@ -110,14 +110,16 @@ this automatically at startup. Details: `docs/kb/subsystems/resume-and-leases.md
 ```bash
 curl -X POST http://localhost:8000/api/campaigns \
   -H "Content-Type: application/json" \
-  -d '{"task": "<full project spec>", "agent_id": "CodeAgent", "max_sessions": 20, "budget_usd": 25, "workspace": "my-app"}'
+  -d '{"task": "<full project spec>", "max_sessions": 20, "budget_usd": 25, "workspace": "my-app"}'
 curl http://localhost:8000/api/campaigns/<campaign_id>          # ledger: features, statuses, sessions, spend
 curl -X POST http://localhost:8000/api/campaigns/<campaign_id>/pause   # after the current session
 curl -X POST http://localhost:8000/api/campaigns/<campaign_id>/resume
 ```
 
-A read-only planner writes a fixed feature list. Each session is a normal run (stream it
-via its run id from `sessions`) that implements one feature. A feature passes only when
+A read-only planner writes a fixed feature list and routes each feature to an agent
+(add `"agent_id": "CodeAgent"` to pin every feature to one agent instead; a retry can
+reassign one with `{"agent_id": "WriterAgent"}`). Each session is a normal run (stream it
+via its run id from `sessions`) that implements one feature on its agent. A feature passes only when
 the independent verifier confirms its checks. Details: `docs/kb/subsystems/campaigns.md`.
 
 ## Start a follow-up run

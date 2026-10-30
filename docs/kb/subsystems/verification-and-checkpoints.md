@@ -1,7 +1,7 @@
 ---
 title: Subtask Verification & Workspace Checkpoints
 last_updated: 2026-10-30
-last_verified_sha: 3f3d3f6
+last_verified_sha: 564a6a1
 sources:
   - src/agentflow/orchestrator/verifier.py
   - src/agentflow/orchestrator/checkpoints.py

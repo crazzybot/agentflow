@@ -1,7 +1,7 @@
 ---
 title: Deployment modes
 last_updated: 2026-10-30
-last_verified_sha: 3f3d3f6
+last_verified_sha: 564a6a1
 sources:
   - src/agentflow/config.py
   - src/agentflow/main.py
@@ -104,6 +104,8 @@ SANDBOX_BACKEND=docker SANDBOX_DOCKER_NETWORK=none   # or bridge (default) for p
 
 **Campaigns**
 - `CAMPAIGN_MAX_FEATURES`, `CAMPAIGN_MAX_FEATURE_ATTEMPTS`, `CAMPAIGN_REGRESSION_CHECKS`.
+- `CAMPAIGN_DEFAULT_AGENT`: the agent for a feature the planner didn't route (default
+  `CodeAgent`).
 
 **Safety**
 - `SANDBOX_ENV_PASSTHROUGH`: environment variables you explicitly allow into agent

@@ -1,7 +1,7 @@
 ---
 title: Flows
 last_updated: 2026-10-30
-last_verified_sha: 3f3d3f6
+last_verified_sha: 564a6a1
 sources:
   - src/agentflow/orchestrator/engine.py
   - src/agentflow/orchestrator/planner.py
@@ -128,7 +128,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    create([POST /api/campaigns]) --> define[Read-only planner writes the feature ledger<br/>ids and checks are fixed from now on]
+    create([POST /api/campaigns]) --> define[Read-only planner writes the feature ledger<br/>and picks an agent per feature<br/>ids and checks are fixed from now on]
     define --> loop{Stop?<br/>all passing / max sessions /<br/>budget / only blocked left}
     loop -- yes --> done([completed or stopped])
     done -. "stopped: operator raises limits<br/>or retries a blocked feature,<br/>then resumes" .-> loop
@@ -137,7 +137,7 @@ flowchart TD
     pick --> tier{Feature failed before?}
     tier -- "no: first attempt" --> cheap[Cheaper model · medium effort]
     tier -- "yes: failing" --> strong[Agent's default model · high effort]
-    cheap --> session[Run a session: an ordinary run<br/>fresh context · one feature ·<br/>its checks as acceptance criteria]
+    cheap --> session[Run a session on the feature's agent:<br/>an ordinary run · fresh context · one feature ·<br/>its checks as acceptance criteria]
     strong --> session
     session --> absorb[Read the outcome from the session log]
     absorb --> verdict{Verified pass?}
@@ -147,8 +147,13 @@ flowchart TD
     attempts -- yes --> blocked[feature: blocked] --> loop
 ```
 
-- **Session instructions** carry the spec, overall progress, the previous session's own
-  notes, a list of the workspace's files, and the feature's checks.
+- **Agents per feature.** As the run planner does for subtasks, the feature planner picks
+  the agent best suited to each feature, so code and prose features go to different
+  specialists. A request can instead pin one agent for everything, and a retry can move a
+  feature to another agent. [ADR-013](../adr/013-campaign-feature-agent-routing.md)
+- **Session instructions** carry the spec, overall progress (including who owns each
+  feature), the previous session's own notes, a list of the workspace's files, and the
+  feature's checks.
 - **Cost controls.** A feature's first attempt runs on a cheaper model (Sonnet by
   default). Only a feature that has already failed moves up to the agent's default model
   at higher effort. Each session has a budget ($3 unless the campaign sets another), and a

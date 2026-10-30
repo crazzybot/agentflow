@@ -1,7 +1,7 @@
 ---
 title: What's new
 last_updated: 2026-10-30
-last_verified_sha: 3f3d3f6
+last_verified_sha: 564a6a1
 sources:
   - docs/adr/
 status: current
@@ -14,6 +14,20 @@ Changes to AgentFlow's architecture, newest first, in plain words. Each entry li
 fixes and internal refactors are not listed here; see the git history for those.
 
 ---
+
+## 30 October 2026: Campaign features are routed to the right agent
+
+- **Each feature gets its own agent.** The campaign's feature planner now sees the agent
+  roster, as the run planner does, and assigns each feature to the best-suited agent, for
+  example `CodeAgent` for the API and `WriterAgent` for the user guide. Sessions run on
+  that feature's agent.
+- **`agent_id` on `POST /api/campaigns` is now optional.** Leave it out to get routing
+  (the new default). Set it to run every feature on one agent, as before. A feature the
+  planner leaves unrouted goes to `CAMPAIGN_DEFAULT_AGENT` (`CodeAgent`).
+- **Retry can reassign.** `POST …/features/{fid}/retry` accepts `agent_id` to move a stuck
+  feature to another agent. Its checks still don't change.
+- Why: [ADR-013](../adr/013-campaign-feature-agent-routing.md). Details:
+  [campaigns](../kb/subsystems/campaigns.md).
 
 ## 30 October 2026: AgentFlow's data lives outside the repo
 

@@ -178,6 +178,7 @@ All settings are read from environment variables (or a `.env` file).
 | `VERIFIER_MODEL_TIER` / `VERIFIER_MAX_ITERATIONS` | `economy` / `8` | Verifier cost controls |
 | `ENABLE_CHECKPOINTS` | `true` | Saves git checkpoints of each run's workspace in a separate repository at `<RUNS_DIR>/{id}/checkpoints.git`: a baseline, then one per finished subtask. Before a retry, files written by the failed attempt are rolled back. A workspace's own `.git` is never touched. Needs `git`. |
 | `CAMPAIGN_MAX_FEATURES` | `30` | Maximum number of features in a campaign's feature list |
+| `CAMPAIGN_DEFAULT_AGENT` | `CodeAgent` | Agent for a campaign feature the feature planner left unrouted (campaigns without a pinned `agent_id`) |
 | `CAMPAIGN_MAX_FEATURE_ATTEMPTS` | `2` | Sessions a feature may fail verification before it is marked `blocked` |
 | `CAMPAIGN_REGRESSION_CHECKS` | `1` | Features that already pass and are re-verified before each session |
 | `CONTEXT_SNIP_TRIGGER_TOKENS` | `100000` | Once an agent's prompt passes this size, older tool results are replaced in what the model sees by stubs it can expand with `recall_tool_result`. The full history is kept. `0` disables this. |
@@ -294,12 +295,13 @@ that execute on another replica and returns `{"status": "cancel_requested"}`.
 ### Campaigns (long-running work across sessions)
 
 ```
-POST /api/campaigns          {"task": "<spec>", "agent_id": "CodeAgent", "max_sessions": 20,
-                              "budget_usd": 25, "session_budget_usd": 3, "workspace": "my-app"}
+POST /api/campaigns          {"task": "<spec>", "max_sessions": 20, "budget_usd": 25,
+                              "session_budget_usd": 3, "workspace": "my-app"}
+                             # add "agent_id": "CodeAgent" to run every feature on one agent
 GET  /api/campaigns          GET /api/campaigns/{id}
 POST /api/campaigns/{id}/pause   POST /api/campaigns/{id}/resume
 PATCH /api/campaigns/{id}    {"max_sessions": 30, "budget_usd": null}   # change limits; null = no budget limit
-POST /api/campaigns/{id}/features/{fid}/retry   {"guidance": "<what to do differently>"}
+POST /api/campaigns/{id}/features/{fid}/retry   {"guidance": "<what to do differently>", "agent_id": "WriterAgent"}
 ```
 
 A campaign **stops** when it reaches `max_sessions` or its budget, or when only
@@ -314,7 +316,9 @@ a fresh context:
 1. **Feature list.** A read-only planner turns the spec into an ordered list of
    features. Each feature has checks that can be confirmed by reading files. The list
    is stored in `<RUNS_DIR>/campaigns/{id}/features.json`, outside the agents' workspace,
-   and its feature definitions never change after that.
+   and its feature definitions never change after that. Like the run planner, it also
+   picks the best agent for each feature (e.g. `CodeAgent` for the API, `WriterAgent` for
+   the user guide), unless the request pins one `agent_id`.
 2. **Sessions.** Each session is a normal run (with its own stream, session log,
    checkpoints and resume) that implements one feature. Its acceptance criteria are
    that feature's checks. **A feature is marked passing only when the independent
