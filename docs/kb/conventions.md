@@ -1,7 +1,7 @@
 ---
 title: Conventions & Patterns
 last_updated: 2026-10-29
-last_verified_sha: 8214412
+last_verified_sha: d09693f
 sources:
   - pyproject.toml
   - src/agentflow/config.py
@@ -97,7 +97,8 @@ contradict the source):
   `test_reporter.py`, `test_engine.py` (run routing with `create_plan` patched and the
   engine's own LLM helpers replaced by `AsyncMock`), `test_workspace.py` (workspace
   resolution, tool isolation, locking, followup inheritance), `test_session.py` (session
-  log append/read/replay, agent transcripts, engine replay parity), `test_resume.py`
+  log append/read/replay, agent transcripts, engine replay parity), `test_context_view.py`
+  (read-time snipping and recall), `test_resume.py`
   (crash → reconcile → `wake()`), `test_lease.py` (Redis leases on `fakeredis`,
   two engines as two replicas), and `test_context.py`
   (behaviour that must match across the memory and Redis backends, parametrized over both).

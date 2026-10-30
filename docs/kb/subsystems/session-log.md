@@ -1,7 +1,7 @@
 ---
 title: Session Log (Durable Run Record)
 last_updated: 2026-10-29
-last_verified_sha: 8214412
+last_verified_sha: d09693f
 sources:
   - src/agentflow/core/session.py
   - src/agentflow/orchestrator/engine.py
@@ -45,7 +45,8 @@ How it differs from the other per-run files:
 | `agent_started` | `Agent.run()` | `task_id`, `resumed` |
 | `message_appended` | `_agentic_loop()` | `message`; assistant turns add `model`, `stop_reason`, `usage`; injected user messages add `injected` |
 | `message_discarded` | `_agentic_loop()` on `max_tokens` | `reason`. Drops the invocation's last message. |
-| `agent_finished` | `Agent.run()` (also on exceptions) | `status`, `cost_usd`, tokens, `duration_ms`, `error` |
+| `context_snipped` | `_agentic_loop()` | `boundary`, `snipped`, `freed_chars`, `prompt_tokens`. Affects only the model's view; transcripts in the log stay full ([context-view](context-view.md)). |
+| `agent_finished` | `Agent.run()` (also on exceptions) | `status`, `cost_usd`, tokens, `peak_prompt_tokens`, `duration_ms`, `error` |
 | `run_interrupted` | `reconcile_orphaned_runs()` | `reason`. Not terminal: the run stays resumable. |
 | `run_resumed` | `wake()` | `after_seq`, `finished`, `resuming`. Clears interrupted/status in `replay()`. |
 | `run_finished` | `_run()` `finally` | `status`: `complete`/`error`/`cancelled`. Not written when the run stands down after losing its lease. Older logs may carry `interrupted` from step 2's reconciliation, which `replay()` still treats as resumable. |
