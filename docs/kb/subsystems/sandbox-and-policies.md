@@ -1,7 +1,7 @@
 ---
 title: Execution Sandbox & Tool Policies
 last_updated: 2026-10-30
-last_verified_sha: ccf4a77
+last_verified_sha: 2c73ec5
 sources:
   - src/agentflow/tools/sandbox.py
   - src/agentflow/tools/policy.py

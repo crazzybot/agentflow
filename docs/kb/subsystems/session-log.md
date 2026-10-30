@@ -1,7 +1,7 @@
 ---
 title: Session Log (Durable Run Record)
 last_updated: 2026-10-30
-last_verified_sha: ccf4a77
+last_verified_sha: 2c73ec5
 sources:
   - src/agentflow/core/session.py
   - src/agentflow/orchestrator/engine.py
@@ -48,7 +48,7 @@ How it differs from the other per-run files:
 | `cost_added` | `_add_cost()` | `cost_usd`, `task_id` |
 | `human_input_requested` / `_received` | `_request_budget_increase()`, agent `ask_user` | request / response, new `budget_usd` |
 | `agent_started` | `Agent.run()` | `task_id`, `resumed` |
-| `message_appended` | `_agentic_loop()` | `message`; assistant turns add `model`, `stop_reason`, `usage`; injected user messages add `injected` |
+| `message_appended` | `_agentic_loop()` | `message`; assistant turns add `model`, `stop_reason`, `usage`; injected user messages add `injected`; max_tokens retry notices add `truncation_notice` |
 | `message_discarded` | `_agentic_loop()` on `max_tokens` | `reason`. Drops the invocation's last message. |
 | `context_snipped` | `_agentic_loop()` | `boundary`, `snipped`, `freed_chars`, `prompt_tokens`. Affects only the model's view; transcripts in the log stay full ([context-view](context-view.md)). |
 | `agent_finished` | `Agent.run()` (also on exceptions) | `status`, `cost_usd`, tokens, `peak_prompt_tokens`, `duration_ms`, `error` |
