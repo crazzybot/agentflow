@@ -134,6 +134,10 @@ class AgentResult(BaseModel):
     # Signals the engine that increasing the budget (→ larger max_tokens) is
     # required before continuation can make progress.
     hit_max_tokens: bool = False
+    # Largest full prompt (input + cache read + cache write tokens) of any call in
+    # this invocation — the measurement for judging whether context snipping keeps
+    # agents bounded (docs/context-optimization-plan.md, Fix 5).
+    peak_prompt_tokens: int = 0
     # Relative paths of every file successfully written during this agent's run.
     files_written: list[str] = Field(default_factory=list)
     # Full conversation messages — not serialised, used in-memory for same-agent

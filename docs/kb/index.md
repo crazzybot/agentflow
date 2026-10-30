@@ -1,7 +1,7 @@
 ---
 title: AgentFlow Knowledge Base — Index
 last_updated: 2026-10-29
-last_verified_sha: 8214412
+last_verified_sha: d09693f
 sources:
   - src/agentflow/
   - manifests/
@@ -33,6 +33,9 @@ the doc(s) relevant to your change, before exploring source.
 - [subsystems/session-log](subsystems/session-log.md) — the always-on, append-only
   `session.jsonl` per run (inputs, plan, results, cost, HITL, full agent transcripts),
   its slice API and `replay()` into a `RunSnapshot`.
+- [subsystems/context-view](subsystems/context-view.md) — the read-time view of an
+  agent's history sent to the model: older tool results stubbed past a token trigger
+  (cache-stable, history untouched), recall tool, `peak_prompt_tokens` measurement.
 - [subsystems/resume-and-leases](subsystems/resume-and-leases.md) — resuming
   interrupted runs from their session log (`wake()`, `POST /runs/{id}/resume`,
   reconciliation) and the Redis per-run leases behind multi-replica resume and cancel.

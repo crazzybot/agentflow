@@ -78,6 +78,14 @@ class Settings(BaseSettings):
     # code, long log lines) that would otherwise blow past a reasonable
     # response size while still under the line cap.
     file_read_max_chars: int = 12_000
+    # Read-time context snipping (agents/context_view.py): once an agent's prompt
+    # exceeds this many tokens, older tool results are replaced by recall stubs in
+    # what the model sees (full history is kept). 0 disables snipping.
+    context_snip_trigger_tokens: int = 100_000
+    # Most recent tool-result turns always shown in full.
+    context_snip_keep_recent: int = 3
+    # Tool results shorter than this are left inline (a stub would save little).
+    context_snip_min_chars: int = 1_000
 
     # Max iterations the agentic planner may use for workspace exploration
     planner_max_iterations: int = 15
