@@ -107,6 +107,13 @@ class Settings(BaseSettings):
     # rollback of a failed attempt's files before a retry. Needs `git` on PATH.
     enable_checkpoints: bool = True
 
+    # Campaigns (orchestrator/campaign.py): long-horizon work in fresh-context sessions.
+    campaign_max_features: int = 30
+    # Sessions a feature may fail verification before it is marked blocked.
+    campaign_max_feature_attempts: int = 2
+    # Previously passing features re-verified (read-only) before each session.
+    campaign_regression_checks: int = 1
+
     # Set ENABLE_DECOMPOSER=false to skip per-subtask decomposition entirely.
     # Subtasks then execute as the planner produced them, with no extra ReAct loop.
     enable_decomposer: bool = True

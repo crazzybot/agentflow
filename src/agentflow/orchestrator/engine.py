@@ -354,14 +354,29 @@ class OrchestratorEngine:
         user_context: dict[str, Any],
         budget_usd: float | None = None,
         workspace: str | None = None,
+        plan: ExecutionPlan | None = None,
     ) -> None:
         """Execute one run end to end.
 
         *workspace* is the run's workspace path relative to ``settings.workspace_dir``:
         a named workspace, or a prior run's recorded path when following up. ``None``
         gives the run a fresh ``runs/<run_id>`` workspace of its own.
+
+        *plan* skips classification and the planner: the run executes exactly this
+        plan (used by campaigns, whose sessions are planned in code).
         """
-        await self._run(run_id, task, user_context, budget_usd, workspace, resume=None)
+        await self._run(run_id, task, user_context, budget_usd, workspace, resume=None, preset_plan=plan)
+
+    async def wait_for(self, run_id: str) -> None:
+        """Wait until a run executing in this process ends (no-op if it is not active)."""
+        task = self._run_tasks.get(run_id)
+        if task is not None and not task.done():
+            await asyncio.wait({task})
+
+    @property
+    def client(self) -> LLMClient:
+        """The shared LLM client (also used by campaign planning/verification)."""
+        return self._client
 
     def is_active(self, run_id: str) -> bool:
         task = self._run_tasks.get(run_id)
@@ -392,6 +407,7 @@ class OrchestratorEngine:
         budget_usd: float | None,
         workspace: str | None,
         resume: ResumeState | None,
+        preset_plan: ExecutionPlan | None = None,
     ) -> None:
         # Resolve before any per-run state exists: an unsafe path fails loudly here
         # instead of leaving an emitter open that nothing will ever close.
@@ -438,7 +454,7 @@ class OrchestratorEngine:
         # Direct mode is opt-in: without DIRECT_AGENT_ID there is no agent to route a
         # "direct" verdict to, so skip the classifier call and always plan. A resumed
         # run with a logged plan needs no routing decision at all.
-        needs_plan = resume is None or resume.plan is None
+        needs_plan = (resume is None and preset_plan is None) or (resume is not None and resume.plan is None)
         is_direct_task = (
             asyncio.create_task(self._is_single_agent_task(task))
             if settings.direct_agent_id and needs_plan
@@ -533,6 +549,17 @@ class OrchestratorEngine:
                         f"Resumed plan: {len(plan.subtasks)} subtask(s), "
                         f"{sum(1 for st in plan.subtasks if st.id in resume.finished)} already finished"
                     ),
+                    data=plan.model_dump(mode="json"),
+                )
+            elif preset_plan is not None:
+                plan = preset_plan.model_copy(update={"run_id": run_id})
+                await record(
+                    SessionEventType.plan_created,
+                    data={"plan": plan.model_dump(mode="json"), "direct": False, "preset": True},
+                )
+                emitter.emit(
+                    SSEEventType.plan_created,
+                    message=f"Preset plan: {len(plan.subtasks)} subtask(s)",
                     data=plan.model_dump(mode="json"),
                 )
             elif is_direct_task is not None and await is_direct_task:

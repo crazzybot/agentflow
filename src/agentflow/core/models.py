@@ -361,6 +361,81 @@ class RunEventsResponse(BaseModel):
     events: list[SSEEvent]
 
 
+# ---------------------------------------------------------------------------
+# Campaigns: long-horizon work as a sequence of fresh-context sessions
+# ---------------------------------------------------------------------------
+
+
+class FeatureStatus(str, Enum):
+    pending = "pending"
+    passing = "passing"    # independently verified in the latest check
+    failing = "failing"    # attempted (or regressed) and not verified
+    blocked = "blocked"    # exhausted its attempts; skipped by later sessions
+
+
+class Feature(BaseModel):
+    """One ledger entry. id/title/description/checks are fixed once defined; only
+    the campaign runner changes the rest — agents never write the ledger."""
+    id: str
+    title: str
+    description: str
+    checks: list[str]
+    status: FeatureStatus = FeatureStatus.pending
+    attempts: int = 0
+    last_run_id: str | None = None
+    last_checked_session: int = 0  # session count when last verified (regression order)
+    notes: str = ""                # the last session's own summary for this feature
+    evidence: list[CriterionCheck] = Field(default_factory=list)
+
+
+class CampaignStatus(str, Enum):
+    defining = "defining"    # writing the feature ledger
+    running = "running"
+    paused = "paused"        # by request, a cancelled session, or a restart
+    completed = "completed"  # every feature passing
+    stopped = "stopped"      # session/budget limit, or only blocked features left
+    failed = "failed"        # no usable feature ledger
+
+
+class Campaign(BaseModel):
+    campaign_id: str
+    task: str
+    workspace: str
+    agent_id: str
+    max_sessions: int
+    budget_usd: float | None = None
+    session_budget_usd: float | None = None
+    status: CampaignStatus = CampaignStatus.defining
+    stop_reason: str = ""
+    pause_requested: bool = False
+    spent_usd: float = 0.0
+    sessions: list[str] = Field(default_factory=list)  # run ids, in order
+    # Run started but not yet absorbed into the ledger; set before the run begins
+    # so a restart knows which session to wake and absorb.
+    pending_session: str | None = None
+    pending_feature: str | None = None
+    created_at: str
+
+
+class CampaignRequest(_WorkspaceRequest):
+    task: str
+    agent_id: str = "CodeAgent"
+    max_sessions: int = Field(default=10, ge=1, le=500)
+    budget_usd: float | None = Field(default=None, gt=0)
+    session_budget_usd: float | None = Field(default=None, gt=0)
+
+
+class CampaignView(BaseModel):
+    campaign: Campaign
+    features: list[Feature]
+    passing: int
+    total: int
+
+
+class CampaignListResponse(BaseModel):
+    campaigns: list[CampaignView]
+
+
 class RunCheckpoint(BaseModel):
     sha: str
     label: str

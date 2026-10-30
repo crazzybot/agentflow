@@ -17,6 +17,9 @@ from agentflow.core.models import (
     RunArtifact,
     RunArtifactContentResponse,
     RunArtifactsResponse,
+    CampaignListResponse,
+    CampaignRequest,
+    CampaignView,
     RunCheckpoint,
     RunCheckpointsResponse,
     RunEventsResponse,
@@ -39,6 +42,11 @@ from agentflow.core.session import (
     read_session,
 )
 from agentflow.core.workspace import LEGACY_ROOT, InvalidWorkspaceError, workspace_path
+from agentflow.orchestrator.campaign import (
+    CampaignActiveError,
+    CampaignNotFoundError,
+    CampaignStateError,
+)
 from agentflow.orchestrator.engine import RunAlreadyActiveError
 from agentflow.orchestrator.resume import RunNotResumableError
 from agentflow.orchestrator.stream import stream_registry
@@ -66,6 +74,11 @@ _LIST_RUNS_SEM = asyncio.Semaphore(10)
 def _get_engine():
     from agentflow.main import engine
     return engine
+
+
+def _get_campaigns():
+    from agentflow.main import campaign_manager
+    return campaign_manager
 
 
 @router.post("/runs", response_model=RunResponse)
@@ -406,3 +419,60 @@ async def get_run_artifact_content(run_id: str, artifact_id: str):
         path=artifact.path,
         content=target.read_text(encoding="utf-8"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Campaigns
+# ---------------------------------------------------------------------------
+
+
+@router.post("/campaigns", response_model=CampaignView)
+async def start_campaign(request: CampaignRequest):
+    """Create a campaign and start driving it in the background (sessions are runs)."""
+    manager = _get_campaigns()
+    try:
+        campaign = manager.create(request)
+    except CampaignStateError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    manager.start(campaign.campaign_id)
+    return manager.store.view(campaign.campaign_id)
+
+
+@router.get("/campaigns", response_model=CampaignListResponse)
+async def list_campaigns():
+    manager = _get_campaigns()
+    return CampaignListResponse(campaigns=[manager.store.view(cid) for cid in manager.store.all_ids()])
+
+
+@router.get("/campaigns/{campaign_id}", response_model=CampaignView)
+async def get_campaign(campaign_id: str):
+    try:
+        return _get_campaigns().store.view(campaign_id)
+    except CampaignNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/campaigns/{campaign_id}/pause", response_model=CampaignView)
+async def pause_campaign(campaign_id: str):
+    """Pause after the current session finishes (cancel its run to stop sooner)."""
+    manager = _get_campaigns()
+    try:
+        manager.request_pause(campaign_id)
+    except CampaignNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CampaignStateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return manager.store.view(campaign_id)
+
+
+@router.post("/campaigns/{campaign_id}/resume", response_model=CampaignView)
+async def resume_campaign(campaign_id: str):
+    """Continue a paused (or restart-interrupted) campaign."""
+    manager = _get_campaigns()
+    try:
+        manager.start(campaign_id)
+    except CampaignNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (CampaignActiveError, CampaignStateError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return manager.store.view(campaign_id)

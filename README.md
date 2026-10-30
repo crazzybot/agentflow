@@ -171,6 +171,9 @@ All settings are read from environment variables (or a `.env` file).
 | `VERIFICATION_MAX_REPAIRS` | `1` | Fix-and-recheck rounds before a still-failing subtask is downgraded to partial |
 | `VERIFIER_MODEL_TIER` / `VERIFIER_MAX_ITERATIONS` | `economy` / `8` | Verifier cost controls |
 | `ENABLE_CHECKPOINTS` | `true` | Saves git checkpoints of each run's workspace in a separate repository at `.runs/{id}/checkpoints.git`: a baseline, then one per finished subtask. Before a retry, files written by the failed attempt are rolled back. A workspace's own `.git` is never touched. Needs `git`. |
+| `CAMPAIGN_MAX_FEATURES` | `30` | Maximum number of features in a campaign's feature list |
+| `CAMPAIGN_MAX_FEATURE_ATTEMPTS` | `2` | Sessions a feature may fail verification before it is marked `blocked` |
+| `CAMPAIGN_REGRESSION_CHECKS` | `1` | Features that already pass and are re-verified before each session |
 | `CONTEXT_SNIP_TRIGGER_TOKENS` | `100000` | Once an agent's prompt passes this size, older tool results are replaced in what the model sees by stubs it can expand with `recall_tool_result`. The full history is kept. `0` disables this. |
 | `CONTEXT_SNIP_KEEP_RECENT` | `3` | Most recent tool-result turns always shown in full |
 | `CONTEXT_SNIP_MIN_CHARS` | `1000` | Tool results shorter than this are never replaced by a stub |
@@ -264,6 +267,36 @@ that still holds its lease), has no session log (it predates session logs), or
 already finished. Set `RESUME_INTERRUPTED_RUNS=true` to resume automatically at
 startup. With `STATE_BACKEND=redis`, `POST /api/runs/{id}/cancel` also reaches runs
 that execute on another replica and returns `{"status": "cancel_requested"}`.
+
+### Campaigns (long-running work across sessions)
+
+```
+POST /api/campaigns          {"task": "<spec>", "agent_id": "CodeAgent", "max_sessions": 20,
+                              "budget_usd": 25, "session_budget_usd": 3, "workspace": "my-app"}
+GET  /api/campaigns          GET /api/campaigns/{id}
+POST /api/campaigns/{id}/pause   POST /api/campaigns/{id}/resume
+```
+
+A campaign builds something too large for one run, in sessions that each start with
+a fresh context:
+
+1. **Feature list.** A read-only planner turns the spec into an ordered list of
+   features. Each feature has checks that can be confirmed by reading files. The list
+   is stored in `.runs/campaigns/{id}/features.json`, outside the agents' workspace,
+   and its feature definitions never change after that.
+2. **Sessions.** Each session is a normal run (with its own stream, session log,
+   checkpoints and resume) that implements one feature. Its acceptance criteria are
+   that feature's checks. **A feature is marked passing only when the independent
+   verifier confirms it**, never because the agent says so.
+3. **Regression checks.** Before each session, a feature that already passes is
+   re-checked. If it no longer holds, it is fixed next.
+4. **Stopping.** A campaign stops when every feature passes, when it reaches
+   `max_sessions` or `budget_usd`, or when only `blocked` features are left.
+
+`pause` takes effect after the current session finishes. To stop sooner, cancel that
+session's run. A service restart pauses running campaigns. `resume` first finishes
+the interrupted session and then continues. They resume automatically if
+`RESUME_INTERRUPTED_RUNS=true`.
 
 ### Workspace checkpoints
 

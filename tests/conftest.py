@@ -10,3 +10,4 @@ def _in_process_run_leases(monkeypatch):
     and no Redis server would fail every engine test. Tests that exercise Redis
     leases build RedisRunLeases on fakeredis explicitly."""
     monkeypatch.setattr("agentflow.orchestrator.engine.run_leases", RunLeases())
+    monkeypatch.setattr("agentflow.core.lease.run_leases", RunLeases())  # campaigns
