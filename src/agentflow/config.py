@@ -160,6 +160,15 @@ class Settings(BaseSettings):
     # lapses; a cross-replica cancel takes effect within ~ttl/3 seconds.
     run_lease_ttl_s: float = 15.0
 
+    # Where subtask agents execute (orchestrator/workers.py): "local" (in this
+    # process) or "workers" (queued to `agentflow worker` processes; requires
+    # STATE_BACKEND=redis and a runs_dir/workspace shared with the workers).
+    dispatch_mode: str = "local"
+    # Fail a queued invocation no worker has claimed after this long.
+    worker_claim_timeout_s: float = 60.0
+    # Workers refresh their claim this often; 3 missed beats = worker presumed dead.
+    worker_heartbeat_s: float = 5.0
+
     def resolve_model_tier(self, tier: str | None) -> str | None:
         """Resolve a named cost tier to a model id, or None if *tier* is unset/unrecognised.
 

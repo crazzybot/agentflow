@@ -167,6 +167,8 @@ All settings are read from environment variables (or a `.env` file).
 | `ENABLE_PROMPT_CACHING` | `true` | Inject Anthropic cache headers on every call |
 | `CAPTURE_EVENTS` | `false` | Write SSE events to `.runs/{id}/events.jsonl` |
 | `CAPTURE_RESULTS` | `false` | Write subtask results to `.runs/{id}/results.jsonl` |
+| `DISPATCH_MODE` | `local` | `workers` sends subtask agents to `agentflow worker` processes through Redis, while planning, scheduling, verification, checkpoints and the session log stay on the server. Needs `STATE_BACKEND=redis`, and a `.runs` directory and workspace shared with the workers. |
+| `WORKER_CLAIM_TIMEOUT_S` / `WORKER_HEARTBEAT_S` | `60` / `5` | A queued task that no worker picks up within the timeout fails and is retried or handed to a fallback agent. A worker that misses 3 heartbeats is presumed dead, with the same outcome. |
 | `SANDBOX_BACKEND` | `local` | Where `bash_exec`, `bash_exec_readonly` and `python_exec` run. `local` is a host subprocess with a scrubbed environment. `docker` is one container per run, started on the first command, with the workspace mounted at `/workspace`, all capabilities dropped and no host credentials. With `docker`, the run fails rather than running on the host if Docker is unavailable. |
 | `SANDBOX_DOCKER_IMAGE` / `_NETWORK` / `_MEMORY` / `_CPUS` / `_PIDS_LIMIT` | `python:3.13-slim` / `bridge` / `2g` / `2` / `512` | Container settings. Set the network to `none` to cut the sandbox off from the network (package installs will then fail). |
 | `ENABLE_VERIFIER` | `true` | Subtasks the planner gave `acceptanceCriteria` are checked by an independent read-only verifier before counting as done. Unmet criteria go back to the agent to fix. |
@@ -250,6 +252,21 @@ exchanges, and the full message history of every agent invocation. The SSE strea
 a live view for clients, while the session log is the record the run can be rebuilt
 from. All query parameters are optional, and `type` can be repeated. The endpoint
 works while the run is still in progress.
+
+### Worker processes
+
+```bash
+# server: DISPATCH_MODE=workers STATE_BACKEND=redis uv run uvicorn agentflow.main:app
+uv run agentflow worker                              # serve every agent in manifests/
+uv run agentflow worker --agents CodeAgent --concurrency 4
+```
+
+Workers take subtask agent invocations from per-agent Redis queues. Each runs the
+agent with its own sandbox, streams progress to the run's SSE stream, and sends the
+transcript and result back to the server. The server stays the only writer of the
+session log. A worker that dies mid-task, or a task no worker claims, becomes a failed
+attempt, so the normal retry and fallback logic takes over. Cancelling a run stops its
+remote agents.
 
 ### Resume an interrupted run
 

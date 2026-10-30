@@ -381,6 +381,16 @@ class RunEventsResponse(BaseModel):
     events: list[SSEEvent]
 
 
+class WorkItem(BaseModel):
+    """One agent invocation handed to a worker process (orchestrator/workers.py)."""
+    item_id: str
+    run_id: str
+    agent_id: str
+    envelope: TaskEnvelope
+    resume_messages: list[dict[str, Any]] | None = None
+    workspace: str  # relative to settings.workspace_dir
+
+
 # ---------------------------------------------------------------------------
 # Campaigns: long-horizon work as a sequence of fresh-context sessions
 # ---------------------------------------------------------------------------
