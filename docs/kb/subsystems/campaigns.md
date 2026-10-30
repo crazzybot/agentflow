@@ -1,7 +1,7 @@
 ---
 title: Campaigns (Long-Horizon Sessions)
-last_updated: 2026-10-29
-last_verified_sha: 9464ac1
+last_updated: 2026-10-30
+last_verified_sha: bdacb49
 sources:
   - src/agentflow/orchestrator/campaign.py
   - src/agentflow/orchestrator/engine.py
@@ -55,8 +55,11 @@ workspace lock.
    limit). It outputs `{"features": [{title, description, checks}]}`, ordered
    foundations-first. Ids `F01…` are assigned **in code**, checks go through the
    planner's `_parse_criteria()` (1–5), and features without a title or checks are
-   dropped. The list is capped at `CAMPAIGN_MAX_FEATURES` (30). An empty result →
-   `failed`.
+   dropped. The list is capped at `CAMPAIGN_MAX_FEATURES` (30). The planner's
+   `max_output_tokens` is `agent_max_tokens_cap` (32k), because the whole ledger is one
+   final JSON answer. If that answer is still cut off (`hit_max_tokens` with no parsable
+   list), `define_features()` retries **once** asking for half as many features. A plain
+   failure is not retried. An empty result → `failed`.
 2. **Interrupted session.** If `pending_session` is set, the run is awaited if it's
    active here (startup auto-resume may already have woken it), otherwise `engine.wake()`
    is called on it. `RunNotResumableError` (it already finished) is fine. Then it is
