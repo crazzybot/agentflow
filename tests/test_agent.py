@@ -983,7 +983,10 @@ async def test_thinking_not_sent_to_model_without_adaptive_thinking():
 @pytest.mark.parametrize(
     ("model", "expected"),
     [
+        ("claude-fable-5-1", (10.0, 50.0, 50.0, 12.5, 0.25)),
+        ("claude-sonnet-5-5", (2.0, 10.0, 10.0, 2.5, 0.1)),
         ("claude-sonnet-5", (2.0, 10.0, 10.0, 2.5, 0.2)),
+        ("claude-haiku-5-5", (0.1, 0.5, 0.5, 0.125, 0.01)),
         ("claude-opus-5-5", (4.0, 20.0, 20.0, 5.0, 0.2)),
         ("claude-opus-5", (5.0, 25.0, 25.0, 6.25, 0.5)),
         ("claude-opus-4-8", (5.0, 25.0, 25.0, 6.25, 0.5)),
@@ -995,6 +998,15 @@ def test_pricing_for_known_models(model, expected):
     from agentflow.agents.agent import _pricing_for
 
     assert _pricing_for(model) == pytest.approx(expected)
+
+
+def test_pricing_for_haiku_5_5_long_prompt_tier():
+    from agentflow.agents.agent import _pricing_for
+
+    assert _pricing_for("claude-haiku-5-5", 100_000) == pytest.approx((0.1, 0.5, 0.5, 0.125, 0.01))
+    assert _pricing_for("claude-haiku-5-5", 100_001) == pytest.approx((0.5, 2.5, 2.5, 0.625, 0.05))
+    # The tier is Haiku 5.5-only; other models ignore prompt length.
+    assert _pricing_for("claude-opus-5-5", 500_000) == _pricing_for("claude-opus-5-5")
 
 
 def test_pricing_for_unknown_model_falls_back_to_settings():

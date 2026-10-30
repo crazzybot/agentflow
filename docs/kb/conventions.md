@@ -1,7 +1,7 @@
 ---
 title: Conventions & Patterns
-last_updated: 2026-10-29
-last_verified_sha: e260885
+last_updated: 2026-10-30
+last_verified_sha: a226d8a
 sources:
   - pyproject.toml
   - src/agentflow/config.py
@@ -51,11 +51,13 @@ contradict the source):
   `settings = Settings()` singleton. Pricing fields (`cost_per_1m_input_tokens`,
   `cost_per_1m_output_tokens`, `cost_per_1m_cache_write_tokens`,
   `cost_per_1m_cache_read_tokens`, `cost_per_1m_thinking_tokens`) default to
-  claude-sonnet-5's standard rate ($2/$10 per 1M) and can be overridden in `.env`; they
+  claude-opus-5-5's rate ($4/$20 per 1M, matching `agent_model`'s default) and can be
+  overridden in `.env`; they
   are only the fallback rate for a model not listed in `agents/agent.py`'s
   `_MODEL_PRICING` table (a warning is logged once per such model). When a new model
-  ships, add it to `_MODEL_PRICING` (and to `_ADAPTIVE_THINKING_PREFIXES` in
-  `llm/client.py` if it takes adaptive thinking/effort) rather than editing these defaults.
+  ships, add it to `_MODEL_PRICING` (or `_LONG_PROMPT_PRICING` for prompt-length-tiered
+  models like Haiku 5.5), and to `_ADAPTIVE_THINKING_PREFIXES` in
+  `llm/client.py` if it takes adaptive thinking/effort, rather than editing these defaults.
   Named cost tiers (`model_tier_economy`/`_standard`/`_premium`) follow the same pattern —
   typed `Settings` fields resolved by `settings.resolve_model_tier(tier)` — so manifests
   and planner-assigned per-subtask overrides can reference `"economy"`/`"standard"`/

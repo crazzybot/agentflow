@@ -5,8 +5,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     anthropic_api_key: str = ""
-    planner_model: str = "claude-sonnet-5"
-    agent_model: str = "claude-sonnet-5"
+    planner_model: str = "claude-sonnet-5-5"
+    agent_model: str = "claude-opus-5-5"
     # Cheap model for the small bookkeeping calls (run naming, direct/plan routing).
     reporter_model: str = "claude-haiku-4-5-20251001"
 
@@ -25,8 +25,8 @@ class Settings(BaseSettings):
     # manifest's raw `model` field. `standard` intentionally mirrors agent_model's default
     # so leaving model_tier unset and setting model_tier="standard" behave identically.
     model_tier_economy: str = "claude-haiku-4-5-20251001"
-    model_tier_standard: str = "claude-sonnet-5"
-    model_tier_premium: str = "claude-opus-4-8"
+    model_tier_standard: str = "claude-opus-5-5"
+    model_tier_premium: str = "claude-fable-5-1"
 
     task_timeout_ms: int = 3_600_000  # 1 hour — budget exhaustion is the real limiter
     task_max_retries: int = 1
@@ -67,16 +67,16 @@ class Settings(BaseSettings):
     # Interrupted runs can always be resumed explicitly via POST /api/runs/{id}/resume.
     resume_interrupted_runs: bool = False
 
-    # Pricing (USD per 1M tokens) — defaults match claude-sonnet-5's standard rate
-    # ($2/$10; the launch "introductory" rate became permanent on 2026-09-01).
+    # Pricing (USD per 1M tokens) — defaults match claude-opus-5-5 (agent_model's
+    # default): $4/$20, cache writes 1.25x input, cache reads 0.05x input.
     # These are only the fallback rates for a model not in agents/agent.py's
     # _MODEL_PRICING table — every listed model is priced from that table.
-    cost_per_1m_input_tokens: float = 2.0
-    cost_per_1m_output_tokens: float = 10.0
-    cost_per_1m_cache_write_tokens: float = 2.50
+    cost_per_1m_input_tokens: float = 4.0
+    cost_per_1m_output_tokens: float = 20.0
+    cost_per_1m_cache_write_tokens: float = 5.0
     cost_per_1m_cache_read_tokens: float = 0.20
     # Thinking tokens are billed as output tokens.
-    cost_per_1m_thinking_tokens: float = 10.0
+    cost_per_1m_thinking_tokens: float = 20.0
 
     # Max times a partial result triggers a continuation before accepting it
     max_continuations: int = 3

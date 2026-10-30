@@ -249,7 +249,7 @@ def _parse_final_output(text: str) -> tuple[dict[str, Any], str]:
 # costed with the wrong rate. Cache writes (5-minute TTL) are 1.25x input; cache reads
 # are input x the per-model multiplier (0.1x standard). Thinking tokens bill at the
 # output rate. Unrecognised models fall back to the configured global rates (logged).
-# Source: https://platform.claude.com/docs/en/about-claude/pricing (checked 2026-09-27).
+# Source: https://platform.claude.com/docs/en/about-claude/pricing (checked 2026-10-30).
 _MODEL_PRICING: dict[str, tuple[float, float, float]] = {
     "claude-fable-5-1": (10.0, 50.0, 0.025),
     "claude-mythos-5-1": (10.0, 50.0, 0.025),
@@ -258,17 +258,33 @@ _MODEL_PRICING: dict[str, tuple[float, float, float]] = {
     "claude-opus-5-5": (4.0, 20.0, 0.05),
     "claude-opus-5": (5.0, 25.0, 0.1),
     "claude-opus-4": (5.0, 25.0, 0.1),  # 4.5–4.8; 4.0/4.1 are retired
+    "claude-sonnet-5-5": (2.0, 10.0, 0.05),
     "claude-sonnet-5": (2.0, 10.0, 0.1),
-    "claude-sonnet-4": (3.0, 15.0, 0.1),
+    "claude-sonnet-4": (3.0, 15.0, 0.1),  # 4.5/4.6; 4.0 is retired
+    "claude-haiku-5-5": (0.10, 0.50, 0.1),  # prompts up to 100K tokens — see below
     "claude-haiku-4-5": (1.0, 5.0, 0.1),
     "claude-3-haiku": (0.25, 1.25, 0.1),
+}
+
+# Models priced by prompt length: (threshold, pricing) — a request whose prompt
+# (input + cache writes + cache reads) exceeds the threshold bills every token at
+# the higher rates, cache hits included. Same tuple shape as _MODEL_PRICING.
+_LONG_PROMPT_PRICING: dict[str, tuple[int, tuple[float, float, float]]] = {
+    "claude-haiku-5-5": (100_000, (0.50, 2.50, 0.1)),
 }
 
 _warned_unpriced_models: set[str] = set()
 
 
-def _pricing_for(model: str) -> tuple[float, float, float, float, float]:
-    """Return (input, output, thinking, cache_write, cache_read) USD/1M tokens for *model*."""
+def _pricing_for(model: str, prompt_tokens: int = 0) -> tuple[float, float, float, float, float]:
+    """Return (input, output, thinking, cache_write, cache_read) USD/1M tokens for *model*.
+
+    *prompt_tokens* selects the long-prompt tier for models priced by prompt length.
+    """
+    for prefix, (threshold, long_pricing) in _LONG_PROMPT_PRICING.items():
+        if model.startswith(prefix) and prompt_tokens > threshold:
+            input_price, output_price, cache_read_mult = long_pricing
+            return (input_price, output_price, output_price, input_price * 1.25, input_price * cache_read_mult)
     for prefix, (input_price, output_price, cache_read_mult) in _MODEL_PRICING.items():
         if model.startswith(prefix):
             return (input_price, output_price, output_price, input_price * 1.25, input_price * cache_read_mult)
@@ -692,6 +708,8 @@ class Agent:
             total_thinking_tokens += call_thinking
             total_cache_creation_tokens += call_cache_write
             total_cache_read_tokens += call_cache_read
+            # Re-price with this call's prompt size (models with long-prompt tiers).
+            model_input_price, model_output_price, model_thinking_price, model_cache_write_price, model_cache_read_price = _pricing_for(resolved_model, last_prompt_tokens)
             total_cost_usd += (
                 u.input_tokens * model_input_price
                 + call_regular_output * model_output_price

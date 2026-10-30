@@ -1,7 +1,7 @@
 ---
 title: Architecture Overview
-last_updated: 2026-10-29
-last_verified_sha: 9464ac1
+last_updated: 2026-10-30
+last_verified_sha: a226d8a
 sources:
   - src/agentflow/main.py
   - src/agentflow/api/routes.py
@@ -165,7 +165,7 @@ variants so multiple API replicas can share a run — see
    `envelope.constraints.thinking_effort` if the planner set one for this subtask, else
    `AgentManifest.thinking_effort`, else `settings.agent_thinking_effort`, which defaults
    to `"medium"`) is non-empty **and** `supports_adaptive_thinking(resolved_model)` (in
-   `llm/client.py` — an allowlist of model-id prefixes; Haiku 4.5 and older reject
+   `llm/client.py` — an allowlist of model-id prefixes, including Haiku 5.5; Haiku 4.5 and older reject
    adaptive thinking and `effort` with a 400, so e.g. a `thinking_effort: high` agent
    re-tiered to `"economy"` sends neither), each `messages.create()` call includes adaptive thinking —
    `thinking={"type": "adaptive", "display": "summarized"}` plus
@@ -178,8 +178,10 @@ variants so multiple API replicas can share a run — see
    iteration whose budget-derived `max_tokens` is below 1024 (`_budget_to_max_tokens()`
    can floor it as low as 256 near budget exhaustion) the `thinking` config is dropped and
    only `output_config={"effort": "low"}` is sent. Merely omitting the parameters would not
-   turn thinking off: Sonnet 5 / Opus 5+ think adaptively at their default `"high"` effort
-   when `thinking` is absent. The global default is explicit (`"medium"`) for the same
+   turn thinking off: Sonnet 5.x / Opus 5+ think adaptively at their default effort when
+   `thinking` is absent (Opus 5.5 / Fable 5.1 can't disable thinking at all — sending
+   `{"type": "disabled"}` is a 400 — so lowering effort is the only lever). Default effort
+   differs by model (`"medium"` on Opus 5.5 and Haiku 5.5, `"high"` elsewhere). The global default is explicit (`"medium"`) for the same
    reason — `""` means "omit and use the model's own default", which differs by model.
    If a run ends with no text block, the final output falls back to the last non-empty
    `thinking` block.
@@ -347,17 +349,23 @@ variants so multiple API replicas can share a run — see
   which returns `None` for an unset or unrecognised tier name (non-fatal — the caller
   falls through to the next precedence level) rather than raising. Re-tiering an entire
   fleet of manifests is then a three-setting `.env` change rather than editing every
-  manifest's raw `model` field. The resolved value is stored once per loop as
+  manifest's raw `model` field. Defaults: `agent_model` and `standard` are Opus 5.5
+  (`claude-opus-5-5`), `premium` is Fable 5.1, `economy` (and `reporter_model`, used for
+  the tiny `max_tokens` run-naming/routing calls) stay on Haiku 4.5, which has no
+  thinking to eat those small budgets; `planner_model` is Sonnet 5.5. The resolved value is stored once per loop as
   `resolved_model`. Cost accounting uses `_pricing_for(resolved_model)`
-  — a model-id-prefix pricing table (Fable/Mythos 5.x, Opus 5.5/5/4.x, Sonnet 5/4.x,
-  Haiku 4.5/3; first match wins, so specific prefixes like `claude-opus-5-5` precede
+  — a model-id-prefix pricing table (Fable/Mythos 5.x, Opus 5.5/5/4.x, Sonnet 5.5/5/4.x,
+  Haiku 5.5/4.5/3; first match wins, so specific prefixes like `claude-opus-5-5` precede
   `claude-opus-5`) that falls back to the flat `settings.cost_per_1m_*` rates (with a
   one-time warning) for unrecognised models — rather than always pricing at
   `agent_model`'s rate, so a manifest override to a different pricing tier is still
   budgeted correctly. Each entry is `(input, output, cache_read_multiplier)`: cache writes
   are 1.25x input (5-minute TTL) and cache reads are input × the per-model multiplier
-  (0.1x standard; 0.05x Opus 5.5; 0.025x Fable/Mythos 5.1). Sonnet 5 is $2/$10 — its
-  launch "introductory" rate became the permanent price. `_budget_to_max_tokens()` takes
+  (0.1x standard; 0.05x Opus 5.5 / Sonnet 5.5; 0.025x Fable/Mythos 5.1). Haiku 5.5 is
+  priced by prompt length ($0.10/$0.50 up to 100K prompt tokens, $0.50/$2.50 above, cache
+  reads/writes included in the count), so `_pricing_for(model, prompt_tokens)` consults
+  `_LONG_PROMPT_PRICING` first and the loop re-prices each call with its own prompt size;
+  budget→`max_tokens` conversion uses the base tier. `_budget_to_max_tokens()` takes
   this same resolved input/output pricing as parameters instead of reading
   `settings.cost_per_1m_*` directly. The loop dispatches
   tool calls through `_checked_call_tool()`, which runs the pre-tool-use policy chain
