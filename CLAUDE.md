@@ -7,6 +7,10 @@ This repo maintains an agent-facing knowledge base at **`docs/kb/`**.
 - **At the start of any non-trivial task:** read [`docs/kb/index.md`](docs/kb/index.md),
   then the KB doc(s) relevant to your change, before exploring source. It exists
   so you don't rediscover the architecture every time.
+- `docs/guide/` is the **human-readable** architecture guide (overview, concepts,
+  flows with Mermaid diagrams, storage, deployment modes, what's new). Keep it current
+  when concepts, components, flows or deployment options change (see the `update-kb`
+  skill, step 5b). It is not for agents to learn implementation detail from.
 - `docs/adr/` records *why* architectural decisions were made (immutable once accepted);
   the KB records *how* the system works now. Read the ADR linked from a KB doc before
   changing a decision it covers.

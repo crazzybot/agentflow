@@ -35,7 +35,22 @@ done. It keeps `docs/kb/` current with the code.
    task changed or reversed an earlier ADR's decision, amend or supersede that ADR as
    the README describes. Never rewrite an accepted ADR's body.
 
-6. **Drift sweep.** For EVERY doc in `docs/kb/`, run the drift query:
+5b. **Human guide.** `docs/guide/` is the human-readable architecture guide. It
+   changes only when a **concept, component, flow, storage location or deployment
+   option** changes. Bug fixes and refactors don't touch it. If this task did one of
+   those things:
+   - Update the affected page(s) in plain language: no function-level detail (that
+     belongs in the KB, so link to the KB instead). Keep Mermaid diagrams in sync,
+     since they describe behaviour.
+   - Add a dated entry at the top of `docs/guide/whats-new.md` saying what changed for
+     someone using or extending AgentFlow, linking the ADR (if any) and the KB doc.
+   - Refresh that page's `last_updated`/`last_verified_sha`.
+   Guide pages carry the same frontmatter as KB docs and are covered by the drift sweep
+   (step 6). When a guide page drifts, its `sources` are broad on purpose: check
+   whether the page is still **true at its level of abstraction**. Usually it is, and
+   only the metadata needs refreshing.
+
+6. **Drift sweep.** For EVERY doc in `docs/kb/` and `docs/guide/`, run the drift query:
    `git diff --stat <last_verified_sha> HEAD -- <that doc's sources>`
    Non-empty output = the doc is behind. (Use a tree diff, not `git log sha..HEAD`:
    PRs are squash-merged, so a SHA recorded on a PR branch is never an ancestor of
