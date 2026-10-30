@@ -32,7 +32,10 @@ class Settings(BaseSettings):
     task_max_retries: int = 1
 
     manifests_dir: str = "manifests"
-    workspace_dir: str = "workspace"
+    # Root of all run workspaces (named ones and runs/<run_id>/). Kept outside the
+    # repo so agent-written projects never mix with AgentFlow's own source; "~" is
+    # expanded, and a relative value resolves against the process's CWD.
+    workspace_dir: str = "~/agentflow-workspace"
     runs_dir: str = ".runs"
     skills_dir: str = "skills"
     sandbox_python: str = "sandbox/.venv/bin/python"

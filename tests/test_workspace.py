@@ -289,3 +289,91 @@ async def test_artifact_content_resolves_against_run_workspace(routes, tmp_path,
     resp = await routes_mod.get_run_artifact_content("r", "x")
 
     assert resp.content == "hello"
+
+
+# ---------------------------------------------------------------------------
+# Configurable root and run-relative artifact paths
+# ---------------------------------------------------------------------------
+
+def test_workspace_root_expands_home(tmp_path, monkeypatch):
+    from agentflow.core.workspace import workspace_root
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("agentflow.config.settings.workspace_dir", "~/agentflow-workspace")
+    assert workspace_root() == (tmp_path / "agentflow-workspace").resolve()
+
+
+def test_default_workspace_dir_is_outside_the_repo():
+    from agentflow.config import Settings
+
+    default = Path(Settings.model_fields["workspace_dir"].default).expanduser().resolve()
+    repo = Path(__file__).resolve().parents[1]
+    assert not default.is_relative_to(repo)
+
+
+@pytest.mark.parametrize("given", [
+    "report.md", "./report.md", "sub/../report.md", "{ws}/report.md",
+])
+def test_run_relative_normalises_to_run_workspace(ws_root, given):
+    from agentflow.core.workspace import run_relative
+
+    run_ws = workspace_path("runs/abc")
+    token = _current_workspace.set(run_ws)
+    try:
+        assert run_relative(given.format(ws=run_ws)) == "report.md"
+        assert run_relative("docs/a.md") == "docs/a.md"
+        assert run_relative("../other/x.md") is None
+        assert run_relative(str(ws_root / "elsewhere.md")) is None
+        assert run_relative(".") is None
+    finally:
+        _current_workspace.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_artifacts_recorded_relative_to_run_workspace(ws_root, tmp_path):
+    from agentflow.tools.artifact_tracker import ArtifactSink, _current_sink
+    from agentflow.tools.builtin import _file_write
+
+    run_ws = workspace_path("runs/abc")
+    artifacts = tmp_path / "artifacts.jsonl"
+    ws_token = _current_workspace.set(run_ws)
+    sink_token = _current_sink.set(ArtifactSink(artifacts))
+    try:
+        await _file_write(str(run_ws / "out" / "a.md"), "x")
+        await _file_write("./out/../out/a.md", "y")
+        await _file_write("b.md", "z")
+    finally:
+        _current_sink.reset(sink_token)
+        _current_workspace.reset(ws_token)
+
+    paths = [json.loads(l)["path"] for l in artifacts.read_text().splitlines()]
+    assert paths == ["out/a.md", "b.md"]
+
+
+def test_files_written_are_run_relative(ws_root):
+    from agentflow.agents.agent import _collect_written_paths
+
+    run_ws = workspace_path("runs/abc")
+    blocks = [
+        {"id": "1", "name": "file_write", "input": {"path": str(run_ws / "src" / "m.py")}},
+        {"id": "2", "name": "file_write", "input": {"path": "./src/../n.py"}},
+    ]
+    results = [{"type": "tool_result", "tool_use_id": i, "content": "Wrote 1 lines"} for i in ("1", "2")]
+    token = _current_workspace.set(run_ws)
+    try:
+        assert _collect_written_paths(blocks, results) == ["src/m.py", "n.py"]
+    finally:
+        _current_workspace.reset(token)
+
+
+def test_mcp_stdio_args_and_env_expand_workspace_root(ws_root):
+    from agentflow.core.models import MCPServerConfig
+    from agentflow.tools.mcp_tools import _expand, _stdio_env
+
+    config = MCPServerConfig(
+        name="skb", transport="stdio", command="uv",
+        args=["--directory", "{workspace_root}/semantic-kb"],
+        env={"SKB_DB_DIR": "{workspace_root}/semantic-kb/.db"},
+    )
+    assert _expand(config.args[1]) == f"{ws_root.resolve()}/semantic-kb"
+    assert _stdio_env(config) == {"SKB_DB_DIR": f"{ws_root.resolve()}/semantic-kb/.db"}

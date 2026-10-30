@@ -58,7 +58,7 @@ def run_workspace_rel(run_id: str, name: str | None) -> str:
 
 
 def workspace_root() -> Path:
-    return Path(settings.workspace_dir).resolve()
+    return Path(settings.workspace_dir).expanduser().resolve()
 
 
 def workspace_path(rel: str) -> Path:
@@ -80,6 +80,21 @@ def current_workspace() -> Path:
     ws = _current_workspace.get() or workspace_root()
     ws.mkdir(parents=True, exist_ok=True)
     return ws
+
+
+def run_relative(path: str) -> str | None:
+    """Normalise a tool-supplied *path* to POSIX form relative to the active run's
+    workspace, or None if it points outside it.
+
+    Agents may name the same file as ``report.md``, ``./a/../report.md`` or an
+    absolute path inside the workspace; artifact records and ``files_written``
+    store one canonical form so they never depend on where the root lives.
+    """
+    ws = current_workspace().resolve()
+    target = (ws / path).resolve()
+    if not target.is_relative_to(ws) or target == ws:
+        return None
+    return target.relative_to(ws).as_posix()
 
 
 class WorkspaceLocks:
