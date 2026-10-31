@@ -1,7 +1,11 @@
 ---
 title: Campaigns (Long-Horizon Sessions)
 last_updated: 2026-10-30
+<<<<<<< HEAD
 last_verified_sha: 564a6a1
+=======
+last_verified_sha: 629fee4
+>>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8
 sources:
   - src/agentflow/orchestrator/campaign.py
   - src/agentflow/orchestrator/engine.py
@@ -14,8 +18,12 @@ status: current
 # Campaigns (Long-Horizon Sessions)
 
 > **Why it is built this way:** [ADR-008](../../adr/008-campaign-ledger-in-code.md);
+<<<<<<< HEAD
 > session cost controls: [ADR-011](../../adr/011-campaign-session-cost-controls.md);
 > per-feature agent routing: [ADR-013](../../adr/013-campaign-feature-agent-routing.md).
+=======
+> session cost controls: [ADR-011](../../adr/011-campaign-session-cost-controls.md).
+>>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8
 
 A campaign builds something too large for one run as a **sequence of runs
 ("sessions") with fresh contexts**, held together by a feature ledger. It follows
@@ -98,9 +106,13 @@ workspace lock.
      session in progress, and link it.
    - **Run the session.** `engine.run(run_id, …, workspace=campaign.workspace,
      budget_usd=_session_budget(), plan=…)` with a **preset plan**: one subtask
+<<<<<<< HEAD
      `SESSION_SUBTASK_ID = "feature"` for the feature's agent (`_feature_agent()`: its
      routed `agent_id` while that is registered, else the pinned agent, else
      `CAMPAIGN_DEFAULT_AGENT`), the instruction from
+=======
+     `SESSION_SUBTASK_ID = "feature"` for `agent_id`, the instruction from
+>>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8
      `_session_instruction()`, and `acceptance_criteria = feature.checks`. The subtask
      is built by `_session_subtask()`, which also sets the session's cost controls:
      `max_iterations = CAMPAIGN_SESSION_MAX_ITERATIONS` (40), and a model and thinking
@@ -145,7 +157,11 @@ Note that a session's in-run repair rounds (`VERIFICATION_MAX_REPAIRS`) happen
 
 | Call | Behaviour |
 | --- | --- |
+<<<<<<< HEAD
 | `POST /api/campaigns` | `create()` validates the pinned `agent_id`, or `CAMPAIGN_DEFAULT_AGENT` when none is given (unknown → `UnknownAgentError` → 422), and the workspace name, saves, and `start()`s a background `_drive` task. A request without `session_budget_usd` gets `CAMPAIGN_DEFAULT_SESSION_BUDGET_USD` ($3); an explicit `null` means no per-session cap. A session that reaches its budget between continuations accepts its partial result without asking a human (the engine skips HITL for runs with a `campaign_id`). |
+=======
+| `POST /api/campaigns` | `create()` validates `agent_id` (unknown → 422) and the workspace name, saves, and `start()`s a background `_drive` task. A request without `session_budget_usd` gets `CAMPAIGN_DEFAULT_SESSION_BUDGET_USD` ($3); an explicit `null` means no per-session cap. A session that reaches its budget between continuations accepts its partial result without asking a human (the engine skips HITL for runs with a `campaign_id`). |
+>>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8
 | `GET /api/campaigns[/{id}]` | `CampaignView`: campaign, features, passing/total. |
 | `POST …/pause` | Sets `pause_requested`; the campaign stops **after** the current session (409 if not running here). Cancel the session's run to stop sooner. |
 | `POST …/resume` | `start()` again; 409 if already active or `completed`/`failed`. A `stopped` campaign (no pending session) is first checked against `_stop_reasons`, and refused with **every** blocking condition and its fix in one message, rather than starting a loop that would stop again at once. |

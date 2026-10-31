@@ -1,7 +1,11 @@
 ---
 title: What's new
 last_updated: 2026-10-30
+<<<<<<< HEAD
 last_verified_sha: 7486398
+=======
+last_verified_sha: 629fee4
+>>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8
 sources:
   - docs/adr/
 status: current
@@ -15,6 +19,7 @@ fixes and internal refactors are not listed here; see the git history for those.
 
 ---
 
+<<<<<<< HEAD
 ## 30 October 2026: Default API port is now 8002
 
 - **The API listens on 8002 by default.** `agentflow serve` and the CLI client default to
@@ -55,6 +60,8 @@ fixes and internal refactors are not listed here; see the git history for those.
 
 ---
 
+=======
+>>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8
 ## 30 October 2026: cheaper campaigns
 
 - **A first attempt runs on a cheaper model.** Campaign sessions start on Sonnet at
