@@ -17,7 +17,7 @@ from typing import Any
 import httpx
 
 from agentflow.config import settings
-from agentflow.core.workspace import current_workspace
+from agentflow.core.workspace import current_workspace, run_relative
 from agentflow.tools.sandbox import ExecResult, SandboxUnavailableError, current_sandbox, python_interpreter
 from agentflow.tools.registry import ToolDefinition, ToolImpact, tool_registry
 
@@ -39,11 +39,17 @@ _OVERFLOW_PREVIEW_TAIL = 1_000
 # ---------------------------------------------------------------------------
 
 async def _record_artifact(path: str) -> None:
-    """Register a workspace-relative path with the current run's artifact sink."""
+    """Register a written file with the current run's artifact sink, recorded
+    relative to the run's workspace (see ``run_relative``)."""
     from agentflow.tools.artifact_tracker import _current_sink
     sink = _current_sink.get()
-    if sink is not None:
-        await sink.record(path)
+    if sink is None:
+        return
+    rel = run_relative(path)
+    if rel is None:
+        logger.warning("Not recording artifact outside the run workspace: %r", path)
+        return
+    await sink.record(rel)
 
 
 def _workspace() -> Path:

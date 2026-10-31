@@ -14,6 +14,7 @@ import re
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
+from agentflow.core.workspace import workspace_root
 from agentflow.tools.registry import ToolDefinition
 
 if TYPE_CHECKING:
@@ -112,7 +113,16 @@ def _stdio_env(config: "MCPServerConfig") -> dict[str, str]:
     such as ANTHROPIC_API_KEY never reach the server unless explicitly listed.
     """
     passthrough = {k: os.environ[k] for k in config.env_passthrough if k in os.environ}
-    return {**passthrough, **config.env}
+    return {**passthrough, **{k: _expand(v) for k, v in config.env.items()}}
+
+
+# Placeholder a manifest can use in stdio args/env values for servers that live
+# in (or keep data under) the workspace, wherever WORKSPACE_DIR points.
+WORKSPACE_ROOT_PLACEHOLDER = "{workspace_root}"
+
+
+def _expand(value: str) -> str:
+    return value.replace(WORKSPACE_ROOT_PLACEHOLDER, str(workspace_root()))
 
 
 @asynccontextmanager
@@ -130,9 +140,10 @@ async def _stdio_session(config: "MCPServerConfig") -> AsyncIterator[list[ToolDe
         yield []
         return
 
-    params = StdioServerParameters(command=config.command, args=config.args, env=_stdio_env(config))
+    args = [_expand(a) for a in config.args]
+    params = StdioServerParameters(command=config.command, args=args, env=_stdio_env(config))
 
-    logger.info("Launching stdio MCP server %r: %s %s", config.name, config.command, " ".join(config.args))
+    logger.info("Launching stdio MCP server %r: %s %s", config.name, config.command, " ".join(args))
     launched = False
     try:
         async with stdio_client(params) as (read, write):

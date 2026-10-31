@@ -4,7 +4,9 @@ Modelled on the initializer + coding-agent harness pattern, with the ledger
 enforced in code rather than by prompt:
 
 1. **Define.** A read-only feature planner turns the task into an ordered
-   ledger of features, each with file-checkable ``checks``. The ledger lives in
+   ledger of features, each with file-checkable ``checks`` and — unless the
+   campaign pins one agent — routed to the agent that implements it, as the run
+   planner routes subtasks. The ledger lives in
    ``<runs_dir>/campaigns/<id>/features.json`` — outside every agent workspace —
    and its definitions never change afterwards.
 2. **Sessions.** Each session is an ordinary run (fresh context, its own session
@@ -53,8 +55,15 @@ from agentflow.core.models import (
     Subtask,
     TaskEnvelope,
 )
+from agentflow.core.registry import AgentRegistry
 from agentflow.core.session import RunSession, _current_session, read_session, replay
-from agentflow.core.workspace import _current_workspace, run_workspace_rel, validate_workspace_name, workspace_path
+from agentflow.core.workspace import (
+    _current_workspace,
+    run_workspace_rel,
+    runs_root,
+    validate_workspace_name,
+    workspace_path,
+)
 from agentflow.orchestrator.planner import _parse_criteria
 from agentflow.orchestrator.resume import RunNotResumableError
 from agentflow.orchestrator.stream import StreamEmitter
@@ -84,12 +93,16 @@ class CampaignStateError(Exception):
     """Raised when an operation does not fit the campaign's status."""
 
 
+class UnknownAgentError(Exception):
+    """Raised when a request names an agent that is not registered."""
+
+
 # ---------------------------------------------------------------------------
 # Store
 # ---------------------------------------------------------------------------
 
 def _campaigns_root() -> Path:
-    return Path(settings.runs_dir) / "campaigns"
+    return runs_root() / "campaigns"
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -191,15 +204,31 @@ Rules:
 - At most {max_features} features.
 """
 
+_ROUTING_PROMPT = """
+Agent selection — each feature also has "agentId": the agent that implements it,
+chosen from the <available_agents> list in your task message:
+- Match each feature to the agent whose domain, capabilities and tools best fit the
+  work (code to a coding agent, prose documentation to a writing agent, and so on).
+- Prefer a specialist agent over a generalist when both could do it.
+- A feature is implemented by exactly one agent; if it needs two kinds of work, split
+  it into two features in dependency order.
+"""
+
 
 async def _run_feature_planner(
     campaign: Campaign, client: LLMClient, emitter: StreamEmitter, max_features: int,
+    roster: str | None,
 ) -> AgentResult:
+    system_prompt = _DEFINER_PROMPT.replace("{max_features}", str(max_features))
+    instruction = f"<project_spec>\n{campaign.task}\n</project_spec>"
+    if roster is not None:
+        system_prompt += _ROUTING_PROMPT
+        instruction += f"\n\n<available_agents>\n{roster}\n</available_agents>"
     manifest = AgentManifest(
         agent_id="campaign.feature_planner",
         domain="Planning",
         tools=["file_read", "bash_exec_readonly"],
-        system_prompt=_DEFINER_PROMPT.replace("{max_features}", str(max_features)),
+        system_prompt=system_prompt,
         max_iterations=settings.planner_max_iterations,
         on_iteration_limit=IterationLimitAction.finalize,
         model=settings.planner_model,
@@ -210,7 +239,7 @@ async def _run_feature_planner(
     envelope = TaskEnvelope(
         parent_run_id=f"campaign-{campaign.campaign_id}",
         agent_id=manifest.agent_id,
-        instruction=f"<project_spec>\n{campaign.task}\n</project_spec>",
+        instruction=instruction,
     )
     return await Agent(manifest, client).run(envelope, emitter)
 
@@ -222,14 +251,33 @@ def _feature_list(result: AgentResult) -> list[Any] | None:
     return raw
 
 
-async def define_features(campaign: Campaign, client: LLMClient, emitter: StreamEmitter) -> list[Feature]:
+def _route(campaign: Campaign, entry: dict[str, Any], fid: str, registry: AgentRegistry | None) -> str:
+    """The agent for a newly defined feature: the campaign's pinned agent, else the
+    planner's registered choice, else the default agent."""
+    if campaign.agent_id:
+        return campaign.agent_id
+    chosen = entry.get("agentId")
+    if isinstance(chosen, str) and registry is not None and registry.get(chosen) is not None:
+        return chosen
+    logger.warning("[campaign %s] %s: planner chose no registered agent (%r) — using %s",
+                   campaign.campaign_id, fid, chosen, settings.campaign_default_agent)
+    return settings.campaign_default_agent
+
+
+async def define_features(
+    campaign: Campaign, client: LLMClient, emitter: StreamEmitter, registry: AgentRegistry | None = None,
+) -> list[Feature]:
     """Run the read-only feature planner and return a validated ledger (may be empty).
+
+    Unless the campaign pins one agent, the planner also routes each feature to an
+    agent from *registry*, as the run planner routes subtasks.
 
     If the planner's answer is cut off by max_tokens, it is retried once asking for
     half as many features, since a shorter ledger is the only way to fit the answer.
     """
+    roster = registry.summary() if registry is not None and not campaign.agent_id else None
     max_features = settings.campaign_max_features
-    result = await _run_feature_planner(campaign, client, emitter, max_features)
+    result = await _run_feature_planner(campaign, client, emitter, max_features, roster)
     raw = _feature_list(result)
     if raw is None and result.hit_max_tokens:
         max_features = max(1, max_features // 2)
@@ -237,7 +285,7 @@ async def define_features(campaign: Campaign, client: LLMClient, emitter: Stream
             "[campaign %s] Feature planner output was truncated by max_tokens — "
             "retrying with at most %d features", campaign.campaign_id, max_features,
         )
-        result = await _run_feature_planner(campaign, client, emitter, max_features)
+        result = await _run_feature_planner(campaign, client, emitter, max_features, roster)
         raw = _feature_list(result)
     if raw is None:
         logger.warning(
@@ -256,7 +304,9 @@ async def define_features(campaign: Campaign, client: LLMClient, emitter: Stream
             logger.warning("[campaign %s] Dropping feature without title or checks: %r",
                            campaign.campaign_id, entry)
             continue
-        features.append(Feature(id=fid, title=title, description=description or title, checks=checks))
+        features.append(Feature(id=fid, title=title, description=description or title, checks=checks,
+                                agent_id=_route(campaign, entry, fid, registry)))
+    logger.info("[campaign %s] Feature routing: %s", campaign.campaign_id, [(f.id, f.agent_id) for f in features])
     return features
 
 
@@ -296,7 +346,9 @@ def _session_instruction(
 ) -> str:
     passing = [f for f in features if f.status == FeatureStatus.passing]
     remaining = [f for f in features if f.status != FeatureStatus.passing]
-    ledger = "\n".join(f"- {f.id} [{f.status.value}] {f.title}" for f in features)
+    ledger = "\n".join(
+        f"- {f.id} [{f.status.value}] {f.title}" + (f" ({f.agent_id})" if f.agent_id else "") for f in features
+    )
     checks = "\n".join(f"- {c}" for c in target.checks)
     previous = next(
         (f.notes for f in sorted(features, key=lambda f: f.last_checked_session, reverse=True) if f.notes),
@@ -350,8 +402,11 @@ class CampaignManager:
     # -- public operations ---------------------------------------------------
 
     def create(self, request: CampaignRequest) -> Campaign:
-        if self.engine.registry.get(request.agent_id) is None:
-            raise CampaignStateError(f"Unknown agent {request.agent_id!r}")
+        # A pinned agent runs every feature; otherwise the default agent must exist to
+        # take features the planner leaves unrouted.
+        agent_id = request.agent_id or settings.campaign_default_agent
+        if self.engine.registry.get(agent_id) is None:
+            raise UnknownAgentError(f"Unknown agent {agent_id!r}")
         campaign_id = uuid.uuid4().hex[:12]
         name = request.workspace or f"campaign-{campaign_id}"
         validate_workspace_name(name)
@@ -409,11 +464,15 @@ class CampaignManager:
                     {f: getattr(campaign, f) for f in update.model_fields_set})
         return campaign
 
-    def retry_feature(self, campaign_id: str, feature_id: str, guidance: str = "") -> Feature:
+    def retry_feature(
+        self, campaign_id: str, feature_id: str, guidance: str = "", agent_id: str | None = None,
+    ) -> Feature:
         """Give a blocked or failing feature fresh attempts, optionally with operator
-        guidance for its next session. Its definition and checks stay fixed, and only
-        the verifier can still mark it passing (ADR-008)."""
+        guidance for its next session and a different agent. Its definition and checks
+        stay fixed, and only the verifier can still mark it passing (ADR-008)."""
         self.store.load(campaign_id)  # 404 for an unknown campaign
+        if agent_id is not None and self.engine.registry.get(agent_id) is None:
+            raise UnknownAgentError(f"Unknown agent {agent_id!r}")
         features = self.store.features(campaign_id)
         feature = next((f for f in features if f.id == feature_id), None)
         if feature is None:
@@ -423,8 +482,10 @@ class CampaignManager:
         feature.status, feature.attempts = FeatureStatus.failing, 0  # failing features go first
         if guidance.strip():
             feature.guidance = guidance.strip()
+        if agent_id is not None:
+            feature.agent_id = agent_id
         self.store.save_features(campaign_id, features)
-        logger.info("[campaign %s] %s reset for retry%s", campaign_id, feature_id,
+        logger.info("[campaign %s] %s reset for retry on %s%s", campaign_id, feature_id, feature.agent_id,
                     " with operator guidance" if feature.guidance else "")
         return feature
 
@@ -502,7 +563,7 @@ class CampaignManager:
             campaign.status, campaign.stop_reason = CampaignStatus.defining, ""
             self.store.save(campaign)
             features = await self._in_campaign_context(
-                campaign, define_features(campaign, self.engine.client, emitter)
+                campaign, define_features(campaign, self.engine.client, emitter, self.engine.registry)
             )
             if not features:
                 self._set_status(campaign_id, CampaignStatus.failed, "no usable feature ledger")
@@ -546,8 +607,15 @@ class CampaignManager:
             target.sessions.append(run_id)
             self.store.save_features(campaign_id, features)
 
+<<<<<<< HEAD
+            agent_id = self._feature_agent(campaign, target)
+            plan = ExecutionPlan(run_id=run_id, subtasks=[self._session_subtask(campaign, features, target, agent_id)])
+            logger.info("[campaign %s] Session %d: %s on %s (%s)",
+                        campaign_id, len(campaign.sessions), target.id, agent_id, run_id)
+=======
             plan = ExecutionPlan(run_id=run_id, subtasks=[self._session_subtask(campaign, features, target)])
             logger.info("[campaign %s] Session %d: %s (%s)", campaign_id, len(campaign.sessions), target.id, run_id)
+>>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8
             await self.engine.run(
                 run_id,
                 f"Campaign {campaign_id} — {target.id}: {target.title}",
@@ -618,9 +686,10 @@ class CampaignManager:
             key=lambda f: f.last_checked_session,
         )[: settings.campaign_regression_checks]
         for feature in passing:
-            subtask = Subtask(id=feature.id, agent_id=campaign.agent_id,
+            agent_id = self._feature_agent(campaign, feature)
+            subtask = Subtask(id=feature.id, agent_id=agent_id,
                               instruction=feature.description, acceptance_criteria=feature.checks)
-            claim = AgentResult(task_id=feature.id, agent_id=campaign.agent_id, status=AgentStatus.success,
+            claim = AgentResult(task_id=feature.id, agent_id=agent_id, status=AgentStatus.success,
                                 output=AgentOutput(text="This feature passed verification in an earlier session; "
                                                         "confirm it still holds."))
             verdict, verifier_result = await self._in_campaign_context(
@@ -653,6 +722,40 @@ class CampaignManager:
             _current_workspace.reset(ws_token)
 
     # -- policy --------------------------------------------------------------
+
+    def _feature_agent(self, campaign: Campaign, feature: Feature) -> str:
+        """The agent a feature's sessions run on: its routed agent while that is still
+        registered (a manifest may have been removed since definition), else the
+        campaign's pinned agent, else the default agent."""
+        if feature.agent_id and self.engine.registry.get(feature.agent_id) is not None:
+            return feature.agent_id
+        fallback = campaign.agent_id or settings.campaign_default_agent
+        if feature.agent_id:
+            logger.warning("[campaign %s] %s: agent %r is no longer registered — using %s",
+                           campaign.campaign_id, feature.id, feature.agent_id, fallback)
+        return fallback
+
+    @staticmethod
+    def _session_subtask(campaign: Campaign, features: list[Feature], target: Feature, agent_id: str) -> Subtask:
+        """The one-subtask plan of a session. A feature's first attempt runs on the
+        cheaper session model and effort; a failing one (failed a session or regressed)
+        escalates to the escalation model and effort."""
+        escalate = target.status == FeatureStatus.failing
+        model = settings.campaign_escalation_model if escalate else settings.campaign_session_model
+        effort = (
+            settings.campaign_escalation_thinking_effort if escalate
+            else settings.campaign_session_thinking_effort
+        )
+        workspace_map = _workspace_map(workspace_path(campaign.workspace), settings.campaign_workspace_map_max_files)
+        return Subtask(
+            id=SESSION_SUBTASK_ID,
+            agent_id=agent_id,
+            instruction=_session_instruction(campaign, features, target, workspace_map),
+            acceptance_criteria=target.checks,
+            model=model or None,
+            thinking_effort=effort or None,
+            max_iterations=settings.campaign_session_max_iterations,
+        )
 
     @staticmethod
     def _session_subtask(campaign: Campaign, features: list[Feature], target: Feature) -> Subtask:

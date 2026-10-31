@@ -24,7 +24,7 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agentflow.config import settings
+from agentflow.core.workspace import runs_root
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ class WorkspaceCheckpoints:
         if shutil.which("git") is None:
             logger.warning("[%s] git not found — workspace checkpoints disabled", run_id)
             return None
-        git_dir = Path(settings.runs_dir).resolve() / run_id / CHECKPOINTS_DIR
+        git_dir = runs_root() / run_id / CHECKPOINTS_DIR
         cp = cls(git_dir, work_tree)
         try:
             if not (git_dir / "HEAD").exists():

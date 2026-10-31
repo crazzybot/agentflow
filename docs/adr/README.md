@@ -76,3 +76,8 @@ KB: [link to the doc describing the current implementation]
 | [009](009-sandbox-and-tool-policies.md) | Sandbox interface for exec tools (Docker fails closed); pre-tool-use policy chain | Accepted |
 | [010](010-remote-agent-workers.md) | Remote agent execution through a dedicated work queue | Accepted |
 | [011](011-campaign-session-cost-controls.md) | Campaign session cost controls (cheap first attempt, escalation, cache-stable prompt) | Accepted |
+<<<<<<< HEAD
+| [012](012-workspace-root-outside-repo.md) | AgentFlow data home outside the repository; run-relative artifact paths | Accepted |
+| [013](013-campaign-feature-agent-routing.md) | Route each campaign feature to an agent | Accepted |
+=======
+>>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8

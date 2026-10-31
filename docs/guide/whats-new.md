@@ -1,7 +1,11 @@
 ---
 title: What's new
 last_updated: 2026-10-30
+<<<<<<< HEAD
+last_verified_sha: 7486398
+=======
 last_verified_sha: 629fee4
+>>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8
 sources:
   - docs/adr/
 status: current
@@ -15,6 +19,49 @@ fixes and internal refactors are not listed here; see the git history for those.
 
 ---
 
+<<<<<<< HEAD
+## 30 October 2026: Default API port is now 8002
+
+- **The API listens on 8002 by default.** `agentflow serve` and the CLI client default to
+  port 8002 (override with `--port` or `AGENTFLOW_PORT`); start `uvicorn` with
+  `--port 8002` to match. A web frontend runs on 5175, which the CORS list already allows.
+  Details: [architecture](../kb/architecture.md).
+
+## 30 October 2026: Campaign features are routed to the right agent
+
+- **Each feature gets its own agent.** The campaign's feature planner now sees the agent
+  roster, as the run planner does, and assigns each feature to the best-suited agent, for
+  example `CodeAgent` for the API and `WriterAgent` for the user guide. Sessions run on
+  that feature's agent.
+- **`agent_id` on `POST /api/campaigns` is now optional.** Leave it out to get routing
+  (the new default). Set it to run every feature on one agent, as before. A feature the
+  planner leaves unrouted goes to `CAMPAIGN_DEFAULT_AGENT` (`CodeAgent`).
+- **Retry can reassign.** `POST …/features/{fid}/retry` accepts `agent_id` to move a stuck
+  feature to another agent. Its checks still don't change.
+- Why: [ADR-013](../adr/013-campaign-feature-agent-routing.md). Details:
+  [campaigns](../kb/subsystems/campaigns.md).
+
+## 30 October 2026: AgentFlow's data lives outside the repo
+
+- **One data home, `~/agentflow`.** Workspaces (`~/agentflow/workspace`) and run records
+  (`~/agentflow/runs`, formerly `.runs/`) no longer sit inside the AgentFlow checkout.
+  Set `AGENTFLOW_HOME` to move both at once, or `WORKSPACE_DIR` / `RUNS_DIR` one at a time
+  (`~` is expanded). The two must not be inside each other: the server and workers refuse
+  to start if they are. To keep the old layout, set `WORKSPACE_DIR=workspace` and
+  `RUNS_DIR=.runs`.
+- **Artifact paths are always relative to the run's own workspace.** Whatever path an
+  agent used, `artifacts.jsonl` and the file lists passed to later subtasks store one
+  canonical relative path. That means they keep working if you move the workspace root.
+- **MCP servers can refer to the workspace.** A manifest can write `{workspace_root}` in a
+  stdio server's `args` or `env`. The bundled semantic-kb server uses it.
+
+[ADR-012](../adr/012-workspace-root-outside-repo.md) ·
+[KB: Workspaces](../kb/architecture.md#workspaces)
+
+---
+
+=======
+>>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8
 ## 30 October 2026: cheaper campaigns
 
 - **A first attempt runs on a cheaper model.** Campaign sessions start on Sonnet at

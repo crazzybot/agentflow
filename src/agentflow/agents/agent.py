@@ -24,6 +24,7 @@ from agentflow.config import settings
 from agentflow.core.models import AgentManifest, AgentOutput, AgentResult, AgentStatus, IterationLimitAction, SSEEventType, TaskEnvelope
 from agentflow.agents.context_view import RECALL_TOOL_NAME, RECALL_TOOL_PARAM, ContextSnipper, recall
 from agentflow.core.session import SessionEventType, record
+from agentflow.core.workspace import run_relative
 from agentflow.llm import LLMClient, estimate_thinking_tokens, supports_adaptive_thinking
 from agentflow.tools import tool_registry
 from agentflow.tools.builtin import write_overflow_file
@@ -117,7 +118,9 @@ def _collect_written_paths(tool_use_blocks: list, tool_results: list[dict]) -> l
         b_name = getattr(b, "name", b.get("name") if isinstance(b, dict) else "")
         if b_name == "file_write" and b_id:
             inp = getattr(b, "input", b.get("input") if isinstance(b, dict) else {}) or {}
-            path = inp.get("path", "")
+            # Canonical run-relative form, so downstream injection and checkpoint
+            # rollback see one path per file whatever spelling the model used.
+            path = run_relative(inp.get("path", "")) if inp.get("path") else None
             if path:
                 write_blocks[b_id] = path
 

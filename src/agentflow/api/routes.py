@@ -9,7 +9,6 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
-from agentflow.config import settings
 from agentflow.core.context import context_store
 from agentflow.core.models import (
     FollowUpRequest,
@@ -43,11 +42,12 @@ from agentflow.core.session import (
     filter_events,
     read_session,
 )
-from agentflow.core.workspace import LEGACY_ROOT, InvalidWorkspaceError, workspace_path
+from agentflow.core.workspace import InvalidWorkspaceError, LEGACY_ROOT, runs_root, workspace_path
 from agentflow.orchestrator.campaign import (
     CampaignActiveError,
     CampaignNotFoundError,
     CampaignStateError,
+    UnknownAgentError,
 )
 from agentflow.orchestrator.engine import RunAlreadyActiveError
 from agentflow.orchestrator.resume import RunNotResumableError
@@ -234,7 +234,7 @@ async def send_run_message(run_id: str, message: UserMessage):
 
 
 def _run_dir(run_id: str) -> Path:
-    return Path(settings.runs_dir) / run_id
+    return runs_root() / run_id
 
 
 def _require_run(run_id: str) -> Path:
@@ -290,7 +290,7 @@ async def _run_info(d: Path) -> RunInfo:
 
 @router.get("/runs", response_model=RunListResponse)
 async def list_runs():
-    runs_dir = Path(settings.runs_dir)
+    runs_dir = runs_root()
     if not runs_dir.exists():
         return RunListResponse(runs=[])
     dirs = [d for d in runs_dir.iterdir() if d.is_dir()]
@@ -434,7 +434,7 @@ async def start_campaign(request: CampaignRequest):
     manager = _get_campaigns()
     try:
         campaign = manager.create(request)
-    except CampaignStateError as exc:
+    except (CampaignStateError, UnknownAgentError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     manager.start(campaign.campaign_id)
     return manager.store.view(campaign.campaign_id)
@@ -497,12 +497,14 @@ async def update_campaign_limits(campaign_id: str, update: CampaignLimitsUpdate)
 @router.post("/campaigns/{campaign_id}/features/{feature_id}/retry", response_model=CampaignView)
 async def retry_campaign_feature(campaign_id: str, feature_id: str, request: FeatureRetryRequest):
     """Give a blocked or failing feature fresh attempts, with optional guidance that
-    its next session will receive. Resume the campaign afterwards if it is stopped."""
+    its next session will receive and optionally a different agent. Resume the campaign afterwards if it is stopped."""
     manager = _get_campaigns()
     try:
-        manager.retry_feature(campaign_id, feature_id, request.guidance)
+        manager.retry_feature(campaign_id, feature_id, request.guidance, request.agent_id)
     except CampaignNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except UnknownAgentError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except CampaignStateError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return manager.store.view(campaign_id)

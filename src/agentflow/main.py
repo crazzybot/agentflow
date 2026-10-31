@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from agentflow.config import settings
 from agentflow.core.registry import AgentRegistry
+from agentflow.core.workspace import check_data_dirs
 from agentflow.logging_config import setup_logging
 from agentflow.orchestrator.engine import OrchestratorEngine, RunAlreadyActiveError
 from agentflow.orchestrator.campaign import CampaignManager
@@ -40,6 +41,7 @@ campaign_manager = CampaignManager(engine)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    check_data_dirs()
     reconciled = await engine.reconcile_orphaned_runs()
     if reconciled:
         logger.warning("Reconciled %d orphaned run(s) from previous instance", len(reconciled))

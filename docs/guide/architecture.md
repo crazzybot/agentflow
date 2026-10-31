@@ -1,7 +1,11 @@
 ---
 title: Architecture
 last_updated: 2026-10-30
+<<<<<<< HEAD
+last_verified_sha: 7486398
+=======
 last_verified_sha: 629fee4
+>>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8
 sources:
   - src/agentflow/main.py
   - src/agentflow/api/
@@ -54,7 +58,7 @@ flowchart TB
     end
 
     subgraph state [State]
-      files[("Files: .runs/<br/>session logs, reports,<br/>checkpoints, ledgers")]
+      files[("Files: ~/agentflow/runs/<br/>session logs, reports,<br/>checkpoints, ledgers")]
       wsdir[(Workspaces)]
       redis[("Redis (optional):<br/>streams, context, leases,<br/>work queues")]
     end
@@ -113,7 +117,7 @@ told, and why every agent turn ends up in the right session log.
 
 ## Two kinds of state
 
-- **Durable** (on disk, under `.runs/`): the session log, `meta.json`, the report,
+- **Durable** (on disk, under `~/agentflow/runs/`, `RUNS_DIR`): the session log, `meta.json`, the report,
   checkpoints and campaign ledgers. These survive restarts, and everything that has to
   survive a restart is rebuilt from them.
 - **Live** (memory or Redis): the SSE stream, run context, leases and work queues. These

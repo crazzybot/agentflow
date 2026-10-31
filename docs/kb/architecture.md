@@ -1,7 +1,11 @@
 ---
 title: Architecture Overview
 last_updated: 2026-10-30
+<<<<<<< HEAD
+last_verified_sha: 7486398
+=======
 last_verified_sha: 629fee4
+>>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8
 sources:
   - src/agentflow/main.py
   - src/agentflow/api/routes.py
@@ -431,7 +435,8 @@ variants so multiple API replicas can share a run — see
   storage (preserving thinking-block `signature` fields) so the history can be
   inspected without SDK coupling; `_collect_written_paths()` identifies file paths
   from successful `file_write` tool calls this turn (cross-referencing blocks
-  against tool results that lack an `"error"` prefix) and appends them to the
+  against tool results that lack an `"error"` prefix), normalises each with
+  `run_relative()` (see [Workspaces](#workspaces)) and appends them to the
   per-run `all_files_written` accumulator, which is returned as
   `AgentResult.files_written`. The assistant's own tool_use blocks (including
   `file_write`'s `content` argument) are stored in history verbatim and never
@@ -515,7 +520,7 @@ variants so multiple API replicas can share a run — see
     in the workspace; triggers KB ingest automatically via the `_kb_dispatch_fn` ContextVar
     if `KnowledgebaseAgent` is active in the run. The ingest instruction carries both the
     workspace-relative and the absolute path: the semantic-kb MCP server runs in its own
-    directory (`uv --directory workspace/semantic-kb`), so `skb_add` needs the absolute one.
+    directory (`uv --directory {workspace_root}/semantic-kb`), so `skb_add` needs the absolute one.
     Returns the workspace-relative path and the KB ingest outcome.
   - `fetch_url` — transparently redirects `arxiv.org/abs/` URLs to the Atom API so
     agents that accidentally call it on an arXiv link still get structured text. HTML
@@ -607,13 +612,15 @@ variants so multiple API replicas can share a run — see
   manifest's local tools. Transports: `sse` (default, `url`) or `stdio` (`command`/`args`).
   A stdio server does **not** inherit the API process's env. `_stdio_env()` returns only
   the vars the manifest opts into: `env_passthrough` names copied from the process env,
-  then literal `env` values on top. The mcp SDK merges these onto its own safe default
+  then literal `env` values on top. In stdio `args` and `env` values the placeholder
+  `{workspace_root}` (`WORKSPACE_ROOT_PLACEHOLDER`) is replaced with the resolved
+  workspace root, so a server living in the workspace follows `WORKSPACE_DIR`. The mcp SDK merges these onto its own safe default
   (`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`), so a credential such as
   `ANTHROPIC_API_KEY` reaches a server only if its name is listed in `env_passthrough`.
   Unlike `_sandbox_env()`, the real `HOME` is kept so tools like `uv` find their caches.
   If the `mcp` package is missing, connectivity is disabled with a warning. The shipped
   `knowledgebase_agent` launches the `semantic-kb` server over stdio (`uv --directory
-  workspace/semantic-kb run skb-mcp`).
+  {workspace_root}/semantic-kb run skb-mcp`).
 
 ## API surface & run persistence
 
@@ -635,7 +642,9 @@ variants so multiple API replicas can share a run — see
 Past-run endpoints (`GET /runs`, `/runs/{id}`, `/events`, `/results`, `/report`,
 `/session`, `/artifacts`, `/artifacts/{artifact_id}`) read the filesystem, not in-memory state.
 `/session` (`after_seq`, repeatable `type`, `invocation_id`) also works on live runs.
-Each run's directory is `<runs_dir>/<run_id>/` (`settings.runs_dir`, default `.runs`)
+Each run's directory is `<runs_dir>/<run_id>/` (`settings.runs_dir`, env `RUNS_DIR`, default
+`<AGENTFLOW_HOME>/runs` = `~/agentflow/runs`; always resolved through
+`core.workspace.runs_root()`, which expands `~`)
 and holds `meta.json` (task, generated name, created_at, workspace), `session.jsonl`
 (always — the durable session log), `checkpoints.git` (shadow repo of workspace
 snapshots, when `ENABLE_CHECKPOINTS` and git are available), `events.jsonl` (when `capture_events` is set),
@@ -658,17 +667,23 @@ them when `RESUME_INTERRUPTED_RUNS=true`.
 The CLI (`cli/`, `agentflow run [--workspace NAME] "<task>"`) is a thin click client over this HTTP API.
 It posts to `/api/runs`, renders the SSE stream with Rich (`cli/display.py`) and stops on
 `run:complete`/`run:error`/`run:cancelled`. It needs a running API server. Note
-that `--port` defaults to 8000 (env `AGENTFLOW_PORT`), matching `uvicorn`'s default.
+that `--port` defaults to 8002 (env `AGENTFLOW_PORT`), the project's default API port; launch `uvicorn` with `--port 8002` to match. The frontend dev server runs on 5175 (allowed by the CORS list in `main.py`).
 
 ## Workspaces
 
-> **Why it is built this way:** [ADR-002](../adr/002-per-run-and-named-workspaces.md).
+> **Why it is built this way:** [ADR-002](../adr/002-per-run-and-named-workspaces.md), [ADR-012](../adr/012-workspace-root-outside-repo.md) (root outside the repo, run-relative paths).
 
-`core/workspace.py` gives each run its own directory under `settings.workspace_dir`
-(default `workspace/`), so concurrent runs cannot overwrite each other's files:
+`core/workspace.py` gives each run its own directory under the workspace root,
+`settings.workspace_dir` (env `WORKSPACE_DIR`, default `<AGENTFLOW_HOME>/workspace` =
+`~/agentflow/workspace`, i.e. **outside the repo**). `Settings._derive_data_dirs()` fills
+an unset `workspace_dir`/`runs_dir` from `agentflow_home`. `workspace_root()` expands `~`
+and resolves it; a relative value resolves against the process CWD. The runs dir and the
+workspace root must not contain each other: `check_data_dirs()` raises
+`DataDirConflictError` at API startup (`lifespan`) and in `agentflow worker`, since a
+legacy root-level run could otherwise reach session logs and campaign ledgers. Concurrent runs cannot overwrite each other's files:
 
-- **Fresh per-run** (default): `workspace/runs/<run_id>/`. `runs` is a reserved name.
-- **Named**: `workspace/<name>/` when the request sets `workspace`. This is for long-lived
+- **Fresh per-run** (default): `<root>/runs/<run_id>/`. `runs` is a reserved name.
+- **Named**: `<root>/<name>/` when the request sets `workspace`. This is for long-lived
   projects that successive runs iterate on (e.g. `app-gateway`). Names must match
   `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, so there are no separators and no leading dot.
 - **Inherited**: a followup reuses the prior run's recorded path (`runs/<id>` or a name).
@@ -680,6 +695,16 @@ with `workspace_path()` (containment-checked), and arms `_current_workspace`. Be
 asyncio tasks copy the context at creation, the planner, every subtask, the decomposer
 and KB dispatch all inherit it with no explicit plumbing. The directory is created lazily
 on the first tool call.
+
+**Run-relative paths.** Everything that records a file a run wrote stores it relative to
+*that run's* workspace, never to the root or as an absolute path, so the records survive
+moving `WORKSPACE_DIR`. `run_relative(path)` resolves a tool-supplied path against
+`current_workspace()` and returns its canonical POSIX form (`./a/../b.md` and
+`<ws>/b.md` both → `b.md`), or `None` if it escapes the workspace. `_record_artifact()`
+(`artifacts.jsonl`) and `Agent._collect_written_paths()` (`files_written` → downstream
+`upstream_artifacts`, verifier input, checkpoint rollback) both go through it; an
+artifact outside the run workspace is logged and not recorded. `meta.workspace` is
+itself root-relative (`runs/<id>` or a name).
 
 `WorkspaceLocks` serialises runs that share a workspace (two runs on one named project,
 or two followups of one run). Entries are dropped once nothing holds or waits on them.

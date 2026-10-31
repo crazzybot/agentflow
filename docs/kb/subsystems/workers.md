@@ -1,7 +1,11 @@
 ---
 title: Worker Processes (Remote Agent Execution)
 last_updated: 2026-10-30
+<<<<<<< HEAD
+last_verified_sha: 7486398
+=======
 last_verified_sha: 629fee4
+>>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8
 sources:
   - src/agentflow/orchestrator/workers.py
   - src/agentflow/orchestrator/engine.py
@@ -83,7 +87,7 @@ unique and gap-free.
 ## Running
 
 ```bash
-DISPATCH_MODE=workers STATE_BACKEND=redis uv run uvicorn agentflow.main:app   # server
+DISPATCH_MODE=workers STATE_BACKEND=redis uv run uvicorn agentflow.main:app --port 8002   # server
 uv run agentflow worker [--agents CodeAgent,ResearchAgent] [--concurrency 4]  # any number
 ```
 

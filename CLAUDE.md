@@ -29,7 +29,7 @@ optional — a task that changed code but left the KB stale is not done.
 
 ```bash
 uv sync                                          # install / sync deps
-uv run uvicorn agentflow.main:app --reload       # API dev server (port 8000)
+uv run uvicorn agentflow.main:app --reload --port 8002  # API dev server (port 8002; frontend dev server on 5175)
 uv run agentflow run "<task>"                    # CLI entry point
 uv run agentflow worker                          # worker process (DISPATCH_MODE=workers, needs Redis)
 uv run pytest                                    # run the full test suite

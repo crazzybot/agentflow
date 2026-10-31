@@ -1,7 +1,11 @@
 ---
 title: Redis-Backed State Backend
 last_updated: 2026-10-30
+<<<<<<< HEAD
+last_verified_sha: 7486398
+=======
 last_verified_sha: 629fee4
+>>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8
 sources:
   - src/agentflow/config.py
   - src/agentflow/core/redis_client.py
@@ -157,7 +161,7 @@ across processes, through SSE via Redis Streams, and user messages and HITL via
 ```bash
 # start a Redis (any 5.x+), then:
 STATE_BACKEND=redis REDIS_URL=redis://localhost:6379 \
-  uv run uvicorn agentflow.main:app --reload
+  uv run uvicorn agentflow.main:app --reload --port 8002
 ```
 
 `redis>=5.0.0` is a runtime dependency (`pyproject.toml`).

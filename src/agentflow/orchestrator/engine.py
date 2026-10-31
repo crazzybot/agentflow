@@ -22,8 +22,13 @@ from agentflow.core.registry import AgentRegistry
 from agentflow.core.session import (RunSession, SessionEventType, _current_session,
                                      read_session, record, replay, result_data,
                                      session_path)
-from agentflow.core.workspace import (WorkspaceLocks, _current_workspace,
-                                       run_workspace_rel, workspace_path)
+from agentflow.core.workspace import (
+    _current_workspace,
+    run_workspace_rel,
+    runs_root,
+    workspace_path,
+    WorkspaceLocks,
+)
 from agentflow.llm import LLMClient
 from agentflow.orchestrator.checkpoints import Checkpoint, CheckpointError, WorkspaceCheckpoints
 from agentflow.orchestrator.decomposer import decompose_subtask
@@ -88,7 +93,7 @@ class RunAlreadyActiveError(Exception):
 def _remove_interrupted_tombstone(run_id: str) -> None:
     """Drop the placeholder report reconciliation wrote, so a resumed run reads as
     in progress again. A real report (the run died after compiling it) is kept."""
-    report_file = Path(settings.runs_dir) / run_id / "report.md"
+    report_file = runs_root() / run_id / "report.md"
     if report_file.exists() and report_file.read_text(encoding="utf-8").startswith(_INTERRUPTED_REPORT_HEADER):
         report_file.unlink()
 
@@ -175,7 +180,7 @@ class OrchestratorEngine:
         reconciled while holding its lease so two replicas starting together cannot
         both reconcile it. Returns the ids of the runs reconciled.
         """
-        runs_dir = Path(settings.runs_dir)
+        runs_dir = runs_root()
         if not runs_dir.exists():
             return []
         reconciled: list[str] = []
@@ -291,7 +296,7 @@ class OrchestratorEngine:
 
     def _write_meta(self, run_id: str, task: str, name: str, created_at: str, workspace: str) -> None:
         meta = RunMeta(run_id=run_id, task=task, name=name, created_at=created_at, workspace=workspace)
-        meta_path = Path(settings.runs_dir) / run_id / "meta.json"
+        meta_path = runs_root() / run_id / "meta.json"
         meta_path.parent.mkdir(parents=True, exist_ok=True)
         meta_path.write_text(meta.model_dump_json(indent=2))
 
@@ -457,12 +462,12 @@ class OrchestratorEngine:
         )
 
         events_file = (
-            f"{settings.runs_dir}/{run_id}/events.jsonl"
+            str(runs_root() / run_id / "events.jsonl")
             if settings.capture_events
             else None
         )
         results_file = (
-            f"{settings.runs_dir}/{run_id}/results.jsonl"
+            str(runs_root() / run_id / "results.jsonl")
             if settings.capture_results
             else None
         )
@@ -531,7 +536,7 @@ class OrchestratorEngine:
             data={"workspace": ws_rel, "resumed": resume is not None},
         )
 
-        artifacts_file = Path(settings.runs_dir) / run_id / "artifacts.jsonl"
+        artifacts_file = runs_root() / run_id / "artifacts.jsonl"
         sink = ArtifactSink(artifacts_file)
         sink_token = _current_sink.set(sink)
 

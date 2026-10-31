@@ -1,7 +1,11 @@
 ---
 title: Conventions & Patterns
 last_updated: 2026-10-30
+<<<<<<< HEAD
+last_verified_sha: 7486398
+=======
 last_verified_sha: 629fee4
+>>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8
 sources:
   - pyproject.toml
   - src/agentflow/config.py
@@ -19,12 +23,12 @@ status: current
   and dependencies (no `requirements.txt`).
 - Python version: `>=3.13` (`requires-python` in `pyproject.toml`).
 - Install/sync: `uv sync`.
-- Run the app: `uv run uvicorn agentflow.main:app --reload` (API) or
+- Run the app: `uv run uvicorn agentflow.main:app --reload --port 8002` (API) or
   `uv run agentflow run "<task>"` (CLI). The console script `agentflow` maps to
   `agentflow.cli:main` (see `[project.scripts]`).
 - Run tests: `uv run pytest` (or `uv run pytest tests/ -v`). `pyproject.toml` sets
-  `testpaths = ["tests"]` so projects that agents generate under `workspace/` (which ship
-  their own test suites) are never collected.
+  `testpaths = ["tests"]` so projects that agents generate in a workspace (which ship their
+  own test suites) are never collected if `WORKSPACE_DIR` points inside the repo.
 - Dev-only deps (`pytest`, `pytest-asyncio`, `fakeredis[lua]`) live in
   `[dependency-groups].dev`, separate from runtime `dependencies`. `fakeredis[lua]`
   backs the lease tests, which need real Lua `EVAL` semantics.
@@ -109,8 +113,11 @@ contradict the source):
   (crash → reconcile → `wake()`), `test_lease.py` (Redis leases on `fakeredis`,
   two engines as two replicas), and `test_context.py`
   (behaviour that must match across the memory and Redis backends, parametrized over both).
-- Engine tests must point `settings.runs_dir` **and** `settings.workspace_dir` at
-  `tmp_path`, so runs never create directories in the real `workspace/`. The global
+- An autouse fixture in `tests/conftest.py` (`_isolated_data_dirs`) points
+  `settings.workspace_dir` and `settings.runs_dir` at a fresh temp home for every test,
+  because the defaults are in the user's home (`~/agentflow/`). Tests that need a known
+  dir monkeypatch it again (e.g. `ws_root` in `test_workspace.py`, `tmp_path` runs dirs
+  in engine tests). The global
   `stream_registry`/`context_store`/`task_bus` follow the developer's `.env`. With
   `STATE_BACKEND=redis` and no Redis server they log connection errors, and they are
   `Redis*` classes without the in-memory internals. A test that inspects emitted events

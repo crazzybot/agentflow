@@ -58,7 +58,31 @@ def run_workspace_rel(run_id: str, name: str | None) -> str:
 
 
 def workspace_root() -> Path:
-    return Path(settings.workspace_dir).resolve()
+    return Path(settings.workspace_dir).expanduser().resolve()
+
+
+def runs_root() -> Path:
+    """Directory holding every run's records (``<runs_root>/<run_id>/``) and campaigns."""
+    return Path(settings.runs_dir).expanduser().resolve()
+
+
+class DataDirConflictError(ValueError):
+    """Raised when the runs directory and the workspace root overlap."""
+
+
+def check_data_dirs() -> None:
+    """Refuse a layout where agents could reach run records, or records hold workspaces.
+
+    Runs recorded before per-run workspaces work in the workspace root itself
+    (``LEGACY_ROOT``), so a runs dir inside it would expose session logs and campaign
+    ledgers to agent tools. Called at API and worker startup.
+    """
+    ws, runs = workspace_root(), runs_root()
+    if ws.is_relative_to(runs) or runs.is_relative_to(ws):
+        raise DataDirConflictError(
+            f"RUNS_DIR ({runs}) and WORKSPACE_DIR ({ws}) must not contain each other; "
+            "use sibling directories such as <AGENTFLOW_HOME>/runs and <AGENTFLOW_HOME>/workspace"
+        )
 
 
 def workspace_path(rel: str) -> Path:
@@ -80,6 +104,21 @@ def current_workspace() -> Path:
     ws = _current_workspace.get() or workspace_root()
     ws.mkdir(parents=True, exist_ok=True)
     return ws
+
+
+def run_relative(path: str) -> str | None:
+    """Normalise a tool-supplied *path* to POSIX form relative to the active run's
+    workspace, or None if it points outside it.
+
+    Agents may name the same file as ``report.md``, ``./a/../report.md`` or an
+    absolute path inside the workspace; artifact records and ``files_written``
+    store one canonical form so they never depend on where the root lives.
+    """
+    ws = current_workspace().resolve()
+    target = (ws / path).resolve()
+    if not target.is_relative_to(ws) or target == ws:
+        return None
+    return target.relative_to(ws).as_posix()
 
 
 class WorkspaceLocks:

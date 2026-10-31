@@ -124,13 +124,13 @@ cp .env.example .env
 # Edit .env — at minimum set ANTHROPIC_API_KEY
 
 # Run the server
-uv run uvicorn agentflow.main:app --reload
+uv run uvicorn agentflow.main:app --reload --port 8002
 
 # Or use the CLI directly
 uv run agentflow run "Produce a market analysis report on electric vehicles"
 ```
 
-The API is available at `http://localhost:8000`.
+The API is available at `http://localhost:8002`.
 
 ---
 
@@ -167,17 +167,18 @@ All settings are read from environment variables (or a `.env` file).
 | `AGENT_THINKING_EFFORT` | `high` | Global adaptive-thinking effort (`low`/`medium`/`high`/`xhigh`/`max`); `""` disables. Manifest `thinking_effort` overrides per agent. |
 | `PLANNER_MAX_ITERATIONS` | `15` | Maximum tool-use iterations for the planning pass |
 | `ENABLE_PROMPT_CACHING` | `true` | Inject Anthropic cache headers on every call |
-| `CAPTURE_EVENTS` | `false` | Write SSE events to `.runs/{id}/events.jsonl` |
-| `CAPTURE_RESULTS` | `false` | Write subtask results to `.runs/{id}/results.jsonl` |
-| `DISPATCH_MODE` | `local` | `workers` sends subtask agents to `agentflow worker` processes through Redis, while planning, scheduling, verification, checkpoints and the session log stay on the server. Needs `STATE_BACKEND=redis`, and a `.runs` directory and workspace shared with the workers. |
+| `CAPTURE_EVENTS` | `false` | Write SSE events to `<RUNS_DIR>/{id}/events.jsonl` |
+| `CAPTURE_RESULTS` | `false` | Write subtask results to `<RUNS_DIR>/{id}/results.jsonl` |
+| `DISPATCH_MODE` | `local` | `workers` sends subtask agents to `agentflow worker` processes through Redis, while planning, scheduling, verification, checkpoints and the session log stay on the server. Needs `STATE_BACKEND=redis`, and `AGENTFLOW_HOME` (runs dir and workspace) shared with the workers. |
 | `WORKER_CLAIM_TIMEOUT_S` / `WORKER_HEARTBEAT_S` | `60` / `5` | A queued task that no worker picks up within the timeout fails and is retried or handed to a fallback agent. A worker that misses 3 heartbeats is presumed dead, with the same outcome. |
 | `SANDBOX_BACKEND` | `local` | Where `bash_exec`, `bash_exec_readonly` and `python_exec` run. `local` is a host subprocess with a scrubbed environment. `docker` is one container per run, started on the first command, with the workspace mounted at `/workspace`, all capabilities dropped and no host credentials. With `docker`, the run fails rather than running on the host if Docker is unavailable. |
 | `SANDBOX_DOCKER_IMAGE` / `_NETWORK` / `_MEMORY` / `_CPUS` / `_PIDS_LIMIT` | `python:3.13-slim` / `bridge` / `2g` / `2` / `512` | Container settings. Set the network to `none` to cut the sandbox off from the network (package installs will then fail). |
 | `ENABLE_VERIFIER` | `true` | Subtasks the planner gave `acceptanceCriteria` are checked by an independent read-only verifier before counting as done. Unmet criteria go back to the agent to fix. |
 | `VERIFICATION_MAX_REPAIRS` | `1` | Fix-and-recheck rounds before a still-failing subtask is downgraded to partial |
 | `VERIFIER_MODEL_TIER` / `VERIFIER_MAX_ITERATIONS` | `economy` / `8` | Verifier cost controls |
-| `ENABLE_CHECKPOINTS` | `true` | Saves git checkpoints of each run's workspace in a separate repository at `.runs/{id}/checkpoints.git`: a baseline, then one per finished subtask. Before a retry, files written by the failed attempt are rolled back. A workspace's own `.git` is never touched. Needs `git`. |
+| `ENABLE_CHECKPOINTS` | `true` | Saves git checkpoints of each run's workspace in a separate repository at `<RUNS_DIR>/{id}/checkpoints.git`: a baseline, then one per finished subtask. Before a retry, files written by the failed attempt are rolled back. A workspace's own `.git` is never touched. Needs `git`. |
 | `CAMPAIGN_MAX_FEATURES` | `30` | Maximum number of features in a campaign's feature list |
+| `CAMPAIGN_DEFAULT_AGENT` | `CodeAgent` | Agent for a campaign feature the feature planner left unrouted (campaigns without a pinned `agent_id`) |
 | `CAMPAIGN_MAX_FEATURE_ATTEMPTS` | `2` | Sessions a feature may fail verification before it is marked `blocked` |
 | `CAMPAIGN_REGRESSION_CHECKS` | `1` | Features that already pass and are re-verified before each session |
 | `CONTEXT_SNIP_TRIGGER_TOKENS` | `100000` | Once an agent's prompt passes this size, older tool results are replaced in what the model sees by stubs it can expand with `recall_tool_result`. The full history is kept. `0` disables this. |
@@ -186,7 +187,9 @@ All settings are read from environment variables (or a `.env` file).
 | `RESUME_INTERRUPTED_RUNS` | `false` | Resume runs interrupted by a restart automatically at startup (spends budget without anyone asking) |
 | `RUN_LEASE_TTL_S` | `15` | Redis backend: TTL of the per-run ownership lease. The owner renews it every TTL/3 seconds. A crashed replica's runs become resumable once the lease lapses, and a cancel sent to another replica takes effect within about TTL/3 seconds. |
 | `MANIFESTS_DIR` | `manifests` | Directory scanned for `*.json` agent manifests |
-| `WORKSPACE_DIR` | `workspace` | Root for per-run workspaces: each run's file and shell tools are confined to `workspace/runs/{id}/` or a named `workspace/{name}/` |
+| `AGENTFLOW_HOME` | `~/agentflow` | AgentFlow's data home, outside the repo: default parent of `WORKSPACE_DIR` (`workspace/`) and `RUNS_DIR` (`runs/`) |
+| `RUNS_DIR` | `<AGENTFLOW_HOME>/runs` | Run records: meta, session log, report, artifacts index, checkpoints, campaign ledgers. Must not overlap `WORKSPACE_DIR` |
+| `WORKSPACE_DIR` | `<AGENTFLOW_HOME>/workspace` | Root for per-run workspaces (`~` is expanded): each run's file and shell tools are confined to `<root>/runs/{id}/` or a named `<root>/{name}/`; artifact paths are recorded relative to that directory |
 | `SKILLS_DIR` | `skills` | Directory scanned for skill packs |
 
 ---
@@ -206,10 +209,10 @@ Content-Type: application/json
 }
 ```
 
-`workspace` (optional) names a long-lived project workspace, `workspace/{name}/`
+`workspace` (optional) names a long-lived project workspace, `<WORKSPACE_DIR>/{name}/`
 (letters, digits, `.`, `_`, `-`; `runs` is reserved), for runs that keep iterating
 on one project. Runs that share a named workspace execute one at a time. When it
-is omitted, the run gets a fresh, isolated `workspace/runs/{run_id}/`. A followup
+is omitted, the run gets a fresh, isolated `<WORKSPACE_DIR>/runs/{run_id}/`. A followup
 (`POST /api/runs/{id}/followup`) continues in the prior run's workspace unless it
 names another one. CLI: `agentflow run --workspace NAME "<task>"`.
 
@@ -248,7 +251,7 @@ Returns a stream of Server-Sent Events. Each event's `data` field is a JSON obje
 GET /api/runs/{run_id}/session?after_seq=0&type=message_appended&invocation_id=<id>
 ```
 
-Every run keeps an always-on, append-only log at `.runs/{run_id}/session.jsonl`. It
+Every run keeps an always-on, append-only log at `<RUNS_DIR>/{run_id}/session.jsonl` (default `~/agentflow/runs/`). It
 holds the run's inputs, the plan, subtask dispatches and results, cost, human-input
 exchanges, and the full message history of every agent invocation. The SSE stream is
 a live view for clients, while the session log is the record the run can be rebuilt
@@ -258,7 +261,7 @@ works while the run is still in progress.
 ### Worker processes
 
 ```bash
-# server: DISPATCH_MODE=workers STATE_BACKEND=redis uv run uvicorn agentflow.main:app
+# server: DISPATCH_MODE=workers STATE_BACKEND=redis uv run uvicorn agentflow.main:app --port 8002
 uv run agentflow worker                              # serve every agent in manifests/
 uv run agentflow worker --agents CodeAgent --concurrency 4
 ```
@@ -292,12 +295,13 @@ that execute on another replica and returns `{"status": "cancel_requested"}`.
 ### Campaigns (long-running work across sessions)
 
 ```
-POST /api/campaigns          {"task": "<spec>", "agent_id": "CodeAgent", "max_sessions": 20,
-                              "budget_usd": 25, "session_budget_usd": 3, "workspace": "my-app"}
+POST /api/campaigns          {"task": "<spec>", "max_sessions": 20, "budget_usd": 25,
+                              "session_budget_usd": 3, "workspace": "my-app"}
+                             # add "agent_id": "CodeAgent" to run every feature on one agent
 GET  /api/campaigns          GET /api/campaigns/{id}
 POST /api/campaigns/{id}/pause   POST /api/campaigns/{id}/resume
 PATCH /api/campaigns/{id}    {"max_sessions": 30, "budget_usd": null}   # change limits; null = no budget limit
-POST /api/campaigns/{id}/features/{fid}/retry   {"guidance": "<what to do differently>"}
+POST /api/campaigns/{id}/features/{fid}/retry   {"guidance": "<what to do differently>", "agent_id": "WriterAgent"}
 ```
 
 A campaign **stops** when it reaches `max_sessions` or its budget, or when only
@@ -311,8 +315,10 @@ a fresh context:
 
 1. **Feature list.** A read-only planner turns the spec into an ordered list of
    features. Each feature has checks that can be confirmed by reading files. The list
-   is stored in `.runs/campaigns/{id}/features.json`, outside the agents' workspace,
-   and its feature definitions never change after that.
+   is stored in `<RUNS_DIR>/campaigns/{id}/features.json`, outside the agents' workspace,
+   and its feature definitions never change after that. Like the run planner, it also
+   picks the best agent for each feature (e.g. `CodeAgent` for the API, `WriterAgent` for
+   the user guide), unless the request pins one `agent_id`.
 2. **Sessions.** Each session is a normal run (with its own stream, session log,
    checkpoints and resume) that implements one feature. Its acceptance criteria are
    that feature's checks. **A feature is marked passing only when the independent
@@ -337,7 +343,7 @@ Lists the run's workspace snapshots, oldest first: `sha`, `label`, `subtask_id`,
 the files `changed` in each one. To restore the workspace to one by hand:
 
 ```bash
-git --git-dir .runs/<run_id>/checkpoints.git --work-tree <workspace> checkout <sha> -- .
+git --git-dir ~/agentflow/runs/<run_id>/checkpoints.git --work-tree <workspace> checkout <sha> -- .
 ```
 
 ### Health check
