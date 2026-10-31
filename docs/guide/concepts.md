@@ -1,11 +1,7 @@
 ---
 title: Concepts
 last_updated: 2026-10-30
-<<<<<<< HEAD
 last_verified_sha: 564a6a1
-=======
-last_verified_sha: 629fee4
->>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8
 sources:
   - src/agentflow/core/models.py
   - src/agentflow/core/workspace.py
@@ -125,12 +121,8 @@ An operator can **retry** a feature that keeps failing, with guidance for its ne
 session, and can change the session and budget limits. A feature's first session runs
 on a cheaper model, and only a feature that has failed moves up to a stronger one.
 [ADR-008](../adr/008-campaign-ledger-in-code.md),
-<<<<<<< HEAD
 [ADR-011](../adr/011-campaign-session-cost-controls.md),
 [ADR-013](../adr/013-campaign-feature-agent-routing.md)
-=======
-[ADR-011](../adr/011-campaign-session-cost-controls.md)
->>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8
 
 ### Worker
 A separate process (`agentflow worker`) that executes agent invocations queued by the API
