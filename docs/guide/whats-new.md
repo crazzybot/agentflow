@@ -1,7 +1,7 @@
 ---
 title: What's new
 last_updated: 2026-10-30
-last_verified_sha: 564a6a1
+last_verified_sha: 7486398
 sources:
   - docs/adr/
 status: current

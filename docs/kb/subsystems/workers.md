@@ -1,7 +1,7 @@
 ---
 title: Worker Processes (Remote Agent Execution)
 last_updated: 2026-10-30
-last_verified_sha: 564a6a1
+last_verified_sha: 7486398
 sources:
   - src/agentflow/orchestrator/workers.py
   - src/agentflow/orchestrator/engine.py
