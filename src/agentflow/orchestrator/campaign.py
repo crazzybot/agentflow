@@ -607,15 +607,10 @@ class CampaignManager:
             target.sessions.append(run_id)
             self.store.save_features(campaign_id, features)
 
-<<<<<<< HEAD
             agent_id = self._feature_agent(campaign, target)
             plan = ExecutionPlan(run_id=run_id, subtasks=[self._session_subtask(campaign, features, target, agent_id)])
             logger.info("[campaign %s] Session %d: %s on %s (%s)",
                         campaign_id, len(campaign.sessions), target.id, agent_id, run_id)
-=======
-            plan = ExecutionPlan(run_id=run_id, subtasks=[self._session_subtask(campaign, features, target)])
-            logger.info("[campaign %s] Session %d: %s (%s)", campaign_id, len(campaign.sessions), target.id, run_id)
->>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8
             await self.engine.run(
                 run_id,
                 f"Campaign {campaign_id} — {target.id}: {target.title}",
@@ -750,28 +745,6 @@ class CampaignManager:
         return Subtask(
             id=SESSION_SUBTASK_ID,
             agent_id=agent_id,
-            instruction=_session_instruction(campaign, features, target, workspace_map),
-            acceptance_criteria=target.checks,
-            model=model or None,
-            thinking_effort=effort or None,
-            max_iterations=settings.campaign_session_max_iterations,
-        )
-
-    @staticmethod
-    def _session_subtask(campaign: Campaign, features: list[Feature], target: Feature) -> Subtask:
-        """The one-subtask plan of a session. A feature's first attempt runs on the
-        cheaper session model and effort; a failing one (failed a session or regressed)
-        escalates to the escalation model and effort."""
-        escalate = target.status == FeatureStatus.failing
-        model = settings.campaign_escalation_model if escalate else settings.campaign_session_model
-        effort = (
-            settings.campaign_escalation_thinking_effort if escalate
-            else settings.campaign_session_thinking_effort
-        )
-        workspace_map = _workspace_map(workspace_path(campaign.workspace), settings.campaign_workspace_map_max_files)
-        return Subtask(
-            id=SESSION_SUBTASK_ID,
-            agent_id=campaign.agent_id,
             instruction=_session_instruction(campaign, features, target, workspace_map),
             acceptance_criteria=target.checks,
             model=model or None,

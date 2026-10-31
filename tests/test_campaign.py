@@ -598,7 +598,6 @@ def test_session_instruction_includes_the_workspace_map():
     text = _session_instruction(_campaign(), features, features[0], "README.md\nsrc/app.py")
     assert "<workspace_files>\nREADME.md\nsrc/app.py\n</workspace_files>" in text
     assert "<workspace_files>" not in _session_instruction(_campaign(), features, features[0])
-<<<<<<< HEAD
 
 
 # ---------------------------------------------------------------------------
@@ -728,5 +727,3 @@ def test_unpinned_campaign_needs_a_registered_default_agent(manager, monkeypatch
     monkeypatch.setattr("agentflow.config.settings.campaign_default_agent", "Ghost")
     with pytest.raises(UnknownAgentError):
         mgr.create(CampaignRequest(task="t"))
-=======
->>>>>>> 9cf66a6d8f2e01379210f7c641a4e445227231f8
