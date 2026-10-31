@@ -15,6 +15,13 @@ fixes and internal refactors are not listed here; see the git history for those.
 
 ---
 
+## 30 October 2026: Default API port is now 8002
+
+- **The API listens on 8002 by default.** `agentflow serve` and the CLI client default to
+  port 8002 (override with `--port` or `AGENTFLOW_PORT`); start `uvicorn` with
+  `--port 8002` to match. A web frontend runs on 5175, which the CORS list already allows.
+  Details: [architecture](../kb/architecture.md).
+
 ## 30 October 2026: Campaign features are routed to the right agent
 
 - **Each feature gets its own agent.** The campaign's feature planner now sees the agent

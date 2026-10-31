@@ -157,7 +157,7 @@ across processes, through SSE via Redis Streams, and user messages and HITL via
 ```bash
 # start a Redis (any 5.x+), then:
 STATE_BACKEND=redis REDIS_URL=redis://localhost:6379 \
-  uv run uvicorn agentflow.main:app --reload
+  uv run uvicorn agentflow.main:app --reload --port 8002
 ```
 
 `redis>=5.0.0` is a runtime dependency (`pyproject.toml`).

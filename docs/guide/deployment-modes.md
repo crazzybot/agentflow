@@ -29,7 +29,7 @@ single process with no external dependencies.
 ### 1. Single process (development, default)
 
 ```bash
-uv run uvicorn agentflow.main:app --reload
+uv run uvicorn agentflow.main:app --reload --port 8002
 uv run agentflow run "<task>"
 ```
 
@@ -39,7 +39,7 @@ can be resumed with `POST /api/runs/{id}/resume`.
 ### 2. Several API replicas
 
 ```bash
-STATE_BACKEND=redis REDIS_URL=redis://… uvicorn agentflow.main:app   # × N, behind a load balancer
+STATE_BACKEND=redis REDIS_URL=redis://… uvicorn agentflow.main:app --port 8002   # × N, behind a load balancer
 ```
 
 - **Any replica can serve any run's stream, human input, messages and cancel.** Leases
@@ -51,7 +51,7 @@ STATE_BACKEND=redis REDIS_URL=redis://… uvicorn agentflow.main:app   # × N, b
 ### 3. Server plus workers
 
 ```bash
-DISPATCH_MODE=workers STATE_BACKEND=redis uvicorn agentflow.main:app
+DISPATCH_MODE=workers STATE_BACKEND=redis uvicorn agentflow.main:app --port 8002
 uv run agentflow worker                               # serve every agent
 uv run agentflow worker --agents CodeAgent --concurrency 4
 ```

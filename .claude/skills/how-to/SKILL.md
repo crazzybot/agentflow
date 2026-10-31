@@ -81,7 +81,7 @@ invocation: manual
 ## Cancel an active run
 
 ```bash
-curl -X POST http://localhost:8000/api/runs/<run_id>/cancel
+curl -X POST http://localhost:8002/api/runs/<run_id>/cancel
 # {"status": "cancelled"}         — the run executed on this replica
 # {"status": "cancel_requested"}  — Redis backend: another replica owns it; it stops within ~RUN_LEASE_TTL_S/3 s
 # 404                             — no live run with this id
@@ -95,7 +95,7 @@ cancels in-flight subtasks and re-raises, and the run ends `run:cancelled`.
 ## Resume an interrupted run
 
 ```bash
-curl -X POST http://localhost:8000/api/runs/<run_id>/resume
+curl -X POST http://localhost:8002/api/runs/<run_id>/resume
 # {"run_id": "<run_id>", "status": "resumed"} — reattach to the same /stream URL
 # 409 — still running (here or on a live lease elsewhere), no session log, or already finished
 ```
@@ -108,12 +108,12 @@ this automatically at startup. Details: `docs/kb/subsystems/resume-and-leases.md
 ## Run a long-horizon campaign
 
 ```bash
-curl -X POST http://localhost:8000/api/campaigns \
+curl -X POST http://localhost:8002/api/campaigns \
   -H "Content-Type: application/json" \
   -d '{"task": "<full project spec>", "max_sessions": 20, "budget_usd": 25, "workspace": "my-app"}'
-curl http://localhost:8000/api/campaigns/<campaign_id>          # ledger: features, statuses, sessions, spend
-curl -X POST http://localhost:8000/api/campaigns/<campaign_id>/pause   # after the current session
-curl -X POST http://localhost:8000/api/campaigns/<campaign_id>/resume
+curl http://localhost:8002/api/campaigns/<campaign_id>          # ledger: features, statuses, sessions, spend
+curl -X POST http://localhost:8002/api/campaigns/<campaign_id>/pause   # after the current session
+curl -X POST http://localhost:8002/api/campaigns/<campaign_id>/resume
 ```
 
 A read-only planner writes a fixed feature list and routes each feature to an agent
@@ -125,7 +125,7 @@ the independent verifier confirms its checks. Details: `docs/kb/subsystems/campa
 ## Start a follow-up run
 
 ```bash
-curl -X POST http://localhost:8000/api/runs/<run_id>/followup \
+curl -X POST http://localhost:8002/api/runs/<run_id>/followup \
   -H "Content-Type: application/json" \
   -d '{"task": "Now expand section 3 with more detail"}'
 # returns {"run_id": "<new_run_id>", "status": "started"}
@@ -140,7 +140,7 @@ Pass `"workspace": "<name>"` to run it in a different named workspace instead.
 ## Run in a named (long-lived project) workspace
 
 ```bash
-curl -X POST http://localhost:8000/api/runs \
+curl -X POST http://localhost:8002/api/runs \
   -H "Content-Type: application/json" \
   -d '{"task": "Add rate limiting to the gateway", "workspace": "app-gateway"}'
 # CLI equivalent:
@@ -157,7 +157,7 @@ per process, so with several replicas it only holds when one replica serves both
 ## Inject a message into a running agent
 
 ```bash
-curl -X POST http://localhost:8000/api/runs/<run_id>/message \
+curl -X POST http://localhost:8002/api/runs/<run_id>/message \
   -H "Content-Type: application/json" \
   -d '{"content": "Focus only on the European market"}'
 # returns {"status": "queued"}, 409 if run is finished, 404 if not found

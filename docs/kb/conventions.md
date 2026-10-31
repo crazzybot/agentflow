@@ -19,7 +19,7 @@ status: current
   and dependencies (no `requirements.txt`).
 - Python version: `>=3.13` (`requires-python` in `pyproject.toml`).
 - Install/sync: `uv sync`.
-- Run the app: `uv run uvicorn agentflow.main:app --reload` (API) or
+- Run the app: `uv run uvicorn agentflow.main:app --reload --port 8002` (API) or
   `uv run agentflow run "<task>"` (CLI). The console script `agentflow` maps to
   `agentflow.cli:main` (see `[project.scripts]`).
 - Run tests: `uv run pytest` (or `uv run pytest tests/ -v`). `pyproject.toml` sets

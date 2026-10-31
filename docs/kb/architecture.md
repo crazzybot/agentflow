@@ -663,7 +663,7 @@ them when `RESUME_INTERRUPTED_RUNS=true`.
 The CLI (`cli/`, `agentflow run [--workspace NAME] "<task>"`) is a thin click client over this HTTP API.
 It posts to `/api/runs`, renders the SSE stream with Rich (`cli/display.py`) and stops on
 `run:complete`/`run:error`/`run:cancelled`. It needs a running API server. Note
-that `--port` defaults to 8000 (env `AGENTFLOW_PORT`), matching `uvicorn`'s default.
+that `--port` defaults to 8002 (env `AGENTFLOW_PORT`), the project's default API port; launch `uvicorn` with `--port 8002` to match. The frontend dev server runs on 5175 (allowed by the CORS list in `main.py`).
 
 ## Workspaces
 

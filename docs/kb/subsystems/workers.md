@@ -83,7 +83,7 @@ unique and gap-free.
 ## Running
 
 ```bash
-DISPATCH_MODE=workers STATE_BACKEND=redis uv run uvicorn agentflow.main:app   # server
+DISPATCH_MODE=workers STATE_BACKEND=redis uv run uvicorn agentflow.main:app --port 8002   # server
 uv run agentflow worker [--agents CodeAgent,ResearchAgent] [--concurrency 4]  # any number
 ```
 

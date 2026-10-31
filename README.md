@@ -124,13 +124,13 @@ cp .env.example .env
 # Edit .env — at minimum set ANTHROPIC_API_KEY
 
 # Run the server
-uv run uvicorn agentflow.main:app --reload
+uv run uvicorn agentflow.main:app --reload --port 8002
 
 # Or use the CLI directly
 uv run agentflow run "Produce a market analysis report on electric vehicles"
 ```
 
-The API is available at `http://localhost:8000`.
+The API is available at `http://localhost:8002`.
 
 ---
 
@@ -261,7 +261,7 @@ works while the run is still in progress.
 ### Worker processes
 
 ```bash
-# server: DISPATCH_MODE=workers STATE_BACKEND=redis uv run uvicorn agentflow.main:app
+# server: DISPATCH_MODE=workers STATE_BACKEND=redis uv run uvicorn agentflow.main:app --port 8002
 uv run agentflow worker                              # serve every agent in manifests/
 uv run agentflow worker --agents CodeAgent --concurrency 4
 ```
